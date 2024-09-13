@@ -1,4 +1,4 @@
-use std::{array, collections::HashMap};
+use std::array;
 
 use noise::NoiseFn;
 
@@ -6,13 +6,13 @@ use crate::{
     world::CubeFaceInstance,
     world::{
         blocks::{Block, Direction},
-        CHUNK_DIMENSIONS, VERTICAL_CHUNK_COUNT, WORLD_HEIGHT,
+        CHUNK_DIMENSIONS, CHUNK_WIDTH_BITS, VERTICAL_CHUNK_COUNT, WORLD_HEIGHT,
     },
 };
 
 pub struct Chunk {
     pub u: i32,
-    pub v: u32,
+    pub v: i32,
     pub w: i32,
     data: Box<[Block]>,
 }
@@ -32,7 +32,7 @@ impl Chunk {
 
         let mut chunks: [Chunk; VERTICAL_CHUNK_COUNT] = array::from_fn(|v| Chunk {
             u,
-            v: v as u32,
+            v: v as i32,
             w,
             data: blocks.clone().into_boxed_slice(),
         });
@@ -77,12 +77,9 @@ impl Chunk {
     }
 
     fn validate_chunk_coordinates(x: i32, y: i32, z: i32) -> bool {
-        !(x < -1
-            || x > CHUNK_DIMENSIONS
-            || y < -1
-            || y > CHUNK_DIMENSIONS
-            || z < -1
-            || z > CHUNK_DIMENSIONS)
+        !(!(-1..=CHUNK_DIMENSIONS).contains(&x)
+            || !(-1..=CHUNK_DIMENSIONS).contains(&y)
+            || !(-1..=CHUNK_DIMENSIONS).contains(&z))
     }
 
     pub fn at(&self, x: i32, y: i32, z: i32) -> &Block {
@@ -136,15 +133,19 @@ impl Chunk {
                     }
 
                     let tex_index = self.at(x, y, z).texture_index();
+
+                    let common_packed_bits: u32 = x as u32
+                        | ((y as u32) << CHUNK_WIDTH_BITS)
+                        | ((z as u32) << (CHUNK_WIDTH_BITS * 2))
+                        | ((tex_index as u32) << (CHUNK_WIDTH_BITS * 3));
+
                     for direction in directions {
+                        let packed_bits =
+                            common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
+
                         instances.push(CubeFaceInstance {
-                            position: glam::vec3(
-                                (x + self.u * CHUNK_DIMENSIONS) as f32,
-                                (y + self.v as i32 * CHUNK_DIMENSIONS) as f32,
-                                (z + self.w * CHUNK_DIMENSIONS) as f32,
-                            ),
-                            direction,
-                            tex_index,
+                            chunk: [self.u, self.v, self.w],
+                            attributes: packed_bits,
                         })
                     }
                 }

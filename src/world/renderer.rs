@@ -1,24 +1,25 @@
 use std::{
-    any::Any,
-    borrow::{Borrow, BorrowMut},
-    f32::consts::PI,
-    rc::Rc,
+    mem,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::{
-    core::instance,
-    naga::Handle,
     util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, Buffer, Device, Queue, RenderPass, RenderPipeline, SurfaceConfiguration,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindingType, BlendState, Buffer, BufferAddress,
+    BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
+    CompareFunction, DepthBiasState, DepthStencilState, Device, Face, FragmentState, FrontFace,
+    MultisampleState, PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology,
+    Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor,
+    ShaderSource, ShaderStages, StencilState, SurfaceConfiguration, TextureFormat, VertexAttribute,
+    VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
 };
 
 use crate::{
     camera::CameraController,
     texture,
-    world::{blocks::Direction, chunk::Chunk, World, CHUNK_DIMENSIONS, VERTICAL_CHUNK_COUNT},
+    world::{World, CHUNK_DIMENSIONS, VERTICAL_CHUNK_COUNT},
 };
 
 const CHUNK_RENDER_DISTANCE: i32 = 4;
@@ -30,141 +31,69 @@ struct Vertex {
     pub tex_coordinates: [f32; 2],
 }
 impl Vertex {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
+    fn desc() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: mem::size_of::<Vertex>() as BufferAddress,
+            step_mode: VertexStepMode::Vertex,
             attributes: &[
-                wgpu::VertexAttribute {
+                VertexAttribute {
                     offset: 0,
                     shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: VertexFormat::Float32x3,
                 },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                VertexAttribute {
+                    offset: mem::size_of::<[f32; 3]>() as BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x2,
+                    format: VertexFormat::Float32x2,
                 },
             ],
         }
     }
 }
 
+// Cube face pointing in negative Z direction
 const CUBE_FACE_VERTICES: &[Vertex] = &[
     Vertex {
-        position: [-0.5, -0.5, 0.0],
+        position: [0.0, 0.0, 0.0],
         tex_coordinates: [0.0, 1.0],
     },
     Vertex {
-        position: [-0.5, 0.5, 0.0],
+        position: [0.0, 1.0, 0.0],
         tex_coordinates: [0.0, 0.0],
     },
     Vertex {
-        position: [0.5, -0.5, 0.0],
+        position: [1.0, 0.0, 0.0],
         tex_coordinates: [1.0, 1.0],
     },
     Vertex {
-        position: [0.5, 0.5, 0.0],
+        position: [1.0, 1.0, 0.0],
         tex_coordinates: [1.0, 0.0],
     },
 ];
 
-#[derive(Debug, Copy, Clone)]
-pub struct CubeFaceInstance {
-    pub position: glam::Vec3,
-    pub direction: Direction,
-    pub tex_index: u32,
-}
-
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
-pub struct RawCubeFaceInstance {
-    pub model_matrix: [[f32; 4]; 4],
-    pub tex_index: u32,
-    pub direction: u32,
+pub struct CubeFaceInstance {
+    pub chunk: [i32; 3],
+    pub attributes: u32,
 }
-impl RawCubeFaceInstance {
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-        wgpu::VertexBufferLayout {
-            array_stride: (mem::size_of::<[[f32; 4]; 4]>() + 2 * mem::size_of::<u32>())
-                as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
+impl CubeFaceInstance {
+    fn desc() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: (mem::size_of::<[i32; 3]>() + mem::size_of::<u32>()) as BufferAddress,
+            step_mode: VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute {
+                VertexAttribute {
                     offset: 0,
-                    shader_location: 5,
-                    format: wgpu::VertexFormat::Float32x4,
+                    shader_location: 2,
+                    format: VertexFormat::Sint32x3,
                 },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 4]>() as wgpu::BufferAddress,
-                    shader_location: 6,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
-                    shader_location: 7,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
-                    shader_location: 8,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 16]>() as wgpu::BufferAddress,
-                    shader_location: 9,
-                    format: wgpu::VertexFormat::Uint32,
-                },
-                wgpu::VertexAttribute {
-                    offset: (mem::size_of::<[f32; 16]>() + mem::size_of::<u32>())
-                        as wgpu::BufferAddress,
-                    shader_location: 10,
-                    format: wgpu::VertexFormat::Uint32,
+                VertexAttribute {
+                    offset: mem::size_of::<[i32; 3]>() as BufferAddress,
+                    shader_location: 3,
+                    format: VertexFormat::Uint32,
                 },
             ],
-        }
-    }
-
-    pub fn from_cube_face(instance: CubeFaceInstance) -> Self {
-        // TODO why do angles need to be inverted?
-        let world_translation = glam::Mat4::from_translation(instance.position);
-        let mat = world_translation
-            * match instance.direction {
-                Direction::X => {
-                    glam::Mat4::from_translation(glam::vec3(1.0, 0.5, 0.5))
-                        * glam::Mat4::from_rotation_y(-PI / 2.0)
-                }
-                Direction::NegX => {
-                    glam::Mat4::from_translation(glam::vec3(0.0, 0.5, 0.5))
-                        * glam::Mat4::from_rotation_y(PI / 2.0)
-                }
-
-                Direction::Y => {
-                    glam::Mat4::from_translation(glam::vec3(0.5, 1.0, 0.5))
-                        * glam::Mat4::from_rotation_x(PI / 2.0)
-                }
-                Direction::NegY => {
-                    glam::Mat4::from_translation(glam::vec3(0.5, 0.0, 0.5))
-                        * glam::Mat4::from_rotation_y(PI)
-                        * glam::Mat4::from_rotation_x(-PI / 2.0)
-                }
-
-                Direction::Z => {
-                    glam::Mat4::from_translation(glam::vec3(0.5, 0.5, 1.0))
-                // TODO why is this needed?
-                    * glam::Mat4::from_rotation_y(PI)
-                }
-                Direction::NegZ => {
-                    glam::Mat4::from_translation(glam::vec3(0.5, 0.5, 0.0))
-                    // TODO why is this not needed?
-                    // * glam::Mat4::from_rotation_y(PI)
-                }
-            };
-        Self {
-            model_matrix: mat.to_cols_array_2d(),
-            direction: instance.direction as u32,
-            tex_index: instance.tex_index,
         }
     }
 }
@@ -183,7 +112,7 @@ pub struct WorldRenderer {
     previous_camera_u: Option<i32>,
     previous_camera_w: Option<i32>,
 
-    loading_thread_handle: Vec<JoinHandle<Vec<RawCubeFaceInstance>>>,
+    loading_thread_handle: Vec<JoinHandle<Vec<CubeFaceInstance>>>,
 }
 
 impl WorldRenderer {
@@ -192,16 +121,16 @@ impl WorldRenderer {
         queue: Arc<Queue>,
         surface_config: &SurfaceConfiguration,
     ) -> Self {
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("cube face vertex buffer"),
             contents: bytemuck::cast_slice(CUBE_FACE_VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: BufferUsages::VERTEX,
         });
 
         // TODO use sensible default size, research `mapped_at_creation`
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("cube face instance buffer"),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             size: 0,
             mapped_at_creation: false,
         });
@@ -218,19 +147,19 @@ impl WorldRenderer {
             0.001,
         );
 
-        let camera_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let camera_uniform = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("camera uniform buffer"),
             contents: bytemuck::cast_slice(&[camera_controller.get_view_projection_matrix()]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
 
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -239,66 +168,65 @@ impl WorldRenderer {
                 label: Some("camera bind group layout"),
             });
 
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let camera_bind_group = device.create_bind_group(&BindGroupDescriptor {
             layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
+            entries: &[BindGroupEntry {
                 binding: 0,
                 resource: camera_uniform.as_entire_binding(),
             }],
             label: Some("camera bind group"),
         });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("world shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shader.wgsl").into()),
+            source: ShaderSource::Wgsl(include_str!("../shader.wgsl").into()),
         });
 
         let (texture_bind_group_layout, texture_bind_group) =
             texture::load_textures(&device, &queue).unwrap();
 
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("world render pipeline layout"),
-                bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
-                push_constant_ranges: &[],
-            });
+        let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("world render pipeline layout"),
+            bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
+            push_constant_ranges: &[],
+        });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("world render pipeline"),
             layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
+            vertex: VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc(), RawCubeFaceInstance::desc()],
+                buffers: &[Vertex::desc(), CubeFaceInstance::desc()],
                 compilation_options: Default::default(),
             },
-            fragment: Some(wgpu::FragmentState {
+            fragment: Some(FragmentState {
                 module: &shader,
                 entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
+                targets: &[Some(ColorTargetState {
                     format: surface_config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
+                    blend: Some(BlendState::REPLACE),
+                    write_mask: ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleStrip,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
+                front_face: FrontFace::Cw,
+                cull_mode: Some(Face::Back),
+                polygon_mode: PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
                 depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+                depth_compare: CompareFunction::Less,
+                stencil: StencilState::default(),
+                bias: DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState {
+            multisample: MultisampleState {
                 count: 1,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
@@ -339,7 +267,7 @@ impl WorldRenderer {
                     self.instance_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
                         label: Some("cube face instance buffer"),
                         contents: bytemuck::cast_slice(instances.as_slice()),
-                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
                     });
                     self.buffer_capacity = instances.len();
                 } else {
@@ -380,29 +308,29 @@ impl WorldRenderer {
             for u in chunk_range_u.clone() {
                 for w in chunk_range_w.clone() {
                     // TODO error handling
-                    if let None = world_handle.chunk_columns.get(&(u, w)) {
+                    if world_handle.chunk_columns.get(&(u, w)).is_none() {
                         world_handle.create_chunks(u, w);
                     }
                 }
             }
 
-            let mut instances: Vec<&RawCubeFaceInstance> = Vec::new();
+            let mut instances: Vec<&CubeFaceInstance> = Vec::new();
             for u in chunk_range_u.clone() {
                 for w in chunk_range_w.clone() {
                     let instances_ = (0..VERTICAL_CHUNK_COUNT)
-                        .flat_map(|v| world_handle.meshed_chunks.get(&(u, v as u32, w)).unwrap())
-                        .collect::<Vec<&RawCubeFaceInstance>>();
+                        .flat_map(|v| world_handle.meshed_chunks.get(&(u, v as i32, w)).unwrap())
+                        .collect::<Vec<&CubeFaceInstance>>();
 
                     instances.extend(instances_);
                 }
             }
 
-            let instances: Vec<RawCubeFaceInstance> = instances
+            let instances: Vec<CubeFaceInstance> = instances
                 .iter()
                 .map(|instance| (*instance).to_owned())
                 .collect();
 
-            return instances;
+            instances
         });
 
         self.loading_thread_handle.push(handle);

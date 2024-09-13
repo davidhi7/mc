@@ -129,6 +129,7 @@ impl CameraController {
         self.view.eye
     }
 
+    #[allow(dead_code)]
     pub fn get_direction(&self) -> Vec3 {
         self.view.direction
     }

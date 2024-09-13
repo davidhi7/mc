@@ -1,17 +1,24 @@
 use std::{
     collections::HashSet,
     iter,
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 
-use wgpu::{Color, CompositeAlphaMode, PresentMode, TextureFormat};
+use wgpu::{
+    Backends, Color, CommandEncoderDescriptor, CompositeAlphaMode, Device, DeviceDescriptor,
+    Extent3d, Features, Instance, InstanceDescriptor, Limits, LoadOp, Operations, PowerPreference,
+    PresentMode, Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RequestAdapterOptions, StoreOp, Surface, SurfaceConfiguration,
+    SurfaceError, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+    TextureView, TextureViewDescriptor,
+};
 use winit::{
     application::ApplicationHandler,
+    dpi,
     event::*,
-    event_loop::EventLoop,
+    event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorGrabMode, Window},
+    window::{CursorGrabMode, Window, WindowId},
 };
 
 use crate::world::{renderer::WorldRenderer, World};
@@ -25,7 +32,7 @@ pub struct App {
 }
 
 impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
@@ -43,7 +50,7 @@ impl ApplicationHandler for App {
 
     fn device_event(
         &mut self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
@@ -57,8 +64,8 @@ impl ApplicationHandler for App {
 
     fn window_event(
         &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        _window_id: winit::window::WindowId,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
         event: WindowEvent,
     ) {
         match event {
@@ -103,17 +110,17 @@ impl ApplicationHandler for App {
                 match gfx_state.render() {
                     Ok(_) => {}
                     // Reconfigure the surface if it's lost or outdated
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    Err(SurfaceError::Lost | SurfaceError::Outdated) => {
                         gfx_state.resize(self.window.as_ref().unwrap().inner_size())
                     }
                     // The system is out of memory, we should probably quit
-                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                    Err(SurfaceError::OutOfMemory) => {
                         log::error!("Out of memory");
                         event_loop.exit();
                     }
 
                     // This happens when the a frame takes too long to present
-                    Err(wgpu::SurfaceError::Timeout) => {
+                    Err(SurfaceError::Timeout) => {
                         log::warn!("Surface timeout")
                     }
                 }
@@ -125,31 +132,31 @@ impl ApplicationHandler for App {
 }
 
 struct GfxState {
-    surface: wgpu::Surface<'static>,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    surface_config: wgpu::SurfaceConfiguration,
-    depth_texture: wgpu::Texture,
-    depth_texture_view: wgpu::TextureView,
-    clear_color: wgpu::Color,
+    surface: Surface<'static>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    surface_config: SurfaceConfiguration,
+    depth_texture: Texture,
+    depth_texture_view: TextureView,
+    clear_color: Color,
     world_renderer: WorldRenderer,
     world: Arc<Mutex<World>>,
 }
 
 impl GfxState {
     async fn new(window: Arc<Window>) -> GfxState {
-        let size: winit::dpi::PhysicalSize<u32> = window.inner_size();
+        let size: dpi::PhysicalSize<u32> = window.inner_size();
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
+        let instance = Instance::new(InstanceDescriptor {
+            backends: Backends::PRIMARY,
             ..Default::default()
         });
 
         let surface = instance.create_surface(window).unwrap();
 
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
+            .request_adapter(&RequestAdapterOptions {
+                power_preference: PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -158,10 +165,12 @@ impl GfxState {
 
         let (device, queue) = adapter
             .request_device(
-                &wgpu::DeviceDescriptor {
+                &DeviceDescriptor {
                     label: None,
-                    required_limits: wgpu::Limits::default(),
-                    required_features: wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING | wgpu::Features::POLYGON_MODE_LINE,
+                    required_limits: Limits::default(),
+                    required_features: Features::TEXTURE_BINDING_ARRAY
+                        | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+                        | Features::POLYGON_MODE_LINE,
                 },
                 None,
             )
@@ -177,8 +186,8 @@ impl GfxState {
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
 
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        let surface_config = SurfaceConfiguration {
+            usage: TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
             height: size.height,
@@ -200,7 +209,9 @@ impl GfxState {
             WorldRenderer::new(Arc::clone(&device), Arc::clone(&queue), &surface_config);
         world_renderer.update(Arc::clone(&world));
 
-        let instance = Self {
+        
+
+        Self {
             surface,
             device,
             queue,
@@ -215,38 +226,36 @@ impl GfxState {
             },
             world_renderer,
             world,
-        };
-
-        instance
+        }
     }
 
     pub fn create_depth_texture(
-        device: &wgpu::Device,
+        device: &Device,
         width: u32,
         height: u32,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let size = wgpu::Extent3d {
-            width: width,
-            height: height,
+    ) -> (Texture, TextureView) {
+        let size = Extent3d {
+            width,
+            height,
             depth_or_array_layers: 1,
         };
-        let depth_texture_descriptor = wgpu::TextureDescriptor {
+        let depth_texture_descriptor = TextureDescriptor {
             label: Some("depth texture"),
             size,
             mip_level_count: 1,
             sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Depth32Float,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         };
         let depth_texture = device.create_texture(&depth_texture_descriptor);
-        let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture_view = depth_texture.create_view(&TextureViewDescriptor::default());
 
         (depth_texture, depth_texture_view)
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    pub fn resize(&mut self, new_size: dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.surface_config.width = new_size.width;
             self.surface_config.height = new_size.height;
@@ -274,34 +283,34 @@ impl GfxState {
         self.world_renderer.update(Arc::clone(&self.world));
     }
 
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    fn render(&mut self) -> Result<(), SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+            .create_view(&TextureViewDescriptor::default());
 
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            .create_command_encoder(&CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
 
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("render rass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                color_attachments: &[Some(RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.clear_color),
-                        store: wgpu::StoreOp::Store,
+                    ops: Operations {
+                        load: LoadOp::Clear(self.clear_color),
+                        store: StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                     view: &self.depth_texture_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(1.0),
+                        store: StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),

@@ -2,7 +2,7 @@ use std::{fs, num::NonZeroU32};
 
 use anyhow::*;
 use image::GenericImageView;
-use wgpu::{BindGroup, BindGroupLayout, TextureView};
+use wgpu::{BindGroup, BindGroupLayout, TextureUsages, TextureView};
 
 const TEXTURES: [&str; 7] = [
     "res/stone.png",
@@ -14,6 +14,7 @@ const TEXTURES: [&str; 7] = [
     "res/snow.png",
 ];
 
+/// Create bind group and bind group layout for a texture array and a texture sampler.
 pub fn load_textures(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -62,19 +63,14 @@ pub fn load_textures(
             depth_or_array_layers: 1,
         };
 
-        let mut label = String::from("texture ");
-        label.push_str(file);
-
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&label),
+            label: Some(&("texture ".to_owned() + file)),
             size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
@@ -109,5 +105,5 @@ pub fn load_textures(
         label: Some("texture bind group"),
     });
 
-    return Ok((texture_bind_group_layout, texture_bind_group));
+    Ok((texture_bind_group_layout, texture_bind_group))
 }

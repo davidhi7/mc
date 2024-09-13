@@ -2,23 +2,21 @@ use std::{collections::HashMap, time::Instant};
 
 use noise::Simplex;
 
-use crate::world::{
-    chunk::Chunk,
-    renderer::{CubeFaceInstance, RawCubeFaceInstance},
-};
+use crate::world::{chunk::Chunk, renderer::CubeFaceInstance};
 
 pub mod blocks;
 pub mod chunk;
 pub mod renderer;
 
-const CHUNK_DIMENSIONS: i32 = 32;
+const CHUNK_WIDTH_BITS: u32 = 5;
+const CHUNK_DIMENSIONS: i32 = 2_i32.pow(CHUNK_WIDTH_BITS);
 const WORLD_HEIGHT: i32 = 256;
 const VERTICAL_CHUNK_COUNT: usize = (WORLD_HEIGHT / CHUNK_DIMENSIONS) as usize;
 
 pub struct World {
     noise: Simplex,
-    pub chunk_columns: HashMap<(i32, i32), [Chunk; VERTICAL_CHUNK_COUNT as usize]>,
-    pub meshed_chunks: HashMap<(i32, u32, i32), Vec<RawCubeFaceInstance>>,
+    pub chunk_columns: HashMap<(i32, i32), [Chunk; VERTICAL_CHUNK_COUNT]>,
+    pub meshed_chunks: HashMap<(i32, i32, i32), Vec<CubeFaceInstance>>,
 }
 
 impl World {
@@ -41,14 +39,8 @@ impl World {
         self.chunk_columns
             .insert((u, w), Chunk::generate_stack(&self.noise, u, w));
         for chunk in chunk_column {
-            self.meshed_chunks.insert(
-                (chunk.u, chunk.v, chunk.w),
-                chunk
-                    .generate_mesh()
-                    .iter()
-                    .map(|face| RawCubeFaceInstance::from_cube_face(*face))
-                    .collect(),
-            );
+            self.meshed_chunks
+                .insert((chunk.u, chunk.v, chunk.w), chunk.generate_mesh());
         }
 
         println!(
