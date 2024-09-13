@@ -12,7 +12,7 @@ pub enum Block {
 }
 
 impl Block {
-    pub fn texture_index(&self) -> u32 {
+    pub fn texture_index(&self) -> u8 {
         match self {
             Block::AIR => panic!("{:?} doesn't feature a texture", self),
             Block::STONE => 0,

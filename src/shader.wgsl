@@ -5,18 +5,14 @@ struct CameraUniform {
 @group(1) @binding(0)
 var<uniform> camera: CameraUniform;
 
-struct InstanceInput {
-    @location(5) model_matrix_0: vec4<f32>,
-    @location(6) model_matrix_1: vec4<f32>,
-    @location(7) model_matrix_2: vec4<f32>,
-    @location(8) model_matrix_3: vec4<f32>,
-    @location(9) tex_index: u32,
-    @location(10) direction: u32,
-};
-
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) tex_coordinates: vec2<f32>,
+};
+
+struct InstanceInput {
+    @location(2) chunk: vec3<i32>,
+    @location(3) packed_bits: u32,
 };
 
 struct VertexOutput {
@@ -31,18 +27,51 @@ fn vs_main(
     model: VertexInput,
     instance: InstanceInput
 ) -> VertexOutput {
-    let model_matrix = mat4x4<f32>(
-        instance.model_matrix_0,
-        instance.model_matrix_1,
-        instance.model_matrix_2,
-        instance.model_matrix_3,
+    let chunk_relative_coords = vec3u(
+        (instance.packed_bits >>  0) & 0x1F,
+        (instance.packed_bits >>  5) & 0x1F,
+        (instance.packed_bits >> 10) & 0x1F
     );
 
+    let tex_index = (instance.packed_bits >> 15) & 0xFF;
+    let direction = (instance.packed_bits >> 23) & 0x7;
+
+    var model_coords = model.position;
+    
+    switch direction {
+        case 0u: {
+            // -X
+            model_coords = vec3f(0, model_coords.x, model_coords.y);
+        }
+        case 1u: {
+            // +X
+            model_coords = vec3f(1, model_coords.y, model_coords.x);
+        }
+        case 2u: {
+            // -Y
+            model_coords = vec3f(model_coords.y, 0, model_coords.x);
+        }
+        case 3u: {
+            // +Y
+            model_coords = vec3f(model_coords.x, 1, model_coords.y);
+        }
+        // case 4u is case -Z, which is the default direction of the model
+        case 5u: {
+            // +Z
+            model_coords = vec3f(model_coords.y, model_coords.x, 1);
+        }
+        default: {
+            model_coords = model_coords;
+        }
+    }
+    
+    let global_position = 32 * vec3f(instance.chunk) + vec3f(chunk_relative_coords) + model_coords;
+
     var out: VertexOutput;
+    out.clip_position = camera.view_proj * vec4f(global_position, 1);
     out.tex_coordinates = model.tex_coordinates;
-    out.clip_position = camera.view_proj * model_matrix * vec4<f32>(model.position, 1.0);
-    out.tex_index = instance.tex_index;
-    out.direction = instance.direction;
+    out.tex_index = tex_index;
+    out.direction = direction;
     return out;
 }
 
