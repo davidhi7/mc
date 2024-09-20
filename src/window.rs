@@ -1,7 +1,10 @@
+mod frametime_metrics;
+
 use std::{
     collections::HashSet,
     iter,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use wgpu::{
@@ -21,14 +24,17 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
-use crate::world::{renderer::WorldRenderer, World};
+use crate::{
+    window::frametime_metrics::FrameTimeMetrics,
+    world::{renderer::WorldRenderer, World},
+};
 
-#[derive(Default)]
 pub struct App {
     window: Option<Arc<Window>>,
     gfx_state: Option<GfxState>,
     pressed_keys: HashSet<KeyCode>,
     mouse_movement: (f64, f64),
+    frametime_metrics: FrameTimeMetrics,
 }
 
 impl ApplicationHandler for App {
@@ -56,7 +62,9 @@ impl ApplicationHandler for App {
     ) {
         match event {
             DeviceEvent::MouseMotion { delta } => {
-                self.mouse_movement = delta;
+                let (new_x, new_y) = delta;
+                let (old_x, old_y) = self.mouse_movement;
+                self.mouse_movement = (old_x + new_x, old_y + new_y);
             }
             _ => {}
         }
@@ -102,6 +110,8 @@ impl ApplicationHandler for App {
                     .unwrap();
             }
             WindowEvent::RedrawRequested => {
+                let frametime_start = Instant::now();
+
                 let gfx_state = self.gfx_state.as_mut().unwrap();
 
                 gfx_state.update(&self.pressed_keys, self.mouse_movement);
@@ -124,6 +134,10 @@ impl ApplicationHandler for App {
                         log::warn!("Surface timeout")
                     }
                 }
+
+                self.frametime_metrics.push(frametime_start.elapsed());
+                self.frametime_metrics.update_sample();
+
                 self.window.as_ref().unwrap().request_redraw();
             }
             _ => (),
@@ -141,6 +155,7 @@ struct GfxState {
     clear_color: Color,
     world_renderer: WorldRenderer,
     world: Arc<Mutex<World>>,
+    last_update: Instant,
 }
 
 impl GfxState {
@@ -209,8 +224,6 @@ impl GfxState {
             WorldRenderer::new(Arc::clone(&device), Arc::clone(&queue), &surface_config);
         world_renderer.update(Arc::clone(&world));
 
-        
-
         Self {
             surface,
             device,
@@ -226,6 +239,7 @@ impl GfxState {
             },
             world_renderer,
             world,
+            last_update: Instant::now(),
         }
     }
 
@@ -276,11 +290,16 @@ impl GfxState {
     }
 
     fn update(&mut self, pressed_keys: &HashSet<KeyCode>, mouse_movement: (f64, f64)) {
-        self.world_renderer
-            .camera_controller
-            .handle_input(pressed_keys, mouse_movement);
+        let now = Instant::now();
+        self.world_renderer.camera_controller.handle_input(
+            pressed_keys,
+            mouse_movement,
+            now.duration_since(self.last_update).as_secs_f32(),
+        );
 
         self.world_renderer.update(Arc::clone(&self.world));
+
+        self.last_update = now;
     }
 
     fn render(&mut self) -> Result<(), SurfaceError> {
@@ -330,5 +349,13 @@ impl GfxState {
 
 pub async fn run() {
     let event_loop: EventLoop<()> = EventLoop::new().unwrap();
-    event_loop.run_app(&mut App::default()).unwrap();
+    event_loop
+        .run_app(&mut App {
+            window: None,
+            gfx_state: None,
+            pressed_keys: Default::default(),
+            mouse_movement: Default::default(),
+            frametime_metrics: FrameTimeMetrics::new(1000),
+        })
+        .unwrap();
 }
