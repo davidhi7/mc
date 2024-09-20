@@ -1,6 +1,6 @@
 use std::{collections::HashSet, f32::consts::PI};
 
-use glam::Vec3;
+use glam::{vec3, Mat4, Vec3};
 use winit::keyboard::KeyCode;
 
 struct Perspective {
@@ -11,20 +11,20 @@ struct Perspective {
 }
 
 impl Perspective {
-    fn get_matrix(&self) -> glam::Mat4 {
-        glam::Mat4::perspective_lh(self.fov_y, self.aspect_ratio, self.z_near, self.z_far)
+    fn get_matrix(&self) -> Mat4 {
+        Mat4::perspective_lh(self.fov_y, self.aspect_ratio, self.z_near, self.z_far)
     }
 }
 
 struct View {
-    pub eye: glam::Vec3,
-    pub direction: glam::Vec3,
-    pub up: glam::Vec3,
+    eye: Vec3,
+    direction: Vec3,
+    up: Vec3,
 }
 
 impl View {
-    fn get_matrix(&self) -> glam::Mat4 {
-        glam::Mat4::look_to_lh(self.eye, self.direction, self.up)
+    fn get_matrix(&self) -> Mat4 {
+        Mat4::look_to_lh(self.eye, self.direction, self.up)
     }
 }
 
@@ -39,7 +39,7 @@ pub struct CameraController {
 
 impl CameraController {
     pub fn new(
-        eye: glam::Vec3,
+        eye: Vec3,
         yaw: f32,
         pitch: f32,
         fov_y: f32,
@@ -52,8 +52,8 @@ impl CameraController {
         CameraController {
             view: View {
                 eye,
-                direction: glam::Vec3::X,
-                up: glam::vec3(0.0, 1.0, 0.0),
+                direction: Vec3::X,
+                up: vec3(0.0, 1.0, 0.0),
             },
             perspective: Perspective {
                 fov_y,
@@ -68,56 +68,61 @@ impl CameraController {
         }
     }
 
-    pub fn handle_input(&mut self, pressed_keys: &HashSet<KeyCode>, mouse_movement: (f64, f64)) {
+    pub fn handle_input(
+        &mut self,
+        pressed_keys: &HashSet<KeyCode>,
+        mouse_movement: (f64, f64),
+        delta_s: f32,
+    ) {
         let (dx, dy) = mouse_movement;
+        let adjusted_sensitivity = self.sensitivity * delta_s;
+        let mut adjusted_speed = self.speed * delta_s;
 
-        let new_yaw = self.yaw - (dx as f32) * self.sensitivity;
-        let new_pitch = (self.pitch - (dy as f32) * self.sensitivity).clamp(-0.5, 0.5);
+        let new_yaw = self.yaw - (dx as f32) * adjusted_sensitivity;
+        let new_pitch = (self.pitch - (dy as f32) * adjusted_sensitivity).clamp(-0.5, 0.5);
 
         let (yaw_sin, yaw_cos) = ((new_yaw) * PI).sin_cos();
         let (pitch_sin, pitch_cos) = ((new_pitch) * PI).sin_cos();
 
-        let xz_forward = glam::vec3(yaw_cos, 0.0, yaw_sin);
-        let xz_right = glam::vec3(-yaw_sin, 0.0, yaw_cos);
+        let xz_forward = vec3(yaw_cos, 0.0, yaw_sin);
+        let xz_right = vec3(-yaw_sin, 0.0, yaw_cos);
 
-        self.view.direction = glam::vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin);
+        self.view.direction = vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin);
         self.yaw = new_yaw;
         self.pitch = new_pitch;
 
         self.view.up = xz_right.cross(self.view.direction);
 
-        let mut speed = self.speed;
-
         if pressed_keys.contains(&KeyCode::ShiftLeft) {
-            speed *= 3.0;
+            adjusted_speed *= 3.0;
         }
 
         if pressed_keys.contains(&KeyCode::KeyW) {
-            self.view.eye += xz_forward * speed;
+            self.view.eye += xz_forward * adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::KeyS) {
-            self.view.eye -= xz_forward * speed;
+            self.view.eye -= xz_forward * adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::KeyD) {
-            self.view.eye -= xz_right * speed;
+            self.view.eye -= xz_right * adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::KeyA) {
-            self.view.eye += xz_right * speed;
+            self.view.eye += xz_right * adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::Space) {
-            self.view.eye += glam::Vec3::Y * speed;
+            self.view.eye += Vec3::Y * adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::ControlLeft) {
-            self.view.eye -= glam::Vec3::Y * speed;
+            self.view.eye -= Vec3::Y * adjusted_speed;
         }
     }
 
-    pub fn get_view_projection_matrix(&self) -> glam::Mat4 {
+    pub fn get_view_projection_matrix(&self) -> Mat4 {
         self.perspective.get_matrix() * self.view.get_matrix()
     }
 
