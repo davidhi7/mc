@@ -17,9 +17,8 @@ use wgpu::{
 };
 
 use crate::{
-    camera::CameraController,
     texture,
-    world::{World, CHUNK_DIMENSIONS, VERTICAL_CHUNK_COUNT},
+    world::{camera::CameraController, World, CHUNK_DIMENSIONS, VERTICAL_CHUNK_COUNT},
 };
 
 const CHUNK_RENDER_DISTANCE: i32 = 4;
@@ -137,14 +136,14 @@ impl WorldRenderer {
 
         let camera_controller = CameraController::new(
             glam::Vec3::NEG_X,
-            0.0,
+            -0.5,
             0.0,
             45.0,
             surface_config.width as f32 / surface_config.height as f32,
             0.1,
             1000.0,
-            0.05,
-            0.001,
+            10.0,
+            0.1,
         );
 
         let camera_uniform = device.create_buffer_init(&BufferInitDescriptor {

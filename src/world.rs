@@ -5,6 +5,7 @@ use noise::Simplex;
 use crate::world::{chunk::Chunk, renderer::CubeFaceInstance};
 
 pub mod blocks;
+pub mod camera;
 pub mod chunk;
 pub mod renderer;
 
