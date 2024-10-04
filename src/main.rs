@@ -1,4 +1,3 @@
-mod camera;
 mod texture;
 mod window;
 mod world;

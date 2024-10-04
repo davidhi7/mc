@@ -31,9 +31,13 @@ impl View {
 pub struct CameraController {
     view: View,
     perspective: Perspective,
+    /// camera translation per second
     speed: f32,
+    /// camera rotation per second and mouse movement step, multiplied by pi
     sensitivity: f32,
+    // horizontal camera orientation; 0.0 is facing towards X+
     yaw: f32,
+    //
     pitch: f32,
 }
 
@@ -75,11 +79,18 @@ impl CameraController {
         delta_s: f32,
     ) {
         let (dx, dy) = mouse_movement;
-        let adjusted_sensitivity = self.sensitivity * delta_s;
-        let mut adjusted_speed = self.speed * delta_s;
+        let time_adjusted_sensitivity = self.sensitivity * delta_s;
+        let time_adjusted_speed = self.speed * delta_s;
+        let mut speed_multiplier = 1.0;
 
-        let new_yaw = self.yaw - (dx as f32) * adjusted_sensitivity;
-        let new_pitch = (self.pitch - (dy as f32) * adjusted_sensitivity).clamp(-0.5, 0.5);
+        let mut new_yaw = self.yaw - (dx as f32) * time_adjusted_sensitivity;
+        // Normalize yaw value
+        new_yaw %= 2.0;
+        if new_yaw < 0.0 {
+            new_yaw += 2.0;
+        }
+
+        let new_pitch = (self.pitch - (dy as f32) * time_adjusted_sensitivity).clamp(-0.5, 0.5);
 
         let (yaw_sin, yaw_cos) = ((new_yaw) * PI).sin_cos();
         let (pitch_sin, pitch_cos) = ((new_pitch) * PI).sin_cos();
@@ -94,31 +105,31 @@ impl CameraController {
         self.view.up = xz_right.cross(self.view.direction);
 
         if pressed_keys.contains(&KeyCode::ShiftLeft) {
-            adjusted_speed *= 3.0;
+            speed_multiplier = 3.0;
         }
 
         if pressed_keys.contains(&KeyCode::KeyW) {
-            self.view.eye += xz_forward * adjusted_speed;
+            self.view.eye += xz_forward * time_adjusted_speed * speed_multiplier;
         }
 
         if pressed_keys.contains(&KeyCode::KeyS) {
-            self.view.eye -= xz_forward * adjusted_speed;
-        }
-
-        if pressed_keys.contains(&KeyCode::KeyD) {
-            self.view.eye -= xz_right * adjusted_speed;
+            self.view.eye -= xz_forward * time_adjusted_speed * speed_multiplier;
         }
 
         if pressed_keys.contains(&KeyCode::KeyA) {
-            self.view.eye += xz_right * adjusted_speed;
+            self.view.eye += xz_right * time_adjusted_speed * speed_multiplier;
+        }
+
+        if pressed_keys.contains(&KeyCode::KeyD) {
+            self.view.eye -= xz_right * time_adjusted_speed * speed_multiplier;
         }
 
         if pressed_keys.contains(&KeyCode::Space) {
-            self.view.eye += Vec3::Y * adjusted_speed;
+            self.view.eye.y += time_adjusted_speed * speed_multiplier;
         }
 
         if pressed_keys.contains(&KeyCode::ControlLeft) {
-            self.view.eye -= Vec3::Y * adjusted_speed;
+            self.view.eye.y -= time_adjusted_speed * speed_multiplier;
         }
     }
 

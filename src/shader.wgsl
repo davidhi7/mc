@@ -37,6 +37,7 @@ fn vs_main(
     let direction = (instance.packed_bits >> 23) & 0x7;
 
     var model_coords = model.position;
+    var model_tex_coordinates = model.tex_coordinates;
     
     switch direction {
         case 0u: {
@@ -55,12 +56,12 @@ fn vs_main(
             // +Y
             model_coords = vec3f(model_coords.x, 1, model_coords.y);
         }
-        // case 4u is case -Z, which is the default direction of the model
         case 5u: {
             // +Z
             model_coords = vec3f(model_coords.y, model_coords.x, 1);
         }
         default: {
+            // case 4u is case -Z, which is the default direction of the model
             model_coords = model_coords;
         }
     }
@@ -69,7 +70,7 @@ fn vs_main(
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4f(global_position, 1);
-    out.tex_coordinates = model.tex_coordinates;
+    out.tex_coordinates = model_tex_coordinates;
     out.tex_index = tex_index;
     out.direction = direction;
     return out;
