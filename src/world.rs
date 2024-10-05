@@ -1,18 +1,17 @@
 use std::{collections::HashMap, time::Instant};
 
+use crate::renderer::CubeFaceInstance;
+use crate::world::chunk::Chunk;
 use noise::Simplex;
-
-use crate::world::{chunk::Chunk, renderer::CubeFaceInstance};
 
 pub mod blocks;
 pub mod camera;
 pub mod chunk;
-pub mod renderer;
 
-const CHUNK_WIDTH_BITS: u32 = 5;
-const CHUNK_DIMENSIONS: i32 = 2_i32.pow(CHUNK_WIDTH_BITS);
-const WORLD_HEIGHT: i32 = 256;
-const VERTICAL_CHUNK_COUNT: usize = (WORLD_HEIGHT / CHUNK_DIMENSIONS) as usize;
+pub const CHUNK_WIDTH_BITS: u32 = 5;
+pub const CHUNK_DIMENSIONS: i32 = 2_i32.pow(CHUNK_WIDTH_BITS);
+pub const WORLD_HEIGHT: i32 = 256;
+pub const VERTICAL_CHUNK_COUNT: usize = (WORLD_HEIGHT / CHUNK_DIMENSIONS) as usize;
 
 pub struct World {
     noise: Simplex,

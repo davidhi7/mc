@@ -17,9 +17,12 @@ use wgpu::{
 };
 
 use crate::{
+    renderer::ui_renderer::Reticle,
     texture,
     world::{camera::CameraController, World, CHUNK_DIMENSIONS, VERTICAL_CHUNK_COUNT},
 };
+
+mod ui_renderer;
 
 const CHUNK_RENDER_DISTANCE: i32 = 4;
 
@@ -110,6 +113,7 @@ pub struct WorldRenderer {
     buffer_capacity: usize,
     previous_camera_u: Option<i32>,
     previous_camera_w: Option<i32>,
+    reticle_renderer: ui_renderer::Reticle,
 
     loading_thread_handle: Vec<JoinHandle<Vec<CubeFaceInstance>>>,
 }
@@ -178,7 +182,7 @@ impl WorldRenderer {
 
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("world shader"),
-            source: ShaderSource::Wgsl(include_str!("../shader.wgsl").into()),
+            source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
         let (texture_bind_group_layout, texture_bind_group) =
@@ -233,6 +237,9 @@ impl WorldRenderer {
             multiview: None,
         });
 
+        let reticle_renderer =
+            Reticle::new(&device, camera_bind_group_layout, surface_config.format);
+
         WorldRenderer {
             device,
             queue,
@@ -246,6 +253,7 @@ impl WorldRenderer {
             buffer_capacity: 0,
             previous_camera_u: None,
             previous_camera_w: None,
+            reticle_renderer,
 
             loading_thread_handle: Vec::new(),
         }
@@ -395,5 +403,8 @@ impl WorldRenderer {
             0..CUBE_FACE_VERTICES.len() as u32,
             0..self.buffer_capacity as u32,
         );
+
+        self.reticle_renderer
+            .render(render_pass, &self.camera_bind_group);
     }
 }
