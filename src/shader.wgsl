@@ -42,11 +42,12 @@ fn vs_main(
     switch direction {
         case 0u: {
             // -X
-            model_coords = vec3f(0, model_coords.x, model_coords.y);
+            model_coords = vec3f(0, model_coords.xy);
+            model_tex_coordinates = model_tex_coordinates.yx;
         }
         case 1u: {
             // +X
-            model_coords = vec3f(1, model_coords.y, model_coords.x);
+            model_coords = vec3f(1, model_coords.yx);
         }
         case 2u: {
             // -Y
@@ -56,13 +57,13 @@ fn vs_main(
             // +Y
             model_coords = vec3f(model_coords.x, 1, model_coords.y);
         }
+        case 4u, default {
+            // case 4u is case -Z, which is the default direction of the model
+        }
         case 5u: {
             // +Z
-            model_coords = vec3f(model_coords.y, model_coords.x, 1);
-        }
-        default: {
-            // case 4u is case -Z, which is the default direction of the model
-            model_coords = model_coords;
+            model_coords = vec3f(model_coords.yx, 1);
+            model_tex_coordinates = model_tex_coordinates.yx;
         }
     }
     
