@@ -24,10 +24,7 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
-use crate::{
-    window::frametime_metrics::FrameTimeMetrics,
-    world::{renderer::WorldRenderer, World},
-};
+use crate::{renderer::WorldRenderer, window::frametime_metrics::FrameTimeMetrics, world::World};
 
 pub struct App {
     window: Option<Arc<Window>>,
