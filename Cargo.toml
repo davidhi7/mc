@@ -1,5 +1,5 @@
 [package]
-name = "wgpu-test"
+name = "mc"
 version = "0.1.0"
 edition = "2021"
 resolver = "2"
@@ -15,5 +15,5 @@ image = "0.25.1"
 log = "0.4.21"
 noise = "0.9.0"
 pollster = "0.3.0"
-wgpu = "0.20.1"
+wgpu = "22.1.0"
 winit = "0.30.3"
