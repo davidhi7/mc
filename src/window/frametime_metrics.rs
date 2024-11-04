@@ -36,6 +36,7 @@ impl FrameTimeMetrics {
             self.last_sample_frametime_ms = frametime_sample_us as f64 / 1000f64;
             self.deque.clear();
             self.last_sample_instant = now;
+            println!("{}", self.last_sample_frametime_ms);
         }
     }
 }

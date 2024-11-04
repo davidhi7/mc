@@ -50,7 +50,7 @@ impl Vertex {
     }
 }
 
-// Cube face pointing in negative Z direction
+// Cube face facing in negative Z direction
 const CUBE_FACE_VERTICES: &[Vertex] = &[
     Vertex {
         position: [0.0, 0.0, 0.0],
@@ -73,6 +73,12 @@ const CUBE_FACE_VERTICES: &[Vertex] = &[
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
 pub struct CubeFaceInstance {
+    /// Bits starting from the LSB:
+    /// * `0-5`: x coordinate inside the cunk
+    /// * `5-10`: y coordinate inside the cunk
+    /// * `10-15`: z coordinate inside the cunk
+    /// * `15-23`: texture id
+    /// * `23-26`: direction (`crate::world::blocks::Direction`)
     pub attributes: u32,
 }
 impl CubeFaceInstance {

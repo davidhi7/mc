@@ -70,7 +70,7 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => {
-                log::info!("Close button pressed, terminating");
+                log::info!("Close requested, terminating");
                 event_loop.exit();
             }
             WindowEvent::Resized(physical_size) => {
@@ -107,8 +107,6 @@ impl ApplicationHandler for App {
                 let gfx_state = self.gfx_state.as_mut().unwrap();
 
                 gfx_state.update(&self.pressed_keys, self.mouse_movement);
-                // Don't handle the same mouse input twice
-                self.mouse_movement = (0.0, 0.0);
                 match gfx_state.render() {
                     Ok(_) => {}
                     // Reconfigure the surface if it's lost or outdated
@@ -127,6 +125,8 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Don't handle the same mouse input twice
+                self.mouse_movement = (0.0, 0.0);
                 self.frametime_metrics.push(frametime_start.elapsed());
                 self.frametime_metrics.update_sample();
 
@@ -198,7 +198,7 @@ impl GfxState {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: PresentMode::Fifo,
+            present_mode: PresentMode::AutoNoVsync,
             alpha_mode: CompositeAlphaMode::Auto,
             desired_maximum_frame_latency: 2,
             view_formats: vec![],

@@ -31,13 +31,13 @@ impl View {
 pub struct CameraController {
     view: View,
     perspective: Perspective,
-    /// camera translation per second
+    /// Camera translation per second
     speed: f32,
-    /// camera rotation per second and mouse movement step, multiplied by pi
+    /// Camera rotation per second and mouse movement step, multiplied by pi
     sensitivity: f32,
-    // horizontal camera orientation; 0.0 is facing towards X+
+    /// Horizontal camera orientation; 0.0 is facing towards X+ / east
     yaw: f32,
-    //
+    /// vertical camera orientation within [-0.5, 0.5]; 0 is facing forward
     pitch: f32,
 }
 
