@@ -309,7 +309,7 @@ impl GfxState {
 
         {
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("render rass"),
+                label: Some("render pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,

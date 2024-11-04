@@ -21,7 +21,7 @@ use crate::{
 
 mod ui_renderer;
 
-const CHUNK_RENDER_DISTANCE: i32 = 4;
+const CHUNK_RENDER_DISTANCE: u32 = 8;
 
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
@@ -120,7 +120,7 @@ impl WorldRenderer {
             glam::Vec3::NEG_X,
             -0.5,
             0.0,
-            45.0,
+            1.6,
             surface_config.width as f32 / surface_config.height as f32,
             0.1,
             1000.0,
@@ -135,7 +135,8 @@ impl WorldRenderer {
         });
 
         let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("camera bind group layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::VERTEX,
@@ -146,7 +147,6 @@ impl WorldRenderer {
                     },
                     count: None,
                 }],
-                label: Some("camera bind group layout"),
             });
 
         let camera_bind_group = device.create_bind_group(&BindGroupDescriptor {

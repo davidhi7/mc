@@ -39,7 +39,7 @@ pub fn load_textures(
                     count: None,
                 },
             ],
-            label: Some("texture bind gorup layout"),
+            label: Some("texture bind group layout"),
         });
 
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
