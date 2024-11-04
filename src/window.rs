@@ -1,11 +1,6 @@
 mod frametime_metrics;
 
-use std::{
-    collections::HashSet,
-    iter,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{collections::HashSet, iter, sync::Arc, time::Instant};
 
 use wgpu::{
     Backends, Color, CommandEncoderDescriptor, CompositeAlphaMode, Device, DeviceDescriptor,
@@ -151,7 +146,6 @@ struct GfxState {
     depth_texture_view: TextureView,
     clear_color: Color,
     world_renderer: WorldRenderer,
-    world: Arc<Mutex<World>>,
     last_update: Instant,
 }
 
@@ -183,6 +177,7 @@ impl GfxState {
                     required_features: Features::TEXTURE_BINDING_ARRAY
                         | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
                         | Features::POLYGON_MODE_LINE,
+                    memory_hints: wgpu::MemoryHints::MemoryUsage,
                 },
                 None,
             )
@@ -215,11 +210,13 @@ impl GfxState {
         let device = Arc::new(device);
         let queue = Arc::new(queue);
 
-        let world = Arc::new(Mutex::new(World::new(0)));
-
-        let mut world_renderer =
-            WorldRenderer::new(Arc::clone(&device), Arc::clone(&queue), &surface_config);
-        world_renderer.update(Arc::clone(&world));
+        let mut world_renderer = WorldRenderer::new(
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            &surface_config,
+            World::new(0),
+        );
+        world_renderer.update();
 
         Self {
             surface,
@@ -235,7 +232,6 @@ impl GfxState {
                 a: 0.0,
             },
             world_renderer,
-            world,
             last_update: Instant::now(),
         }
     }
@@ -294,7 +290,7 @@ impl GfxState {
             now.duration_since(self.last_update).as_secs_f32(),
         );
 
-        self.world_renderer.update(Arc::clone(&self.world));
+        self.world_renderer.update();
 
         self.last_update = now;
     }

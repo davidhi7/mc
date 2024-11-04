@@ -68,6 +68,7 @@ impl Reticle {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         });
 
         Reticle { render_pipeline }

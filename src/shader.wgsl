@@ -5,14 +5,16 @@ struct CameraUniform {
 @group(1) @binding(0)
 var<uniform> camera: CameraUniform;
 
+@group(2) @binding(0)
+var<uniform> chunk: vec3i;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) tex_coordinates: vec2<f32>,
 };
 
 struct InstanceInput {
-    @location(2) chunk: vec3<i32>,
-    @location(3) packed_bits: u32,
+    @location(2) packed_bits: u32,
 };
 
 struct VertexOutput {
@@ -27,10 +29,10 @@ fn vs_main(
     model: VertexInput,
     instance: InstanceInput
 ) -> VertexOutput {
-    let chunk_relative_coords = vec3u(
-        (instance.packed_bits >>  0) & 0x1F,
-        (instance.packed_bits >>  5) & 0x1F,
-        (instance.packed_bits >> 10) & 0x1F
+    let chunk_relative_coords = vec3i(
+        i32((instance.packed_bits >>  0) & 0x1F),
+        i32((instance.packed_bits >>  5) & 0x1F),
+        i32((instance.packed_bits >> 10) & 0x1F)
     );
 
     let tex_index = (instance.packed_bits >> 15) & 0xFF;
@@ -67,7 +69,7 @@ fn vs_main(
         }
     }
     
-    let global_position = 32 * vec3f(instance.chunk) + vec3f(chunk_relative_coords) + model_coords;
+    let global_position = vec3f(32 * chunk + chunk_relative_coords) + model_coords;
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4f(global_position, 1);

@@ -1,25 +1,22 @@
-use std::{
-    mem,
-    sync::{Arc, Mutex},
-    thread::{self, JoinHandle},
-};
+use std::{mem, sync::Arc};
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindingType, BlendState, Buffer, BufferAddress,
-    BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CompareFunction, DepthBiasState, DepthStencilState, Device, Face, FragmentState, FrontFace,
-    MultisampleState, PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology,
-    Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor,
-    ShaderSource, ShaderStages, StencilState, SurfaceConfiguration, TextureFormat, VertexAttribute,
-    VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
+    BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferAddress, BufferBindingType,
+    BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthBiasState,
+    DepthStencilState, Device, Face, FragmentState, FrontFace, MultisampleState,
+    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, Queue, RenderPass,
+    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    StencilState, SurfaceConfiguration, TextureFormat, VertexAttribute, VertexBufferLayout,
+    VertexFormat, VertexState, VertexStepMode,
 };
 
 use crate::{
     renderer::ui_renderer::Reticle,
     texture,
-    world::{camera::CameraController, World, CHUNK_DIMENSIONS, VERTICAL_CHUNK_COUNT},
+    world::{camera::CameraController, world_loader::WorldLoader, World},
 };
 
 mod ui_renderer;
@@ -76,26 +73,18 @@ const CUBE_FACE_VERTICES: &[Vertex] = &[
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
 pub struct CubeFaceInstance {
-    pub chunk: [i32; 3],
     pub attributes: u32,
 }
 impl CubeFaceInstance {
     fn desc() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
-            array_stride: (mem::size_of::<[i32; 3]>() + mem::size_of::<u32>()) as BufferAddress,
+            array_stride: mem::size_of::<u32>() as BufferAddress,
             step_mode: VertexStepMode::Instance,
-            attributes: &[
-                VertexAttribute {
-                    offset: 0,
-                    shader_location: 2,
-                    format: VertexFormat::Sint32x3,
-                },
-                VertexAttribute {
-                    offset: mem::size_of::<[i32; 3]>() as BufferAddress,
-                    shader_location: 3,
-                    format: VertexFormat::Uint32,
-                },
-            ],
+            attributes: &[VertexAttribute {
+                offset: 0 as BufferAddress,
+                shader_location: 2,
+                format: VertexFormat::Uint32,
+            }],
         }
     }
 }
@@ -104,18 +93,14 @@ pub struct WorldRenderer {
     device: Arc<Device>,
     queue: Arc<Queue>,
     vertex_buffer: Buffer,
-    instance_buffer: Buffer,
     pub camera_controller: CameraController,
     camera_uniform: Buffer,
     camera_bind_group: BindGroup,
+    chunk_bind_group_layout: BindGroupLayout,
     texture_bind_group: BindGroup,
     render_pipeline: RenderPipeline,
-    buffer_capacity: usize,
-    previous_camera_u: Option<i32>,
-    previous_camera_w: Option<i32>,
     reticle_renderer: ui_renderer::Reticle,
-
-    loading_thread_handle: Vec<JoinHandle<Vec<CubeFaceInstance>>>,
+    world_loader: WorldLoader,
 }
 
 impl WorldRenderer {
@@ -123,6 +108,7 @@ impl WorldRenderer {
         device: Arc<Device>,
         queue: Arc<Queue>,
         surface_config: &SurfaceConfiguration,
+        world: World,
     ) -> Self {
         let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("cube face vertex buffer"),
@@ -130,15 +116,7 @@ impl WorldRenderer {
             usage: BufferUsages::VERTEX,
         });
 
-        // TODO use sensible default size, research `mapped_at_creation`
-        let instance_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("cube face instance buffer"),
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-            size: 0,
-            mapped_at_creation: false,
-        });
-
-        let camera_controller = CameraController::new(
+        let camera_controller: CameraController = CameraController::new(
             glam::Vec3::NEG_X,
             -0.5,
             0.0,
@@ -180,6 +158,20 @@ impl WorldRenderer {
             label: Some("camera bind group"),
         });
 
+        let chunk_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("chunk bind group layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("world shader"),
             source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -190,7 +182,11 @@ impl WorldRenderer {
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("world render pipeline layout"),
-            bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
+            bind_group_layouts: &[
+                &texture_bind_group_layout,
+                &camera_bind_group_layout,
+                &chunk_bind_group_layout,
+            ],
             push_constant_ranges: &[],
         });
 
@@ -235,6 +231,7 @@ impl WorldRenderer {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         });
 
         let reticle_renderer =
@@ -244,152 +241,31 @@ impl WorldRenderer {
             device,
             queue,
             vertex_buffer,
-            instance_buffer,
             camera_controller,
             camera_uniform,
             camera_bind_group,
+            chunk_bind_group_layout,
             texture_bind_group,
             render_pipeline,
-            buffer_capacity: 0,
-            previous_camera_u: None,
-            previous_camera_w: None,
             reticle_renderer,
-
-            loading_thread_handle: Vec::new(),
+            world_loader: WorldLoader::new(world, CHUNK_RENDER_DISTANCE),
         }
     }
 
-    pub fn update(&mut self, world: Arc<Mutex<World>>) {
+    pub fn update(&mut self) {
         self.queue.write_buffer(
             &self.camera_uniform,
             0,
             bytemuck::cast_slice(&[self.camera_controller.get_view_projection_matrix()]),
         );
 
-        if let Some(handle) = self.loading_thread_handle.pop() {
-            if handle.is_finished() {
-                let instances = handle.join().unwrap();
-                if instances.len() > self.buffer_capacity {
-                    self.instance_buffer.destroy();
-                    self.instance_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
-                        label: Some("cube face instance buffer"),
-                        contents: bytemuck::cast_slice(instances.as_slice()),
-                        usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-                    });
-                    self.buffer_capacity = instances.len();
-                } else {
-                    self.queue.write_buffer(
-                        &self.instance_buffer,
-                        0,
-                        bytemuck::cast_slice(instances.as_slice()),
-                    );
-                }
-            } else {
-                self.loading_thread_handle.push(handle);
-            }
-        }
-
-        let camera_u = self.camera_controller.get_position().x as i32 / CHUNK_DIMENSIONS;
-        let camera_w = self.camera_controller.get_position().z as i32 / CHUNK_DIMENSIONS;
-
-        if self.previous_camera_u.is_some_and(|u| u == camera_u)
-            && self.previous_camera_w.is_some_and(|w| w == camera_w)
-        {
-            return;
-        }
-
-        self.previous_camera_u = Some(camera_u);
-        self.previous_camera_w = Some(camera_w);
-
-        let device_clone = Arc::clone(&self.device);
-        // let instance_buffer_clone = self.instance_buffer;
-
-        let handle = thread::spawn(move || {
-            let chunk_range_u =
-                camera_u - CHUNK_RENDER_DISTANCE..camera_u + CHUNK_RENDER_DISTANCE + 1;
-            let chunk_range_w =
-                camera_w - CHUNK_RENDER_DISTANCE..camera_w + CHUNK_RENDER_DISTANCE + 1;
-
-            let mut world_handle = world.lock().unwrap();
-
-            for u in chunk_range_u.clone() {
-                for w in chunk_range_w.clone() {
-                    // TODO error handling
-                    if world_handle.chunk_columns.get(&(u, w)).is_none() {
-                        world_handle.create_chunks(u, w);
-                    }
-                }
-            }
-
-            let mut instances: Vec<&CubeFaceInstance> = Vec::new();
-            for u in chunk_range_u.clone() {
-                for w in chunk_range_w.clone() {
-                    let instances_ = (0..VERTICAL_CHUNK_COUNT)
-                        .flat_map(|v| world_handle.meshed_chunks.get(&(u, v as i32, w)).unwrap())
-                        .collect::<Vec<&CubeFaceInstance>>();
-
-                    instances.extend(instances_);
-                }
-            }
-
-            let instances: Vec<CubeFaceInstance> = instances
-                .iter()
-                .map(|instance| (*instance).to_owned())
-                .collect();
-
-            instances
-        });
-
-        self.loading_thread_handle.push(handle);
-
-        // let chunk_range_u = camera_u - CHUNK_RENDER_DISTANCE..camera_u + CHUNK_RENDER_DISTANCE + 1;
-        // let chunk_range_w = camera_w - CHUNK_RENDER_DISTANCE..camera_w + CHUNK_RENDER_DISTANCE + 1;
-
-        // let handle = thread::spawn(|| {
-        //     let mut instances: Vec<&RawCubeFaceInstance> = Vec::new();
-
-        //     world.chunk_columns.get(&(0, 0));
-        // });
-
-        // for u in chunk_range_u.clone() {
-        //     for w in chunk_range_w.clone() {
-        //         if let None = world.chunk_columns.get(&(u, w)) {
-        //             world.create_chunks(u, w);
-        //         }
-        //     }
-        // }
-
-        // let instances: Vec<&RawCubeFaceInstance> = Vec::new();
-        // for u in chunk_range_u {
-        //     for w in chunk_range_w.clone() {
-        //         instances.extend(
-        //             (0..VERTICAL_CHUNK_COUNT)
-        //                 .flat_map(|v| world.meshed_chunks.get(&(u, v as u32, w)).unwrap())
-        //                 .collect::<Vec<&RawCubeFaceInstance>>(),
-        //         );
-        //     }
-        // }
-
-        // let instances: Vec<RawCubeFaceInstance> = instances
-        //     .iter()
-        //     .map(|instance| *instance.to_owned())
-        //     .collect();
-
-        // if instances.len() > self.buffer_capacity {
-        //     self.instance_buffer.destroy();
-        //     self.instance_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
-        //         label: Some("cube face instance buffer"),
-        //         contents: bytemuck::cast_slice(instances.as_slice()),
-        //         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        //     });
-        //     self.buffer_capacity = instances.len();
-        // } else {
-        //     self.queue.write_buffer(
-        //         &self.instance_buffer,
-        //         0,
-        //         bytemuck::cast_slice(instances.as_slice()),
-        //     );
-        // }
+        self.world_loader
+            .update(&self.camera_controller, Arc::clone(&self.device));
+        self.world_loader.create_buffers(
+            &self.camera_controller,
+            Arc::clone(&self.device),
+            &self.chunk_bind_group_layout,
+        );
     }
 
     pub fn render<'a: 'b, 'b>(&'a self, render_pass: &mut RenderPass<'b>) {
@@ -397,13 +273,23 @@ impl WorldRenderer {
         render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
 
-        render_pass.draw(
-            0..CUBE_FACE_VERTICES.len() as u32,
-            0..self.buffer_capacity as u32,
-        );
+        let (range_u, range_v, range_w) = self
+            .world_loader
+            .visible_chunk_range(&self.camera_controller);
 
+        for u in range_u {
+            for w in range_w.clone() {
+                for v in range_v.clone() {
+                    if let Some(buf) = self.world_loader.get_buffer(u, v as i32, w) {
+                        render_pass.set_bind_group(2, &buf.chunk_bind_group, &[]);
+                        render_pass.set_vertex_buffer(1, buf.instance_buffer.slice(..));
+
+                        render_pass.draw(0..CUBE_FACE_VERTICES.len() as u32, 0..buf.instance_count);
+                    }
+                }
+            }
+        }
         self.reticle_renderer
             .render(render_pass, &self.camera_bind_group);
     }

@@ -10,6 +10,11 @@ use crate::{
     },
 };
 
+pub type ChunkStack = [Chunk; VERTICAL_CHUNK_COUNT];
+pub type ChunkUW = (i32, i32);
+pub type ChunkUVW = (i32, i32, i32);
+
+#[derive(Clone)]
 pub struct Chunk {
     pub u: i32,
     pub v: i32,
@@ -20,27 +25,27 @@ pub struct Chunk {
 impl Chunk {
     pub fn generate_stack(
         noise: &impl NoiseFn<f64, 2>,
-        u: i32,
-        w: i32,
+        uw: ChunkUW,
     ) -> [Self; VERTICAL_CHUNK_COUNT] {
-        const TOTAL_BLOCK_COUNT: i32 = (CHUNK_DIMENSIONS + 2).pow(3);
+        const TOTAL_BLOCK_COUNT: usize = (CHUNK_DIMENSIONS as usize + 2).pow(3);
 
-        let mut blocks = Vec::with_capacity(TOTAL_BLOCK_COUNT as usize);
+        // Directly generating an array with something like [Block::AIR; TOTAL_BLOCK_COUNT] on the stack could cause a stack overflow
+        let mut blocks = Vec::with_capacity(TOTAL_BLOCK_COUNT);
         for _ in 0..TOTAL_BLOCK_COUNT {
             blocks.push(Block::AIR);
         }
 
         let mut chunks: [Chunk; VERTICAL_CHUNK_COUNT] = array::from_fn(|v| Chunk {
-            u,
+            u: uw.0,
             v: v as i32,
-            w,
+            w: uw.1,
             data: blocks.clone().into_boxed_slice(),
         });
 
         for x in (-1)..CHUNK_DIMENSIONS + 1 {
             for z in (-1)..CHUNK_DIMENSIONS + 1 {
-                let nx = u as f64 + (x as f64 / CHUNK_DIMENSIONS as f64) - 0.5;
-                let nz = w as f64 + (z as f64 / CHUNK_DIMENSIONS as f64) - 0.5;
+                let nx = uw.0 as f64 + (x as f64 / CHUNK_DIMENSIONS as f64) - 0.5;
+                let nz = uw.1 as f64 + (z as f64 / CHUNK_DIMENSIONS as f64) - 0.5;
 
                 let mut height = noise.get([0.3 * nx, 0.3 * nz])
                     + 0.5 * noise.get([nx, nz])
@@ -85,20 +90,19 @@ impl Chunk {
     pub fn at(&self, x: i32, y: i32, z: i32) -> &Block {
         if !Chunk::validate_chunk_coordinates(x, y, z) {
             panic!("Invalid chunk coordinates x={} y={} z={} ", x, y, z);
-        } else {
-            &self.data[(((x + 1) * (CHUNK_DIMENSIONS + 2) + y + 1) * (CHUNK_DIMENSIONS + 2) + z + 1)
-                as usize]
         }
+        let index =
+            (((x + 1) * (CHUNK_DIMENSIONS + 2) + y + 1) * (CHUNK_DIMENSIONS + 2) + z + 1) as usize;
+        &self.data[index]
     }
 
     pub fn at_mut(&mut self, x: i32, y: i32, z: i32) -> &mut Block {
         if !Chunk::validate_chunk_coordinates(x, y, z) {
             panic!("Invalid chunk coordinates x={} y={} z={} ", x, y, z);
-        } else {
-            &mut self.data[(((x + 1) * (CHUNK_DIMENSIONS + 2) + y + 1) * (CHUNK_DIMENSIONS + 2)
-                + z
-                + 1) as usize]
         }
+        let index =
+            (((x + 1) * (CHUNK_DIMENSIONS + 2) + y + 1) * (CHUNK_DIMENSIONS + 2) + z + 1) as usize;
+        &mut self.data[index]
     }
 
     pub fn generate_mesh(&self) -> Vec<CubeFaceInstance> {
@@ -144,7 +148,6 @@ impl Chunk {
                             common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
                         instances.push(CubeFaceInstance {
-                            chunk: [self.u, self.v, self.w],
                             attributes: packed_bits,
                         })
                     }
