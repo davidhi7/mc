@@ -2,12 +2,10 @@ use std::array;
 
 use noise::NoiseFn;
 
-use crate::{
-    world::CubeFaceInstance,
-    world::{
-        blocks::{Block, Direction},
-        CHUNK_DIMENSIONS, CHUNK_WIDTH_BITS, VERTICAL_CHUNK_COUNT, WORLD_HEIGHT,
-    },
+use crate::world::{
+    blocks::{Block, Direction},
+    coordinates::Coordinate,
+    CubeFaceInstance, CHUNK_DIMENSIONS, CHUNK_WIDTH_BITS, VERTICAL_CHUNK_COUNT, WORLD_HEIGHT,
 };
 
 pub type ChunkStack = [Chunk; VERTICAL_CHUNK_COUNT];
@@ -96,6 +94,10 @@ impl Chunk {
         &self.data[index]
     }
 
+    pub fn at_coords(&self, coords: Coordinate) -> &Block {
+        self.at(coords.x(), coords.y(), coords.z())
+    }
+
     pub fn at_mut(&mut self, x: i32, y: i32, z: i32) -> &mut Block {
         if !Chunk::validate_chunk_coordinates(x, y, z) {
             panic!("Invalid chunk coordinates x={} y={} z={} ", x, y, z);
@@ -111,28 +113,27 @@ impl Chunk {
         for x in 0..CHUNK_DIMENSIONS {
             for z in 0..CHUNK_DIMENSIONS {
                 for y in 0..CHUNK_DIMENSIONS {
-                    if let Block::AIR = self.at(x, y, z) {
+                    if !self.at(x, y, z).is_solid() {
                         continue;
                     }
 
                     let mut directions = Vec::with_capacity(6);
-
-                    if let Block::AIR = self.at(x - 1, y, z) {
+                    if !self.at(x - 1, y, z).is_solid() {
                         directions.push(Direction::NegX)
                     }
-                    if let Block::AIR = self.at(x + 1, y, z) {
+                    if !self.at(x + 1, y, z).is_solid() {
                         directions.push(Direction::X)
                     }
-                    if let Block::AIR = self.at(x, y - 1, z) {
+                    if !self.at(x, y - 1, z).is_solid() {
                         directions.push(Direction::NegY)
                     }
-                    if let Block::AIR = self.at(x, y + 1, z) {
+                    if !self.at(x, y + 1, z).is_solid() {
                         directions.push(Direction::Y)
                     }
-                    if let Block::AIR = self.at(x, y, z - 1) {
+                    if !self.at(x, y, z - 1).is_solid() {
                         directions.push(Direction::NegZ)
                     }
-                    if let Block::AIR = self.at(x, y, z + 1) {
+                    if !self.at(x, y, z + 1).is_solid() {
                         directions.push(Direction::Z)
                     }
 
@@ -144,11 +145,13 @@ impl Chunk {
                         | ((tex_index as u32) << (CHUNK_WIDTH_BITS * 3));
 
                     for direction in directions {
-                        let packed_bits =
+                        let attributes =
                             common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
                         instances.push(CubeFaceInstance {
-                            attributes: packed_bits,
+                            attributes,
+                            ao_attributes: self
+                                .get_ao_attributes(Coordinate::new(x, y, z), direction),
                         })
                     }
                 }
@@ -156,5 +159,53 @@ impl Chunk {
         }
 
         instances
+    }
+
+    fn get_ao_attributes(&self, block: Coordinate, direction: Direction) -> u32 {
+        let cross_directions = match direction {
+            Direction::NegX => (Direction::Y, Direction::Z),
+            Direction::X => (Direction::Z, Direction::Y),
+
+            Direction::NegY => (Direction::Z, Direction::X),
+            Direction::Y => (Direction::X, Direction::Z),
+
+            Direction::NegZ => (Direction::X, Direction::Y),
+            Direction::Z => (Direction::Y, Direction::X),
+        };
+        let air_block = block.go(direction, 1);
+
+        let mut factor = 0;
+
+        for i in 0..4 {
+            // step 0 is -/-/+/+
+            // step 1 is -/+/-/+
+            let step_0 = if i < 2 { -1 } else { 1 };
+            let step_1 = if i & 1 == 1 { 1 } else { -1 };
+
+            let side_1 = self
+                .at_coords(air_block.go(cross_directions.0, step_0))
+                .is_solid();
+            let side_2 = self
+                .at_coords(air_block.go(cross_directions.1, step_1))
+                .is_solid();
+
+            let corner = self
+                .at_coords(
+                    air_block
+                        .go(cross_directions.0, step_0)
+                        .go(cross_directions.1, step_1),
+                )
+                .is_solid();
+
+            let value = if side_1 && side_2 {
+                3
+            } else {
+                (side_1 as u32) + (side_2 as u32) + (corner as u32)
+            };
+
+            factor |= value << (2 * i);
+        }
+
+        factor
     }
 }

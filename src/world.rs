@@ -7,6 +7,7 @@ use noise::Simplex;
 pub mod blocks;
 pub mod camera;
 pub mod chunk;
+pub mod coordinates;
 pub mod world_loader;
 
 pub const CHUNK_WIDTH_BITS: u32 = 5;

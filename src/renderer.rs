@@ -80,17 +80,30 @@ pub struct CubeFaceInstance {
     /// * `15-23`: texture id
     /// * `23-26`: direction (`crate::world::blocks::Direction`)
     pub attributes: u32,
+    /// Bits starting from the LSB:
+    /// * `0-2`: AO factor for first vertex
+    /// * `2-4`: AO factor for second vertex
+    /// * `4-6`: AO factor for third vertex
+    /// * `6-8`: AO factor for forth vertex
+    pub ao_attributes: u32,
 }
 impl CubeFaceInstance {
     fn desc() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
-            array_stride: mem::size_of::<u32>() as BufferAddress,
+            array_stride: 2 * mem::size_of::<u32>() as BufferAddress,
             step_mode: VertexStepMode::Instance,
-            attributes: &[VertexAttribute {
-                offset: 0 as BufferAddress,
-                shader_location: 2,
-                format: VertexFormat::Uint32,
-            }],
+            attributes: &[
+                VertexAttribute {
+                    offset: 0 as BufferAddress,
+                    shader_location: 2,
+                    format: VertexFormat::Uint32,
+                },
+                VertexAttribute {
+                    offset: mem::size_of::<u32>() as BufferAddress,
+                    shader_location: 3,
+                    format: VertexFormat::Uint32,
+                },
+            ],
         }
     }
 }

@@ -24,6 +24,13 @@ impl Block {
             Block::SNOW => 6,
         }
     }
+
+    pub fn is_solid(&self) -> bool {
+        match self {
+            Block::AIR => false,
+            _ => true,
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
