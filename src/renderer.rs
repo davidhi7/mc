@@ -1,118 +1,35 @@
-use std::{mem, sync::Arc};
+use std::sync::Arc;
 
-use bytemuck::{Pod, Zeroable};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferAddress, BufferBindingType,
-    BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthBiasState,
-    DepthStencilState, Device, Face, FragmentState, FrontFace, MultisampleState,
-    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, Queue, RenderPass,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-    StencilState, SurfaceConfiguration, TextureFormat, VertexAttribute, VertexBufferLayout,
-    VertexFormat, VertexState, VertexStepMode,
+    BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferBindingType, BufferUsages,
+    ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Device,
+    Face, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, PolygonMode,
+    PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor,
+    ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState, SurfaceConfiguration,
+    TextureFormat, VertexState,
 };
 
 use crate::{
-    renderer::ui_renderer::Reticle,
+    renderer::{
+        ui_renderer::Reticle,
+        vertex_buffer::{QuadInstance, QUAD_VERTEX_COUNT},
+    },
     texture,
     world::{camera::CameraController, world_loader::WorldLoader, World},
 };
 
 mod ui_renderer;
 
+pub mod vertex_buffer;
 const CHUNK_RENDER_DISTANCE: u32 = 8;
-
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
-#[repr(C)]
-struct Vertex {
-    pub position: [f32; 3],
-    pub tex_coordinates: [f32; 2],
-}
-impl Vertex {
-    fn desc() -> VertexBufferLayout<'static> {
-        VertexBufferLayout {
-            array_stride: mem::size_of::<Vertex>() as BufferAddress,
-            step_mode: VertexStepMode::Vertex,
-            attributes: &[
-                VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: VertexFormat::Float32x3,
-                },
-                VertexAttribute {
-                    offset: mem::size_of::<[f32; 3]>() as BufferAddress,
-                    shader_location: 1,
-                    format: VertexFormat::Float32x2,
-                },
-            ],
-        }
-    }
-}
-
-// Cube face facing in negative Z direction
-const CUBE_FACE_VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [0.0, 0.0, 0.0],
-        tex_coordinates: [0.0, 1.0],
-    },
-    Vertex {
-        position: [0.0, 1.0, 0.0],
-        tex_coordinates: [0.0, 0.0],
-    },
-    Vertex {
-        position: [1.0, 0.0, 0.0],
-        tex_coordinates: [1.0, 1.0],
-    },
-    Vertex {
-        position: [1.0, 1.0, 0.0],
-        tex_coordinates: [1.0, 0.0],
-    },
-];
-
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
-#[repr(C)]
-pub struct CubeFaceInstance {
-    /// Bits starting from the LSB:
-    /// * `0-5`: x coordinate inside the cunk
-    /// * `5-10`: y coordinate inside the cunk
-    /// * `10-15`: z coordinate inside the cunk
-    /// * `15-23`: texture id
-    /// * `23-26`: direction (`crate::world::blocks::Direction`)
-    pub attributes: u32,
-    /// Bits starting from the LSB:
-    /// * `0-2`: AO factor for first vertex
-    /// * `2-4`: AO factor for second vertex
-    /// * `4-6`: AO factor for third vertex
-    /// * `6-8`: AO factor for forth vertex
-    pub ao_attributes: u32,
-}
-impl CubeFaceInstance {
-    fn desc() -> VertexBufferLayout<'static> {
-        VertexBufferLayout {
-            array_stride: 2 * mem::size_of::<u32>() as BufferAddress,
-            step_mode: VertexStepMode::Instance,
-            attributes: &[
-                VertexAttribute {
-                    offset: 0 as BufferAddress,
-                    shader_location: 2,
-                    format: VertexFormat::Uint32,
-                },
-                VertexAttribute {
-                    offset: mem::size_of::<u32>() as BufferAddress,
-                    shader_location: 3,
-                    format: VertexFormat::Uint32,
-                },
-            ],
-        }
-    }
-}
 
 pub struct WorldRenderer {
     device: Arc<Device>,
     queue: Arc<Queue>,
-    vertex_buffer: Buffer,
     pub camera_controller: CameraController,
+    vertex_bind_group: BindGroup,
     camera_uniform: Buffer,
     camera_bind_group: BindGroup,
     chunk_bind_group_layout: BindGroupLayout,
@@ -129,12 +46,6 @@ impl WorldRenderer {
         surface_config: &SurfaceConfiguration,
         world: World,
     ) -> Self {
-        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("cube face vertex buffer"),
-            contents: bytemuck::cast_slice(CUBE_FACE_VERTICES),
-            usage: BufferUsages::VERTEX,
-        });
-
         let camera_controller: CameraController = CameraController::new(
             glam::Vec3::NEG_X,
             -0.5,
@@ -196,6 +107,8 @@ impl WorldRenderer {
             source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        let (vertex_bind_group_layout, vertex_bind_group) = vertex_buffer::get_bind_group(&device);
+
         let (texture_bind_group_layout, texture_bind_group) =
             texture::load_textures(&device, &queue).unwrap();
 
@@ -204,6 +117,7 @@ impl WorldRenderer {
             bind_group_layouts: &[
                 &texture_bind_group_layout,
                 &camera_bind_group_layout,
+                &vertex_bind_group_layout,
                 &chunk_bind_group_layout,
             ],
             push_constant_ranges: &[],
@@ -215,7 +129,7 @@ impl WorldRenderer {
             vertex: VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc(), CubeFaceInstance::desc()],
+                buffers: &[QuadInstance::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(FragmentState {
@@ -259,8 +173,8 @@ impl WorldRenderer {
         WorldRenderer {
             device,
             queue,
-            vertex_buffer,
             camera_controller,
+            vertex_bind_group,
             camera_uniform,
             camera_bind_group,
             chunk_bind_group_layout,
@@ -291,7 +205,7 @@ impl WorldRenderer {
         render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_bind_group(2, &self.vertex_bind_group, &[]);
 
         let (range_u, range_v, range_w) = self
             .world_loader
@@ -301,10 +215,10 @@ impl WorldRenderer {
             for w in range_w.clone() {
                 for v in range_v.clone() {
                     if let Some(buf) = self.world_loader.get_buffer(u, v as i32, w) {
-                        render_pass.set_bind_group(2, &buf.chunk_bind_group, &[]);
-                        render_pass.set_vertex_buffer(1, buf.instance_buffer.slice(..));
+                        render_pass.set_bind_group(3, &buf.chunk_bind_group, &[]);
+                        render_pass.set_vertex_buffer(0, buf.instance_buffer.slice(..));
 
-                        render_pass.draw(0..CUBE_FACE_VERTICES.len() as u32, 0..buf.instance_count);
+                        render_pass.draw(0..QUAD_VERTEX_COUNT, 0..buf.instance_count);
                     }
                 }
             }

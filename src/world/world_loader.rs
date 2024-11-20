@@ -13,7 +13,7 @@ use wgpu::{
 };
 
 use crate::{
-    renderer::CubeFaceInstance,
+    renderer::vertex_buffer::QuadInstance,
     world::{
         camera::CameraController,
         chunk::{Chunk, ChunkStack, ChunkUW},
@@ -31,7 +31,7 @@ struct ChunkMeshingTaskInput {
 struct ChunkMeshingTaskOutput {
     uw: ChunkUW,
     chunk_stack: ChunkStack,
-    chunk_meshes: [Vec<CubeFaceInstance>; VERTICAL_CHUNK_COUNT],
+    chunk_meshes: [Vec<QuadInstance>; VERTICAL_CHUNK_COUNT],
 }
 
 struct ChunkMeshingTask {
@@ -47,7 +47,7 @@ pub struct ChunkBuffers {
 
 pub struct WorldLoader {
     world: World,
-    chunk_meshes: HashMap<ChunkUW, [Vec<CubeFaceInstance>; VERTICAL_CHUNK_COUNT]>,
+    chunk_meshes: HashMap<ChunkUW, [Vec<QuadInstance>; VERTICAL_CHUNK_COUNT]>,
     buffered_chunks: HashMap<ChunkUW, Vec<Option<ChunkBuffers>>>,
     tasks: Vec<ChunkMeshingTask>,
     chunk_view_distance: u32,
@@ -139,7 +139,7 @@ impl WorldLoader {
 
                     let chunk_meshes = (0..VERTICAL_CHUNK_COUNT)
                         .map(|v| chunk_stack[v].generate_mesh())
-                        .collect::<Vec<Vec<CubeFaceInstance>>>()
+                        .collect::<Vec<Vec<QuadInstance>>>()
                         .try_into()
                         .unwrap();
 

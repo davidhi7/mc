@@ -2,10 +2,13 @@ use std::array;
 
 use noise::NoiseFn;
 
-use crate::world::{
-    blocks::{Block, Direction},
-    coordinates::Coordinate,
-    CubeFaceInstance, CHUNK_DIMENSIONS, CHUNK_WIDTH_BITS, VERTICAL_CHUNK_COUNT, WORLD_HEIGHT,
+use crate::{
+    renderer::vertex_buffer::QuadInstance,
+    world::{
+        blocks::{Block, Direction},
+        coordinates::Coordinate,
+        CHUNK_DIMENSIONS, CHUNK_WIDTH_BITS, VERTICAL_CHUNK_COUNT, WORLD_HEIGHT,
+    },
 };
 
 pub type ChunkStack = [Chunk; VERTICAL_CHUNK_COUNT];
@@ -107,7 +110,7 @@ impl Chunk {
         &mut self.data[index]
     }
 
-    pub fn generate_mesh(&self) -> Vec<CubeFaceInstance> {
+    pub fn generate_mesh(&self) -> Vec<QuadInstance> {
         let mut instances = Vec::new();
 
         for x in 0..CHUNK_DIMENSIONS {
@@ -148,7 +151,7 @@ impl Chunk {
                         let attributes =
                             common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
-                        instances.push(CubeFaceInstance {
+                        instances.push(QuadInstance {
                             attributes,
                             ao_attributes: self
                                 .get_ao_attributes(Coordinate::new(x, y, z), direction),

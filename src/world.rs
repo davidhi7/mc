@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use crate::renderer::CubeFaceInstance;
 use crate::world::chunk::{ChunkStack, ChunkUW};
 use noise::Simplex;
 

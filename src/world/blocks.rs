@@ -1,3 +1,5 @@
+use std::array::IntoIter;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum Block {
@@ -42,4 +44,18 @@ pub enum Direction {
     Y = 3,
     NegZ = 4,
     Z = 5,
+}
+
+impl Direction {
+    pub fn into_iter() -> IntoIter<Direction, 6> {
+        [
+            Direction::NegX,
+            Direction::X,
+            Direction::NegY,
+            Direction::Y,
+            Direction::NegZ,
+            Direction::Z,
+        ]
+        .into_iter()
+    }
 }
