@@ -1,12 +1,12 @@
 use crate::world::blocks::Direction;
 
-pub struct Coordinate {
+pub struct Coordinates {
     coordinates: [i32; 3],
 }
 
-impl Coordinate {
-    pub fn new(x: i32, y: i32, z: i32) -> Coordinate {
-        Coordinate {
+impl Coordinates {
+    pub fn new(x: i32, y: i32, z: i32) -> Coordinates {
+        Coordinates {
             coordinates: [x, y, z],
         }
     }
@@ -18,7 +18,7 @@ impl Coordinate {
         let mut new_coordinates = self.coordinates.clone();
         new_coordinates[dimension] += distance * coefficient;
 
-        Coordinate {
+        Coordinates {
             coordinates: new_coordinates,
         }
     }

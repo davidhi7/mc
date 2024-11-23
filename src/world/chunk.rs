@@ -6,7 +6,7 @@ use crate::{
     renderer::vertex_buffer::QuadInstance,
     world::{
         blocks::{Block, Direction},
-        coordinates::Coordinate,
+        coordinates::Coordinates,
         CHUNK_DIMENSIONS, CHUNK_WIDTH_BITS, VERTICAL_CHUNK_COUNT, WORLD_HEIGHT,
     },
 };
@@ -97,7 +97,7 @@ impl Chunk {
         &self.data[index]
     }
 
-    pub fn at_coords(&self, coords: Coordinate) -> &Block {
+    pub fn at_coords(&self, coords: Coordinates) -> &Block {
         self.at(coords.x(), coords.y(), coords.z())
     }
 
@@ -154,7 +154,7 @@ impl Chunk {
                         instances.push(QuadInstance {
                             attributes,
                             ao_attributes: self
-                                .get_ao_attributes(Coordinate::new(x, y, z), direction),
+                                .get_ao_attributes(Coordinates::new(x, y, z), direction),
                         })
                     }
                 }
@@ -164,7 +164,7 @@ impl Chunk {
         instances
     }
 
-    fn get_ao_attributes(&self, block: Coordinate, direction: Direction) -> u32 {
+    fn get_ao_attributes(&self, block: Coordinates, direction: Direction) -> u32 {
         let cross_directions = match direction {
             Direction::NegX => (Direction::Y, Direction::Z),
             Direction::X => (Direction::Z, Direction::Y),
