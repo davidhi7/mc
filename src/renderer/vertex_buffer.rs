@@ -1,7 +1,7 @@
 use std::mem;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{swizzles::*, vec2, vec3, vec4, Vec2, Vec3, Vec4};
+use glam::{swizzles::*, vec2, vec3, Vec2, Vec3, Vec4};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -88,6 +88,31 @@ impl QuadInstance {
                     format: VertexFormat::Uint32,
                 },
             ],
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[repr(C)]
+pub struct TransparentQuadInstance {
+    /// Bits starting from the LSB:
+    /// * `0-5`: x coordinate inside the cunk
+    /// * `5-10`: y coordinate inside the cunk
+    /// * `10-15`: z coordinate inside the cunk
+    /// * `15-23`: texture id
+    /// * `23-26`: direction (`crate::world::blocks::Direction`)
+    pub attributes: u32,
+}
+impl TransparentQuadInstance {
+    pub fn desc() -> VertexBufferLayout<'static> {
+        VertexBufferLayout {
+            array_stride: mem::size_of::<u32>() as BufferAddress,
+            step_mode: VertexStepMode::Instance,
+            attributes: &[VertexAttribute {
+                offset: 0 as BufferAddress,
+                shader_location: 0,
+                format: VertexFormat::Uint32,
+            }],
         }
     }
 }

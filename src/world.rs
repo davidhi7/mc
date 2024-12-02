@@ -9,11 +9,6 @@ pub mod chunk;
 pub mod coordinates;
 pub mod world_loader;
 
-pub const CHUNK_WIDTH_BITS: u32 = 5;
-pub const CHUNK_DIMENSIONS: i32 = 2_i32.pow(CHUNK_WIDTH_BITS);
-pub const WORLD_HEIGHT: i32 = 256;
-pub const VERTICAL_CHUNK_COUNT: usize = (WORLD_HEIGHT / CHUNK_DIMENSIONS) as usize;
-
 pub struct World {
     pub noise: Simplex,
     pub chunk_stacks: HashMap<ChunkUW, ChunkStack>,

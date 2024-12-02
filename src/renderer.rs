@@ -14,10 +14,14 @@ use wgpu::{
 use crate::{
     renderer::{
         ui_renderer::Reticle,
-        vertex_buffer::{QuadInstance, QUAD_VERTEX_COUNT},
+        vertex_buffer::{QuadInstance, TransparentQuadInstance, QUAD_VERTEX_COUNT},
     },
     texture,
-    world::{camera::CameraController, world_loader::WorldLoader, World},
+    world::{
+        camera::CameraController,
+        world_loader::{ChunkBuffers, WorldLoader},
+        World,
+    },
 };
 
 mod ui_renderer;
@@ -35,6 +39,7 @@ pub struct WorldRenderer {
     chunk_bind_group_layout: BindGroupLayout,
     texture_bind_group: BindGroup,
     render_pipeline: RenderPipeline,
+    water_render_pipeline: RenderPipeline,
     reticle_renderer: ui_renderer::Reticle,
     world_loader: WorldLoader,
 }
@@ -104,7 +109,12 @@ impl WorldRenderer {
 
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("world shader"),
-            source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: ShaderSource::Wgsl(include_str!("renderer/terrain.wgsl").into()),
+        });
+
+        let water_shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("world water shader"),
+            source: ShaderSource::Wgsl(include_str!("renderer/water.wgsl").into()),
         });
 
         let (vertex_bind_group_layout, vertex_bind_group) = vertex_buffer::get_bind_group(&device);
@@ -167,6 +177,51 @@ impl WorldRenderer {
             cache: None,
         });
 
+        let water_render_pipeline: RenderPipeline =
+            device.create_render_pipeline(&RenderPipelineDescriptor {
+                label: Some("world water render pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: VertexState {
+                    module: &water_shader,
+                    entry_point: "vs_main",
+                    buffers: &[TransparentQuadInstance::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(FragmentState {
+                    module: &water_shader,
+                    entry_point: "fs_main",
+                    targets: &[Some(ColorTargetState {
+                        format: surface_config.format,
+                        blend: Some(BlendState::ALPHA_BLENDING),
+                        write_mask: ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: PrimitiveState {
+                    topology: PrimitiveTopology::TriangleStrip,
+                    strip_index_format: None,
+                    front_face: FrontFace::Cw,
+                    cull_mode: Some(Face::Back),
+                    polygon_mode: PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(DepthStencilState {
+                    format: TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: CompareFunction::Less,
+                    stencil: StencilState::default(),
+                    bias: DepthBiasState::default(),
+                }),
+                multisample: MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview: None,
+                cache: None,
+            });
+
         let reticle_renderer =
             Reticle::new(&device, camera_bind_group_layout, surface_config.format);
 
@@ -180,6 +235,7 @@ impl WorldRenderer {
             chunk_bind_group_layout,
             texture_bind_group,
             render_pipeline,
+            water_render_pipeline,
             reticle_renderer,
             world_loader: WorldLoader::new(world, CHUNK_RENDER_DISTANCE),
         }
@@ -192,11 +248,10 @@ impl WorldRenderer {
             bytemuck::cast_slice(&[self.camera_controller.get_view_projection_matrix()]),
         );
 
-        self.world_loader
-            .update(&self.camera_controller, Arc::clone(&self.device));
+        self.world_loader.update(&self.camera_controller);
         self.world_loader.create_buffers(
             &self.camera_controller,
-            Arc::clone(&self.device),
+            &self.device,
             &self.chunk_bind_group_layout,
         );
     }
@@ -211,14 +266,41 @@ impl WorldRenderer {
             .world_loader
             .visible_chunk_range(&self.camera_controller);
 
-        for u in range_u {
+        for u in range_u.clone() {
             for w in range_w.clone() {
                 for v in range_v.clone() {
-                    if let Some(buf) = self.world_loader.get_buffer(u, v as i32, w) {
-                        render_pass.set_bind_group(3, &buf.chunk_bind_group, &[]);
-                        render_pass.set_vertex_buffer(0, buf.instance_buffer.slice(..));
+                    if let Some(ChunkBuffers {
+                        instance_buffer: Some(buffer),
+                        chunk_bind_group,
+                        quad_instance_count,
+                        ..
+                    }) = self.world_loader.get_buffer(u, v as i32, w)
+                    {
+                        render_pass.set_bind_group(3, &chunk_bind_group, &[]);
+                        render_pass.set_vertex_buffer(0, buffer.slice(..));
 
-                        render_pass.draw(0..QUAD_VERTEX_COUNT, 0..buf.instance_count);
+                        render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*quad_instance_count);
+                    }
+                }
+            }
+        }
+
+        render_pass.set_pipeline(&self.water_render_pipeline);
+
+        for u in range_u.clone() {
+            for w in range_w.clone() {
+                for v in range_v.clone() {
+                    if let Some(ChunkBuffers {
+                        transparent_instance_buffer: Some(buffer),
+                        chunk_bind_group,
+                        transparent_quad_instance_count,
+                        ..
+                    }) = self.world_loader.get_buffer(u, v as i32, w)
+                    {
+                        render_pass.set_bind_group(3, &chunk_bind_group, &[]);
+                        render_pass.set_vertex_buffer(0, buffer.slice(..));
+
+                        render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*transparent_quad_instance_count);
                     }
                 }
             }
