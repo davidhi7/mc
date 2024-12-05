@@ -262,49 +262,44 @@ impl WorldRenderer {
         render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.vertex_bind_group, &[]);
 
-        let (range_u, range_v, range_w) = self
+        for uvw in self
             .world_loader
-            .visible_chunk_range(&self.camera_controller);
+            .visible_chunk_range_uvw(&self.camera_controller)
+        {
+            if let Some(ChunkBuffers {
+                instance_buffer: Some(buffer),
+                chunk_bind_group,
+                quad_instance_count,
+                ..
+            }) = self.world_loader.get_buffer(uvw)
+            {
+                render_pass.set_bind_group(3, &chunk_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, buffer.slice(..));
 
-        for u in range_u.clone() {
-            for w in range_w.clone() {
-                for v in range_v.clone() {
-                    if let Some(ChunkBuffers {
-                        instance_buffer: Some(buffer),
-                        chunk_bind_group,
-                        quad_instance_count,
-                        ..
-                    }) = self.world_loader.get_buffer(u, v as i32, w)
-                    {
-                        render_pass.set_bind_group(3, &chunk_bind_group, &[]);
-                        render_pass.set_vertex_buffer(0, buffer.slice(..));
-
-                        render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*quad_instance_count);
-                    }
-                }
+                render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*quad_instance_count);
             }
         }
 
         render_pass.set_pipeline(&self.water_render_pipeline);
 
-        for u in range_u.clone() {
-            for w in range_w.clone() {
-                for v in range_v.clone() {
-                    if let Some(ChunkBuffers {
-                        transparent_instance_buffer: Some(buffer),
-                        chunk_bind_group,
-                        transparent_quad_instance_count,
-                        ..
-                    }) = self.world_loader.get_buffer(u, v as i32, w)
-                    {
-                        render_pass.set_bind_group(3, &chunk_bind_group, &[]);
-                        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        for uvw in self
+            .world_loader
+            .visible_chunk_range_uvw(&self.camera_controller)
+        {
+            if let Some(ChunkBuffers {
+                transparent_instance_buffer: Some(buffer),
+                chunk_bind_group,
+                transparent_quad_instance_count,
+                ..
+            }) = self.world_loader.get_buffer(uvw)
+            {
+                render_pass.set_bind_group(3, &chunk_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, buffer.slice(..));
 
-                        render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*transparent_quad_instance_count);
-                    }
-                }
+                render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*transparent_quad_instance_count);
             }
         }
+
         self.reticle_renderer
             .render(render_pass, &self.camera_bind_group);
     }

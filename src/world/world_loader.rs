@@ -1,6 +1,6 @@
 use std::{
+    cmp,
     collections::HashMap,
-    ops::Range,
     thread::{self, JoinHandle},
     time::Instant,
 };
@@ -14,13 +14,14 @@ use wgpu::{
 use crate::{
     renderer::vertex_buffer::{QuadInstance, TransparentQuadInstance},
     world::{
+        self,
         camera::CameraController,
-        chunk::{Chunk, ChunkStack, ChunkUW, CHUNK_WIDTH, VERTICAL_CHUNK_COUNT},
+        chunk::{Chunk, ChunkStack, ChunkUVW, ChunkUW, VERTICAL_CHUNK_COUNT},
         World,
     },
 };
 
-const CHUNKS_PER_TASK: usize = 19;
+const MAX_CHUNKS_THREAD_LIMIT: usize = 8;
 
 struct ChunkMeshingTaskInput {
     uw: ChunkUW,
@@ -57,6 +58,7 @@ pub struct WorldLoader {
     buffered_chunks: HashMap<ChunkUW, Vec<ChunkBuffers>>,
     tasks: Vec<ChunkMeshingTask>,
     chunk_view_distance: u32,
+    chunks_per_task: usize,
 }
 
 impl WorldLoader {
@@ -65,8 +67,9 @@ impl WorldLoader {
             world,
             chunk_meshes: HashMap::new(),
             buffered_chunks: HashMap::new(),
-            chunk_view_distance,
             tasks: Vec::new(),
+            chunk_view_distance,
+            chunks_per_task: 2 * chunk_view_distance as usize + 1,
         }
     }
 
@@ -92,40 +95,54 @@ impl WorldLoader {
 
         let mut chunks_to_mesh: Vec<ChunkMeshingTaskInput> = Vec::new();
 
-        let (range_u, _, range_w) = self.visible_chunk_range(camera);
-
-        for u in range_u {
-            for w in range_w.clone() {
-                let coords: ChunkUW = (u, w);
-                if self.tasks.iter().any(|task| task.uw_list.contains(&coords)) {
-                    // If chunk is currently generated and/or meshed, continue
-                    continue;
-                }
-                if self.chunk_meshes.get(&coords).is_none() {
-                    // If chunk hasn't been meshed, do so
-                    chunks_to_mesh.push(ChunkMeshingTaskInput {
-                        uw: (coords.0, coords.1),
-                        chunk_stack: self
-                            .world
-                            .chunk_stacks
-                            .get(&coords)
-                            .map_or(None, |chunks| Some(chunks.clone())),
-                    });
-                }
+        for (u, w) in self.visible_chunk_range_uw(camera) {
+            let coords: ChunkUW = (u, w);
+            if self.tasks.iter().any(|task| task.uw_list.contains(&coords)) {
+                // If chunk is currently generated and/or meshed, continue
+                continue;
             }
+            if self.chunk_meshes.get(&coords).is_none() {
+                // If chunk hasn't been meshed, do so
+                chunks_to_mesh.push(ChunkMeshingTaskInput {
+                    uw: (coords.0, coords.1),
+                    chunk_stack: self
+                        .world
+                        .chunk_stacks
+                        .get(&coords)
+                        .map_or(None, |chunks| Some(chunks.clone())),
+                });
+            }
+        }
+
+        if chunks_to_mesh.is_empty() {
+            return;
         }
 
         let mut batches: Vec<Vec<ChunkMeshingTaskInput>> = Vec::new();
         let mut last_batch = Vec::new();
-        for item in chunks_to_mesh.into_iter() {
-            last_batch.push(item);
-            if last_batch.len() == CHUNKS_PER_TASK {
+        let mut chunks_iter = chunks_to_mesh.into_iter();
+
+        while batches.len() + self.tasks.len() < MAX_CHUNKS_THREAD_LIMIT {
+            let next = chunks_iter.next();
+
+            // If no more elements are inside the iterator, save last batch if not empty and break the loop
+            if next.is_none() {
+                if last_batch.len() > 0 {
+                    batches.push(last_batch);
+                }
+                break;
+            }
+
+            // Add new element to last batch
+            if let Some(task_input) = next {
+                last_batch.push(task_input);
+            }
+
+            // Store last batch if it has enough items
+            if last_batch.len() >= self.chunks_per_task {
                 batches.push(last_batch);
                 last_batch = Vec::new();
             }
-        }
-        if !last_batch.is_empty() {
-            batches.push(last_batch);
         }
 
         let noise: Simplex = self.world.noise;
@@ -186,94 +203,78 @@ impl WorldLoader {
         chunk_bind_group_layout: &BindGroupLayout,
     ) {
         // TODO deduplicate code with update function
-        let camera_u = camera.get_position().x as i32 / CHUNK_WIDTH as i32;
-        let camera_w = camera.get_position().z as i32 / CHUNK_WIDTH as i32;
+        for (u, w) in self.visible_chunk_range_uw(camera) {
+            if self
+                .tasks
+                .iter()
+                .any(|task: &ChunkMeshingTask| task.uw_list.contains(&(u, w)))
+            {
+                // If chunk is currently generated or meshed, continue
+                continue;
+            }
+            if !self.buffered_chunks.contains_key(&(u, w))
+                && self.chunk_meshes.contains_key(&(u, w))
+            {
+                // If chunk is meshed but not stored in a wgpu buffer, buffer it
+                let meshed_chunks = self.chunk_meshes.get(&(u, w)).unwrap();
+                let mut chunk_buffers = Vec::new();
+                for v in 0..VERTICAL_CHUNK_COUNT {
+                    let chunk_mesh = &meshed_chunks[v];
 
-        let view_distance_i32 = self.chunk_view_distance as i32;
-        let chunk_range_u = camera_u - view_distance_i32..camera_u + view_distance_i32 + 1;
-        let chunk_range_w = camera_w - view_distance_i32..camera_w + view_distance_i32 + 1;
+                    let instance_buffer = if chunk_mesh.quads.len() == 0 {
+                        None
+                    } else {
+                        Some(device.create_buffer_init(&BufferInitDescriptor {
+                            label: Some(format!("u={u} v={v} w={w} instance buffer").as_str()),
+                            contents: bytemuck::cast_slice(meshed_chunks[v].quads.as_slice()),
+                            usage: BufferUsages::VERTEX,
+                        }))
+                    };
 
-        for u in chunk_range_u {
-            for w in chunk_range_w.clone() {
-                if self
-                    .tasks
-                    .iter()
-                    .any(|task: &ChunkMeshingTask| task.uw_list.contains(&(camera_u, camera_w)))
-                {
-                    // If chunk is currently generated or meshed, continue
-                    continue;
+                    let transparent_instance_buffer = if chunk_mesh.transparent_quads.len() == 0 {
+                        None
+                    } else {
+                        Some(device.create_buffer_init(&BufferInitDescriptor {
+                            label: Some(
+                                format!("u={u} v={v} w={w} transparent instance buffer").as_str(),
+                            ),
+                            contents: bytemuck::cast_slice(
+                                meshed_chunks[v].transparent_quads.as_slice(),
+                            ),
+                            usage: BufferUsages::VERTEX,
+                        }))
+                    };
+
+                    let chunk_uniform: Buffer = device.create_buffer_init(&BufferInitDescriptor {
+                        label: Some(format!("u={u} v={v} w={w} uniform buffer").as_str()),
+                        contents: bytemuck::cast_slice(&[u, v as i32, w, /* alignmnet */ 0]),
+                        usage: BufferUsages::UNIFORM,
+                    });
+
+                    let chunk_bind_group = device.create_bind_group(&BindGroupDescriptor {
+                        label: Some(format!("u={u} v={v} w={w} uniform bind group").as_str()),
+                        layout: chunk_bind_group_layout,
+                        entries: &[BindGroupEntry {
+                            binding: 0,
+                            resource: chunk_uniform.as_entire_binding(),
+                        }],
+                    });
+
+                    chunk_buffers.push(ChunkBuffers {
+                        instance_buffer,
+                        transparent_instance_buffer,
+                        chunk_bind_group,
+                        quad_instance_count: chunk_mesh.quads.len() as u32,
+                        transparent_quad_instance_count: chunk_mesh.transparent_quads.len() as u32,
+                    });
                 }
-                if !self.buffered_chunks.contains_key(&(u, w))
-                    && self.chunk_meshes.contains_key(&(u, w))
-                {
-                    // If chunk is meshed but not stored in a wgpu buffer, buffer it
-                    let meshed_chunks = self.chunk_meshes.get(&(u, w)).unwrap();
-                    let mut chunk_buffers = Vec::new();
-                    for v in 0..VERTICAL_CHUNK_COUNT {
-                        let chunk_mesh = &meshed_chunks[v];
-
-                        let instance_buffer = if chunk_mesh.quads.len() == 0 {
-                            None
-                        } else {
-                            Some(device.create_buffer_init(&BufferInitDescriptor {
-                                label: Some(format!("u={u} v={v} w={w} instance buffer").as_str()),
-                                contents: bytemuck::cast_slice(meshed_chunks[v].quads.as_slice()),
-                                usage: BufferUsages::VERTEX,
-                            }))
-                        };
-
-                        let transparent_instance_buffer = if chunk_mesh.transparent_quads.len() == 0
-                        {
-                            None
-                        } else {
-                            Some(
-                                device.create_buffer_init(&BufferInitDescriptor {
-                                    label: Some(
-                                        format!("u={u} v={v} w={w} transparent instance buffer")
-                                            .as_str(),
-                                    ),
-                                    contents: bytemuck::cast_slice(
-                                        meshed_chunks[v].transparent_quads.as_slice(),
-                                    ),
-                                    usage: BufferUsages::VERTEX,
-                                }),
-                            )
-                        };
-
-                        let chunk_uniform: Buffer =
-                            device.create_buffer_init(&BufferInitDescriptor {
-                                label: Some(format!("u={u} v={v} w={w} uniform buffer").as_str()),
-                                contents: bytemuck::cast_slice(&[
-                                    u, v as i32, w, /* alignmnet */ 0,
-                                ]),
-                                usage: BufferUsages::UNIFORM,
-                            });
-
-                        let chunk_bind_group = device.create_bind_group(&BindGroupDescriptor {
-                            label: Some(format!("u={u} v={v} w={w} uniform bind group").as_str()),
-                            layout: chunk_bind_group_layout,
-                            entries: &[BindGroupEntry {
-                                binding: 0,
-                                resource: chunk_uniform.as_entire_binding(),
-                            }],
-                        });
-
-                        chunk_buffers.push(ChunkBuffers {
-                            instance_buffer,
-                            transparent_instance_buffer,
-                            chunk_bind_group,
-                            quad_instance_count: chunk_mesh.quads.len() as u32,
-                            transparent_quad_instance_count: chunk_mesh.transparent_quads.len()
-                                as u32,
-                        });
-                    }
-                    self.buffered_chunks.insert((u, w), chunk_buffers);
-                }
+                self.buffered_chunks.insert((u, w), chunk_buffers);
             }
         }
     }
 
-    pub fn get_buffer(&self, u: i32, v: i32, w: i32) -> Option<&ChunkBuffers> {
+    pub fn get_buffer(&self, uvw: ChunkUVW) -> Option<&ChunkBuffers> {
+        let (u, v, w) = uvw;
         if self.buffered_chunks.contains_key(&(u, w)) {
             let chunk_stack_buffer = self.buffered_chunks.get(&(u, w));
             let chunk_buffers = chunk_stack_buffer.unwrap().get(v as usize).unwrap();
@@ -282,23 +283,44 @@ impl WorldLoader {
         None
     }
 
-    pub fn visible_chunk_range(
-        &self,
-        camera: &CameraController,
-    ) -> (Range<i32>, Range<u32>, Range<i32>) {
-        let camera_u: i32 = camera.get_position().x as i32 / CHUNK_WIDTH as i32;
-        let camera_v: i32 = camera.get_position().y as i32 / CHUNK_WIDTH as i32;
-        let camera_w = camera.get_position().z as i32 / CHUNK_WIDTH as i32;
+    pub fn visible_chunk_range_uw(&self, camera: &CameraController) -> Vec<ChunkUW> {
+        let (camera_u, _, camera_w) = world::get_chunk_coordinates(camera.get_position());
 
-        let view_distance_i32 = self.chunk_view_distance as i32;
-        let range_u = camera_u - view_distance_i32..camera_u + view_distance_i32 + 1;
-        let range_w = camera_w - view_distance_i32..camera_w + view_distance_i32 + 1;
+        let mut chunks_in_order: Vec<ChunkUW> =
+            Vec::with_capacity((self.chunk_view_distance * 2 + 1).pow(2) as usize);
 
-        let range_v: Range<u32> = i32::max(0, camera_v - view_distance_i32) as u32
-            ..u32::min(
-                VERTICAL_CHUNK_COUNT as u32,
-                (camera_v + view_distance_i32 + 1) as u32,
-            );
-        (range_u, range_v, range_w)
+        chunks_in_order.push((camera_u, camera_w));
+        for radius in 1..=self.chunk_view_distance as i32 {
+            for x in -radius..=radius {
+                chunks_in_order.push((x + camera_u, radius + camera_w));
+                chunks_in_order.push((x + camera_u, -radius + camera_w));
+            }
+
+            for z in -(radius - 1)..radius {
+                chunks_in_order.push((radius + camera_u, z + camera_w));
+                chunks_in_order.push((-radius + camera_u, z + camera_w));
+            }
+        }
+
+        chunks_in_order
+    }
+
+    pub fn visible_chunk_range_uvw(&self, camera: &CameraController) -> Vec<ChunkUVW> {
+        let (_, v, _) = world::get_chunk_coordinates(camera.get_position());
+        self.visible_chunk_range_uw(camera)
+            .into_iter()
+            .flat_map(|uw| {
+                let v_min = cmp::max(0, v - self.chunk_view_distance as i32);
+                let v_max = cmp::min(
+                    VERTICAL_CHUNK_COUNT as i32 - 1,
+                    v + self.chunk_view_distance as i32,
+                );
+
+                (v_min..=v_max)
+                    .into_iter()
+                    .map(move |v| (uw.0, v, uw.1))
+                    .collect::<Vec<ChunkUVW>>()
+            })
+            .collect()
     }
 }

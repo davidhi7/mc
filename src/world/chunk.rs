@@ -13,8 +13,8 @@ use crate::{
 pub const CHUNK_WIDTH_BITS: u32 = 5;
 // TODO make into usize
 pub const CHUNK_WIDTH: u32 = 2_u32.pow(CHUNK_WIDTH_BITS);
+pub const CHUNK_WIDTH_I32: i32 = CHUNK_WIDTH as i32;
 const CHUNK_WIDTH_P: u32 = CHUNK_WIDTH + 2;
-const CHUNK_WIDTH_I32: i32 = CHUNK_WIDTH as i32;
 const CHUNK_WIDTH_P_I32: i32 = CHUNK_WIDTH_P as i32;
 
 pub const VERTICAL_CHUNK_COUNT: usize = 8;
@@ -24,6 +24,7 @@ const MIN_HEIGHT: u32 = 8;
 const SEA_LEVEL: u32 = 24;
 
 pub type ChunkUW = (i32, i32);
+pub type ChunkUVW = (i32, i32, i32);
 
 #[allow(dead_code)]
 #[derive(Clone)]

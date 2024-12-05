@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use crate::world::chunk::{ChunkStack, ChunkUW};
+use crate::world::chunk::{ChunkStack, ChunkUVW, ChunkUW, CHUNK_WIDTH_I32};
+use glam::Vec3;
 use noise::Simplex;
 
 pub mod blocks;
@@ -29,4 +30,12 @@ impl World {
 
         self.chunk_stacks.insert(uw.to_owned(), chunks);
     }
+}
+
+pub fn get_chunk_coordinates(position: Vec3) -> ChunkUVW {
+    let u = position.x as i32 / CHUNK_WIDTH_I32;
+    let v = position.y as i32 / CHUNK_WIDTH_I32;
+    let w = position.z as i32 / CHUNK_WIDTH_I32;
+
+    return (u, v, w);
 }
