@@ -33,7 +33,7 @@ pub struct CameraController {
     perspective: Perspective,
     /// Camera translation per second
     speed: f32,
-    /// Camera rotation per second and mouse movement step, multiplied by pi
+    /// Camera rotation per mouse movement step, multiplied by pi
     sensitivity: f32,
     /// Horizontal camera orientation; 0.0 is facing towards X+ / east
     yaw: f32,
@@ -79,18 +79,17 @@ impl CameraController {
         delta_s: f32,
     ) {
         let (dx, dy) = mouse_movement;
-        let time_adjusted_sensitivity = self.sensitivity * delta_s;
         let time_adjusted_speed = self.speed * delta_s;
         let mut speed_multiplier = 1.0;
 
-        let mut new_yaw = self.yaw - (dx as f32) * time_adjusted_sensitivity;
+        let mut new_yaw = self.yaw - (dx as f32) * self.sensitivity;
         // Normalize yaw value
         new_yaw %= 2.0;
         if new_yaw < 0.0 {
             new_yaw += 2.0;
         }
 
-        let new_pitch = (self.pitch - (dy as f32) * time_adjusted_sensitivity).clamp(-0.5, 0.5);
+        let new_pitch = (self.pitch - (dy as f32) * self.sensitivity).clamp(-0.5, 0.5);
 
         let (yaw_sin, yaw_cos) = ((new_yaw) * PI).sin_cos();
         let (pitch_sin, pitch_cos) = ((new_pitch) * PI).sin_cos();

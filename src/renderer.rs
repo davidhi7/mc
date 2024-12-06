@@ -60,7 +60,7 @@ impl WorldRenderer {
             0.1,
             1000.0,
             10.0,
-            0.1,
+            0.002,
         );
 
         let camera_uniform = device.create_buffer_init(&BufferInitDescriptor {
