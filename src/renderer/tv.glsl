@@ -14,7 +14,7 @@ layout(set = 2, binding = 0) uniform Vertices {
 };
 
 layout(set = 3, binding = 0) uniform Chunk {
-    ivec3 chunk;
+    ivec3 chunk[200];
 };
 
 layout(location = 0) in uint instance_attributes;
@@ -55,7 +55,7 @@ void main() {
 
     uint ao_intensity = (instance_ao_attributes >> (2u * vertex_ao_factor_index)) & 0x3u;
     Vertex vertex = vertices[quad_index * 4u + vertex_index];
-    vec3 global_position = vec3(32 * chunk + chunk_relative_coords) + vertex.position;
+    vec3 global_position = vec3(32 * chunk[0] + chunk_relative_coords) + vertex.position;
 
     gl_Position = view_proj * vec4(global_position, 1.0);
     v_tex_coordinates = vertex.tex_coordinates;

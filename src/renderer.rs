@@ -20,7 +20,7 @@ use crate::{
     texture,
     world::{
         camera::CameraController,
-        world_loader::{ChunkBuffers, WorldLoader},
+        world_loader::{self, ChunkBuffers, WorldLoader},
         World,
     },
 };
@@ -29,7 +29,7 @@ mod indirect_buffer;
 mod ui_renderer;
 
 pub mod vertex_buffer;
-const CHUNK_RENDER_DISTANCE: u32 = 8;
+const CHUNK_RENDER_DISTANCE: u32 = 2;
 
 pub struct WorldRenderer {
     device: Arc<Device>,
@@ -44,8 +44,8 @@ pub struct WorldRenderer {
     water_render_pipeline: RenderPipeline,
     reticle_renderer: ui_renderer::Reticle,
     world_loader: WorldLoader,
-
-    indirect_draw_buffer: Option<MultiDrawIndirectBuffer<QuadInstance>>,
+    // TODO chunk type
+    indirect_draw_buffer: MultiDrawIndirectBuffer<QuadInstance, [i32; 4]>,
 }
 
 impl WorldRenderer {
@@ -242,6 +242,36 @@ impl WorldRenderer {
         let reticle_renderer =
             Reticle::new(&device, camera_bind_group_layout, surface_config.format);
 
+        let mut world_loader = WorldLoader::new(world, CHUNK_RENDER_DISTANCE);
+        world_loader.update(&camera_controller);
+        world_loader.sync_tasks();
+
+        let mut data = Vec::new();
+
+        for uw in world_loader.visible_chunk_range_uw(&camera_controller) {
+            if !world_loader.chunk_meshes.contains_key(&uw) {
+                continue;
+            }
+
+            let chunk_column = world_loader.chunk_meshes.get(&uw).unwrap();
+            chunk_column.iter().enumerate().for_each(|(v, chunk)| {
+                if chunk.quads.len() == 0 {
+                    return;
+                }
+
+                data.push((chunk.quads.as_slice(), [uw.0, v as i32, uw.1, 0]));
+            })
+        }
+
+        let count = data.len();
+
+        let ib = MultiDrawIndirectBuffer::new(
+            &device,
+            "",
+            data,
+            ((2 * CHUNK_RENDER_DISTANCE + 1).pow(2) * 8) as u64,
+        );
+
         WorldRenderer {
             device,
             queue,
@@ -254,8 +284,8 @@ impl WorldRenderer {
             render_pipeline,
             water_render_pipeline,
             reticle_renderer,
-            world_loader: WorldLoader::new(world, CHUNK_RENDER_DISTANCE),
-            indirect_draw_buffer: None,
+            world_loader: world_loader,
+            indirect_draw_buffer: ib,
         }
     }
 
@@ -272,22 +302,6 @@ impl WorldRenderer {
             &self.device,
             &self.chunk_bind_group_layout,
         );
-        if let Some(meshes) = self.world_loader.chunk_meshes.get(&(0, 0)) {
-            if self.indirect_draw_buffer.is_some() {
-                return;
-            }
-            println!("Create buffer");
-            self.indirect_draw_buffer = Some(MultiDrawIndirectBuffer::new(
-                &self.device,
-                &self.queue,
-                "vertex",
-                vec![
-                    meshes.get(0).unwrap().quads.as_slice(),
-                    meshes.get(1).unwrap().quads.as_slice(),
-                ],
-                QuadInstance::desc().array_stride,
-            ));
-        }
     }
 
     pub fn render<'a: 'b, 'b>(&'a self, render_pass: &mut RenderPass<'b>) {
@@ -295,37 +309,42 @@ impl WorldRenderer {
         render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.vertex_bind_group, &[]);
+        render_pass.set_bind_group(3, &self.indirect_draw_buffer.uniform_bind_group, &[]);
 
-        if self.indirect_draw_buffer.is_none() {
-            return;
-        }
+        render_pass.set_vertex_buffer(0, self.indirect_draw_buffer.vertex_buffer.slice(..));
 
-        if let Some(ChunkBuffers {
-            instance_buffer: Some(buffer),
-            chunk_bind_group,
-            quad_instance_count,
-            ..
-        }) = self.world_loader.get_buffer((0, 0, 0))
-        {
-            render_pass.set_bind_group(3, &*chunk_bind_group, &[]);
-            // render_pass.set_vertex_buffer(0, buffer.slice(..));
-            render_pass.set_vertex_buffer(
-                0,
-                self.indirect_draw_buffer
-                    .as_ref()
-                    .unwrap()
-                    .vertex_buffer
-                    .slice(..),
-            );
+        render_pass.multi_draw_indirect(
+            &self.indirect_draw_buffer.indirect_buffer,
+            0,
+            self.indirect_draw_buffer.batches_count as u32,
+        );
 
-            render_pass.multi_draw_indirect(
-                &self.indirect_draw_buffer.as_ref().unwrap().indirect_buffer,
-                0,
-                2,
-            );
+        // if let Some(ChunkBuffers {
+        //     instance_buffer: Some(buffer),
+        //     chunk_bind_group,
+        //     quad_instance_count,
+        //     ..
+        // }) = self.world_loader.get_buffer((0, 0, 0))
+        // {
+        //     render_pass.set_bind_group(3, &*chunk_bind_group, &[]);
+        //     // render_pass.set_vertex_buffer(0, buffer.slice(..));
+        //     render_pass.set_vertex_buffer(
+        //         0,
+        //         self.indirect_draw_buffer
+        //             .as_ref()
+        //             .unwrap()
+        //             .vertex_buffer
+        //             .slice(..),
+        //     );
 
-            // render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*quad_instance_count);
-        }
+        //     render_pass.multi_draw_indirect(
+        //         &self.indirect_draw_buffer.as_ref().unwrap().indirect_buffer,
+        //         0,
+        //         2,
+        //     );
+
+        //     // render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*quad_instance_count);
+        // }
 
         // render_pass.set_pipeline(&self.water_render_pipeline);
 

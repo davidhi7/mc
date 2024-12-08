@@ -2,7 +2,7 @@ use std::{
     cmp,
     collections::HashMap,
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use noise::Simplex;
@@ -194,6 +194,15 @@ impl WorldLoader {
                 handle,
             });
         }
+    }
+
+    pub fn sync_tasks(&mut self) {
+        for task in self.tasks.iter_mut() {
+            while !task.handle.is_finished() {
+                thread::sleep(Duration::from_secs(2));
+            }
+        }
+        self.complete_finished_threads();
     }
 
     pub fn create_buffers(
