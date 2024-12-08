@@ -65,7 +65,7 @@ impl<Vertex: Pod, Uniform: Pod> MultiDrawIndirectBuffer<Vertex, Uniform> {
         let uniform_buffer = device.create_buffer(&BufferDescriptor {
             label: Some(&("chunk uniform buffer ".to_owned() + label)),
             size: batches_count * uniform_stride as u64,
-            usage: BufferUsages::UNIFORM,
+            usage: BufferUsages::STORAGE,
             mapped_at_creation: true,
         });
 
@@ -117,7 +117,7 @@ impl<Vertex: Pod, Uniform: Pod> MultiDrawIndirectBuffer<Vertex, Uniform> {
                     binding: 0,
                     visibility: ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
+                        ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },

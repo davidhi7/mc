@@ -139,13 +139,41 @@ impl WorldRenderer {
         let (texture_bind_group_layout, texture_bind_group) =
             texture::load_textures(&device, &queue).unwrap();
 
+        let mut world_loader = WorldLoader::new(world, CHUNK_RENDER_DISTANCE);
+        world_loader.update(&camera_controller);
+        world_loader.sync_tasks();
+
+        let mut data = Vec::new();
+
+        for uw in world_loader.visible_chunk_range_uw(&camera_controller) {
+            if !world_loader.chunk_meshes.contains_key(&uw) {
+                continue;
+            }
+
+            let chunk_column = world_loader.chunk_meshes.get(&uw).unwrap();
+            chunk_column.iter().enumerate().for_each(|(v, chunk)| {
+                if chunk.quads.len() == 0 {
+                    return;
+                }
+
+                data.push((chunk.quads.as_slice(), [uw.0, v as i32, uw.1, 0]));
+            })
+        }
+
+        let ib = MultiDrawIndirectBuffer::new(
+            &device,
+            "",
+            data,
+            ((2 * CHUNK_RENDER_DISTANCE + 1).pow(2) * 8) as u64,
+        );
+
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("world render pipeline layout"),
             bind_group_layouts: &[
                 &texture_bind_group_layout,
                 &camera_bind_group_layout,
                 &vertex_bind_group_layout,
-                &chunk_bind_group_layout,
+                &ib.uniform_bind_group_layout,
             ],
             push_constant_ranges: &[],
         });
@@ -241,36 +269,6 @@ impl WorldRenderer {
 
         let reticle_renderer =
             Reticle::new(&device, camera_bind_group_layout, surface_config.format);
-
-        let mut world_loader = WorldLoader::new(world, CHUNK_RENDER_DISTANCE);
-        world_loader.update(&camera_controller);
-        world_loader.sync_tasks();
-
-        let mut data = Vec::new();
-
-        for uw in world_loader.visible_chunk_range_uw(&camera_controller) {
-            if !world_loader.chunk_meshes.contains_key(&uw) {
-                continue;
-            }
-
-            let chunk_column = world_loader.chunk_meshes.get(&uw).unwrap();
-            chunk_column.iter().enumerate().for_each(|(v, chunk)| {
-                if chunk.quads.len() == 0 {
-                    return;
-                }
-
-                data.push((chunk.quads.as_slice(), [uw.0, v as i32, uw.1, 0]));
-            })
-        }
-
-        let count = data.len();
-
-        let ib = MultiDrawIndirectBuffer::new(
-            &device,
-            "",
-            data,
-            ((2 * CHUNK_RENDER_DISTANCE + 1).pow(2) * 8) as u64,
-        );
 
         WorldRenderer {
             device,

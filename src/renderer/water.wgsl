@@ -14,7 +14,7 @@ var<uniform> camera: CameraUniform;
 var<uniform> vertices: array<Vertex, 48>;
 
 @group(3) @binding(0)
-var<uniform> chunk: vec3i;
+var<storage> chunk: array<vec3i, 200>;
 
 struct InstanceInput {
     @location(0) attributes: u32,
@@ -42,7 +42,7 @@ fn vs_main(
     let direction = (instance.attributes >> 23) & 0x7;
 
     let vertex = vertices[2 * direction * 4 + vertex_index];
-    let global_position = vec3f(32 * chunk + chunk_relative_coords) + vertex.position;
+    let global_position = vec3f(32 * chunk[0] + chunk_relative_coords) + vertex.position;
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4f(global_position, 1);
