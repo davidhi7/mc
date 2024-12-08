@@ -176,7 +176,9 @@ impl GfxState {
                     required_limits: Limits::default(),
                     required_features: Features::TEXTURE_BINDING_ARRAY
                         | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
-                        | Features::POLYGON_MODE_LINE,
+                        | Features::POLYGON_MODE_LINE
+                        | Features::INDIRECT_FIRST_INSTANCE
+                        | Features::MULTI_DRAW_INDIRECT,
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                 },
                 None,

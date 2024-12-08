@@ -39,9 +39,9 @@ struct ChunkMeshingTask {
     handle: JoinHandle<Vec<ChunkMeshingTaskOutput>>,
 }
 
-struct ChunkMeshes {
-    quads: Vec<QuadInstance>,
-    transparent_quads: Vec<TransparentQuadInstance>,
+pub struct ChunkMeshes {
+    pub quads: Vec<QuadInstance>,
+    pub transparent_quads: Vec<TransparentQuadInstance>,
 }
 
 pub struct ChunkBuffers {
@@ -53,8 +53,8 @@ pub struct ChunkBuffers {
 }
 
 pub struct WorldLoader {
-    world: World,
-    chunk_meshes: HashMap<ChunkUW, Vec<ChunkMeshes>>,
+    pub world: World,
+    pub chunk_meshes: HashMap<ChunkUW, Vec<ChunkMeshes>>,
     buffered_chunks: HashMap<ChunkUW, Vec<ChunkBuffers>>,
     tasks: Vec<ChunkMeshingTask>,
     chunk_view_distance: u32,
