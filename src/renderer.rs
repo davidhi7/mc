@@ -5,10 +5,10 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferBindingType, BufferUsages,
     ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Device,
-    Face, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, PolygonMode,
-    PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor,
-    ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState, SurfaceConfiguration,
-    TextureFormat, VertexState,
+    Face, FragmentState, FrontFace, MultisampleState, PipelineCompilationOptions,
+    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, Queue, RenderPass,
+    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    StencilState, SurfaceConfiguration, TextureFormat, VertexState,
 };
 
 use crate::{
@@ -20,16 +20,17 @@ use crate::{
     texture,
     world::{
         camera::CameraController,
+        chunk::VERTICAL_CHUNK_COUNT,
         world_loader::{self, ChunkBuffers, WorldLoader},
         World,
     },
 };
 
-mod indirect_buffer;
+pub mod indirect_buffer;
 mod ui_renderer;
 
 pub mod vertex_buffer;
-const CHUNK_RENDER_DISTANCE: u32 = 2;
+const CHUNK_RENDER_DISTANCE: u32 = 16;
 
 pub struct WorldRenderer {
     device: Arc<Device>,
@@ -111,22 +112,9 @@ impl WorldRenderer {
             }],
         });
 
-        let shader_vert = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("world shader"),
-            source: ShaderSource::Glsl {
-                shader: include_str!("renderer/tv.glsl").into(),
-                stage: wgpu::naga::ShaderStage::Vertex,
-                defines: Default::default(),
-            },
-        });
-
-        let shader_frag = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("world shader"),
-            source: ShaderSource::Glsl {
-                shader: include_str!("renderer/tf.glsl").into(),
-                stage: wgpu::naga::ShaderStage::Fragment,
-                defines: Default::default(),
-            },
+        let terrain_shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("world terrain shader"),
+            source: ShaderSource::Wgsl(include_str!("renderer/terrain.wgsl").into()),
         });
 
         let water_shader = device.create_shader_module(ShaderModuleDescriptor {
@@ -167,6 +155,13 @@ impl WorldRenderer {
             ((2 * CHUNK_RENDER_DISTANCE + 1).pow(2) * 8) as u64,
         );
 
+        for (loc, region) in ib.occupied_regions.iter() {
+            world_loader.ib_buffered_chunks.insert(
+                (region.uniform[0], region.uniform[1], region.uniform[2]),
+                region.clone(),
+            );
+        }
+
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("world render pipeline layout"),
             bind_group_layouts: &[
@@ -182,20 +177,26 @@ impl WorldRenderer {
             label: Some("world render pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: VertexState {
-                module: &shader_vert,
-                entry_point: Some("main"),
+                module: &terrain_shader,
+                entry_point: Some("vs_main"),
                 buffers: &[QuadInstance::desc()],
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions {
+                    constants: &HashMap::new(),
+                    zero_initialize_workgroup_memory: true,
+                },
             },
             fragment: Some(FragmentState {
-                module: &shader_frag,
-                entry_point: Some("main"),
+                module: &terrain_shader,
+                entry_point: Some("fs_main"),
                 targets: &[Some(ColorTargetState {
                     format: surface_config.format,
                     blend: Some(BlendState::REPLACE),
                     write_mask: ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions {
+                    constants: &HashMap::new(),
+                    zero_initialize_workgroup_memory: true,
+                },
             }),
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleStrip,
@@ -300,6 +301,13 @@ impl WorldRenderer {
             &self.device,
             &self.chunk_bind_group_layout,
         );
+
+        self.world_loader.update_ib(
+            &self.camera_controller,
+            &self.device,
+            &self.queue,
+            &mut self.indirect_draw_buffer,
+        );
     }
 
     pub fn render<'a: 'b, 'b>(&'a self, render_pass: &mut RenderPass<'b>) {
@@ -314,8 +322,17 @@ impl WorldRenderer {
         render_pass.multi_draw_indirect(
             &self.indirect_draw_buffer.indirect_buffer,
             0,
-            self.indirect_draw_buffer.batches_count as u32,
+            self.indirect_draw_buffer.draw_count() as u32,
         );
+
+        let instances: u64 = self
+            .indirect_draw_buffer
+            .occupied_regions
+            .iter()
+            .map(|(i, region)| region.vb_size)
+            .sum();
+
+        println!("{}", instances);
 
         // if let Some(ChunkBuffers {
         //     instance_buffer: Some(buffer),
@@ -360,9 +377,9 @@ impl WorldRenderer {
         //         render_pass.set_bind_group(3, &chunk_bind_group, &[]);
         //         render_pass.set_vertex_buffer(0, buffer.slice(..));
 
-        //         render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*transparent_quad_instance_count);
         //     }
         // }
+        //         render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*transparent_quad_instance_count);
 
         self.reticle_renderer
             .render(render_pass, &self.camera_bind_group);

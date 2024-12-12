@@ -162,7 +162,7 @@ impl GfxState {
 
         let adapter = instance
             .request_adapter(&RequestAdapterOptions {
-                power_preference: PowerPreference::default(),
+                power_preference: PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -177,9 +177,9 @@ impl GfxState {
                     required_features: Features::TEXTURE_BINDING_ARRAY
                         | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
                         | Features::POLYGON_MODE_LINE
-                        | Features::INDIRECT_FIRST_INSTANCE
-                        | Features::MULTI_DRAW_INDIRECT,
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
+                        | Features::MULTI_DRAW_INDIRECT
+                        | Features::INDIRECT_FIRST_INSTANCE,
+                    memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
             )

@@ -14,7 +14,7 @@ var<uniform> camera: CameraUniform;
 var<uniform> vertices: array<Vertex, 48>;
 
 @group(3) @binding(0)
-var<uniform> chunk: vec3i;
+var<storage> chunk: array<vec3i>;
 
 struct InstanceInput {
     @location(0) attributes: u32,
@@ -34,6 +34,9 @@ fn vs_main(
     instance: InstanceInput,
     @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
+    let drawID = vertex_index >> 2;
+    let real_vertex_index = vertex_index % 4;
+
     let chunk_relative_coords = vec3i(
         i32((instance.attributes >>  0) & 0x1F),
         i32((instance.attributes >>  5) & 0x1F),
@@ -48,7 +51,7 @@ fn vs_main(
     let ao_2 = (instance.ao_attributes >> 4) & 3;
     let ao_3 = (instance.ao_attributes >> 6) & 3;
 
-    var vertex_ao_factor_index = vertex_index;
+    var vertex_ao_factor_index = real_vertex_index;
     var quad_index = 2u * direction;
 
     if (ao_0 + ao_3 < ao_1 + ao_2) {
@@ -57,12 +60,12 @@ fn vs_main(
 
         // Map old to new AO attribute index
         var ao_index_permutation = array<u32, 4>(1, 3, 0, 2);
-        vertex_ao_factor_index = ao_index_permutation[vertex_index];
+        vertex_ao_factor_index = ao_index_permutation[real_vertex_index];
     }
 
     let ao_intensity = (instance.ao_attributes >> (2 * vertex_ao_factor_index)) & 0x3;
-    let vertex = vertices[quad_index * 4 + vertex_index];
-    let global_position = vec3f(32 * chunk + chunk_relative_coords) + vertex.position;
+    let vertex = vertices[quad_index * 4 + real_vertex_index];
+    let global_position = vec3f(32 * chunk[drawID] + chunk_relative_coords) + vertex.position;
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4f(global_position, 1);

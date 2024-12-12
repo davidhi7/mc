@@ -1,6 +1,8 @@
 use std::{
     cmp,
     collections::HashMap,
+    iter,
+    process::Command,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -8,11 +10,15 @@ use std::{
 use noise::Simplex;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, Buffer, BufferUsages, Device,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, Buffer, BufferUsages,
+    CommandEncoderDescriptor, Device, Queue,
 };
 
 use crate::{
-    renderer::vertex_buffer::{QuadInstance, TransparentQuadInstance},
+    renderer::{
+        indirect_buffer::{BufferRegion, MultiDrawIndirectBuffer},
+        vertex_buffer::{QuadInstance, TransparentQuadInstance},
+    },
     world::{
         self,
         camera::CameraController,
@@ -59,6 +65,8 @@ pub struct WorldLoader {
     tasks: Vec<ChunkMeshingTask>,
     chunk_view_distance: u32,
     chunks_per_task: usize,
+
+    pub ib_buffered_chunks: HashMap<ChunkUVW, BufferRegion<[i32; 4]>>,
 }
 
 impl WorldLoader {
@@ -70,6 +78,7 @@ impl WorldLoader {
             tasks: Vec::new(),
             chunk_view_distance,
             chunks_per_task: 2 * chunk_view_distance as usize + 1,
+            ib_buffered_chunks: HashMap::new(),
         }
     }
 
@@ -196,6 +205,54 @@ impl WorldLoader {
         }
     }
 
+    pub fn update_ib(
+        &mut self,
+        camera: &CameraController,
+        device: &Device,
+        queue: &Queue,
+        buff: &mut MultiDrawIndirectBuffer<QuadInstance, [i32; 4]>,
+    ) {
+        // let mut cmd_encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+        //     label: Some("World update command encoder"),
+        // });
+        let cam_uvw = world::get_chunk_coordinates(camera.get_position());
+
+        let mut uvw_to_remove = Vec::new();
+        for (uvw, region) in self.ib_buffered_chunks.iter() {
+            if [uvw.0 - cam_uvw.0, uvw.1 - cam_uvw.1, uvw.2 - cam_uvw.2]
+                .map(|i| i.abs() as u32)
+                .iter()
+                .any(|i| *i > self.chunk_view_distance)
+            {
+                buff.drop_region(queue, &region);
+                uvw_to_remove.push(uvw.to_owned());
+            }
+        }
+
+        // TODO implement replace instead of drop followed by insert
+        for uvw in uvw_to_remove {
+            self.ib_buffered_chunks.remove(&uvw).expect("TODO");
+        }
+
+        for (u, v, w) in self.visible_chunk_range_uvw(&camera) {
+            if !self.ib_buffered_chunks.contains_key(&(u, v, w)) {
+                if let Some(meshes) = self.chunk_meshes.get(&(u, w)) {
+                    let slice = meshes.get(v as usize).unwrap();
+
+                    if !slice.quads.is_empty() {
+                        self.ib_buffered_chunks.insert(
+                            (u, v, w),
+                            buff.insert_region(queue, (slice.quads.as_slice(), [u, v, w, 0])),
+                        );
+                    }
+                }
+            }
+        }
+
+        // let cmd_buffer = cmd_encoder.finish();
+        // queue.submit(iter::once(cmd_buffer));
+    }
+
     pub fn sync_tasks(&mut self) {
         for task in self.tasks.iter_mut() {
             while !task.handle.is_finished() {
@@ -300,14 +357,15 @@ impl WorldLoader {
 
         chunks_in_order.push((camera_u, camera_w));
         for radius in 1..=self.chunk_view_distance as i32 {
-            for x in -radius..=radius {
-                chunks_in_order.push((x + camera_u, radius + camera_w));
-                chunks_in_order.push((x + camera_u, -radius + camera_w));
+            for x in (-radius)..=radius {
+                chunks_in_order.push((camera_u + x, camera_w + radius));
+                chunks_in_order.push((camera_u + x, camera_w - radius));
             }
 
+            // TODO fix this line!
             for z in -(radius - 1)..radius {
-                chunks_in_order.push((radius + camera_u, z + camera_w));
-                chunks_in_order.push((-radius + camera_u, z + camera_w));
+                chunks_in_order.push((camera_u + radius, camera_w + z));
+                chunks_in_order.push((camera_u - radius, camera_w + z));
             }
         }
 
@@ -316,7 +374,8 @@ impl WorldLoader {
 
     pub fn visible_chunk_range_uvw(&self, camera: &CameraController) -> Vec<ChunkUVW> {
         let (_, v, _) = world::get_chunk_coordinates(camera.get_position());
-        self.visible_chunk_range_uw(camera)
+        let vec = self
+            .visible_chunk_range_uw(camera)
             .into_iter()
             .flat_map(|uw| {
                 let v_min = cmp::max(0, v - self.chunk_view_distance as i32);
@@ -330,6 +389,8 @@ impl WorldLoader {
                     .map(move |v| (uw.0, v, uw.1))
                     .collect::<Vec<ChunkUVW>>()
             })
-            .collect()
+            .collect();
+
+        vec
     }
 }

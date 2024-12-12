@@ -18,6 +18,6 @@ pollster = "0.3.0"
 wgpu = { version = "23.0.1", features = ["glsl"] }
 winit = "0.30.3"
 
-[profile.dev]
-debug = 0
-strip = "debuginfo"
+#[profile.dev]
+#debug = 0
+#strip = "debuginfo"

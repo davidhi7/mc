@@ -115,7 +115,7 @@ impl Chunk {
         if y == 0 && v > 0 {
             *chunk_stack.chunks[v - 1].at_mut(x, CHUNK_WIDTH_I32, z) = block;
         } else if y == CHUNK_WIDTH - 1 && v < VERTICAL_CHUNK_COUNT - 1 {
-            *chunk_stack.chunks[v + 1].at_mut(x, 0, z) = block;
+            *chunk_stack.chunks[v + 1].at_mut(x, -1, z) = block;
         }
     }
 
