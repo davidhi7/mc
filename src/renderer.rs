@@ -1,14 +1,14 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferBindingType, BufferUsages,
     ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Device,
-    Face, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, PolygonMode,
-    PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor,
-    ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState, SurfaceConfiguration,
-    TextureFormat, VertexState,
+    Face, FragmentState, FrontFace, MultisampleState, PipelineCompilationOptions,
+    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, Queue, RenderPass,
+    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    StencilState, SurfaceConfiguration, TextureFormat, VertexState,
 };
 
 use crate::{
@@ -138,19 +138,25 @@ impl WorldRenderer {
             layout: Some(&render_pipeline_layout),
             vertex: VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[QuadInstance::desc()],
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions {
+                    constants: &HashMap::new(),
+                    zero_initialize_workgroup_memory: false,
+                },
             },
             fragment: Some(FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(ColorTargetState {
                     format: surface_config.format,
                     blend: Some(BlendState::REPLACE),
                     write_mask: ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions {
+                    constants: &HashMap::new(),
+                    zero_initialize_workgroup_memory: false,
+                },
             }),
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleStrip,
@@ -183,19 +189,25 @@ impl WorldRenderer {
                 layout: Some(&render_pipeline_layout),
                 vertex: VertexState {
                     module: &water_shader,
-                    entry_point: "vs_main",
+                    entry_point: Some("vs_main"),
                     buffers: &[TransparentQuadInstance::desc()],
-                    compilation_options: Default::default(),
+                    compilation_options: PipelineCompilationOptions {
+                        constants: &HashMap::new(),
+                        zero_initialize_workgroup_memory: false,
+                    },
                 },
                 fragment: Some(FragmentState {
                     module: &water_shader,
-                    entry_point: "fs_main",
+                    entry_point: Some("fs_main"),
                     targets: &[Some(ColorTargetState {
                         format: surface_config.format,
                         blend: Some(BlendState::ALPHA_BLENDING),
                         write_mask: ColorWrites::ALL,
                     })],
-                    compilation_options: Default::default(),
+                    compilation_options: PipelineCompilationOptions {
+                        constants: &HashMap::new(),
+                        zero_initialize_workgroup_memory: false,
+                    },
                 }),
                 primitive: PrimitiveState {
                     topology: PrimitiveTopology::TriangleStrip,
@@ -273,7 +285,7 @@ impl WorldRenderer {
                 ..
             }) = self.world_loader.get_buffer(uvw)
             {
-                render_pass.set_bind_group(3, &chunk_bind_group, &[]);
+                render_pass.set_bind_group(3, Some(chunk_bind_group), &[]);
                 render_pass.set_vertex_buffer(0, buffer.slice(..));
 
                 render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*quad_instance_count);
@@ -293,7 +305,7 @@ impl WorldRenderer {
                 ..
             }) = self.world_loader.get_buffer(uvw)
             {
-                render_pass.set_bind_group(3, &chunk_bind_group, &[]);
+                render_pass.set_bind_group(3, Some(chunk_bind_group), &[]);
                 render_pass.set_vertex_buffer(0, buffer.slice(..));
 
                 render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*transparent_quad_instance_count);
