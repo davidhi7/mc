@@ -182,7 +182,7 @@ impl WorldRenderer {
                 buffers: &[QuadInstance::desc()],
                 compilation_options: PipelineCompilationOptions {
                     constants: &HashMap::new(),
-                    zero_initialize_workgroup_memory: true,
+                    zero_initialize_workgroup_memory: false,
                 },
             },
             fragment: Some(FragmentState {
@@ -195,7 +195,7 @@ impl WorldRenderer {
                 })],
                 compilation_options: PipelineCompilationOptions {
                     constants: &HashMap::new(),
-                    zero_initialize_workgroup_memory: true,
+                    zero_initialize_workgroup_memory: false,
                 },
             }),
             primitive: PrimitiveState {
@@ -231,7 +231,10 @@ impl WorldRenderer {
                     module: &water_shader,
                     entry_point: Some("vs_main"),
                     buffers: &[TransparentQuadInstance::desc()],
-                    compilation_options: Default::default(),
+                    compilation_options: PipelineCompilationOptions {
+                        constants: &HashMap::new(),
+                        zero_initialize_workgroup_memory: false,
+                    },
                 },
                 fragment: Some(FragmentState {
                     module: &water_shader,
@@ -241,7 +244,10 @@ impl WorldRenderer {
                         blend: Some(BlendState::ALPHA_BLENDING),
                         write_mask: ColorWrites::ALL,
                     })],
-                    compilation_options: Default::default(),
+                    compilation_options: PipelineCompilationOptions {
+                        constants: &HashMap::new(),
+                        zero_initialize_workgroup_memory: false,
+                    },
                 }),
                 primitive: PrimitiveState {
                     topology: PrimitiveTopology::TriangleStrip,
