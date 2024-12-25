@@ -16,7 +16,7 @@ use wgpu::{
 
 use crate::{
     renderer::{
-        indirect_buffer::{BufferRegion, MultiDrawIndirectBuffer},
+        indirect_buffer_manager::{BufferRegion, MultiDrawIndirectBuffer},
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     world::{

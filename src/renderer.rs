@@ -13,7 +13,7 @@ use wgpu::{
 
 use crate::{
     renderer::{
-        indirect_buffer::MultiDrawIndirectBuffer,
+        indirect_buffer_manager::MultiDrawIndirectBuffer,
         ui_renderer::Reticle,
         vertex_buffer::{QuadInstance, TransparentQuadInstance, QUAD_VERTEX_COUNT},
     },
@@ -26,7 +26,7 @@ use crate::{
     },
 };
 
-pub mod indirect_buffer;
+pub mod indirect_buffer_manager;
 mod ui_renderer;
 
 pub mod vertex_buffer;
