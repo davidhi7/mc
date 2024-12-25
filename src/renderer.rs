@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
@@ -15,13 +15,13 @@ use crate::{
     renderer::{
         indirect_buffer_manager::MultiDrawIndirectBuffer,
         ui_renderer::Reticle,
-        vertex_buffer::{QuadInstance, TransparentQuadInstance, QUAD_VERTEX_COUNT},
+        vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     texture,
     world::{
         camera::CameraController,
         chunk::VERTICAL_CHUNK_COUNT,
-        world_loader::{self, ChunkBuffers, WorldLoader},
+        world_loader::{TerrainBuckets, WorldLoader},
         World,
     },
 };
@@ -30,7 +30,7 @@ pub mod indirect_buffer_manager;
 mod ui_renderer;
 
 pub mod vertex_buffer;
-const CHUNK_RENDER_DISTANCE: u32 = 16;
+const CHUNK_RENDER_DISTANCE: u32 = 8;
 
 pub struct WorldRenderer {
     device: Arc<Device>,
@@ -46,7 +46,7 @@ pub struct WorldRenderer {
     reticle_renderer: ui_renderer::Reticle,
     world_loader: WorldLoader,
     // TODO chunk type
-    indirect_draw_buffer: MultiDrawIndirectBuffer<QuadInstance, [i32; 4]>,
+    indirect_draw_buffer: MultiDrawIndirectBuffer<[i32; 4], TerrainBuckets>,
 }
 
 impl WorldRenderer {
@@ -131,36 +131,34 @@ impl WorldRenderer {
         world_loader.update(&camera_controller);
         world_loader.sync_tasks();
 
-        let mut data = Vec::new();
+        // let mut data = Vec::new();
 
-        for uw in world_loader.visible_chunk_range_uw(&camera_controller) {
-            if !world_loader.chunk_meshes.contains_key(&uw) {
-                continue;
-            }
+        // for uw in world_loader.visible_chunk_range_uw(&camera_controller) {
+        //     if !world_loader.chunk_meshes.contains_key(&uw) {
+        //         continue;
+        //     }
 
-            let chunk_column = world_loader.chunk_meshes.get(&uw).unwrap();
-            chunk_column.iter().enumerate().for_each(|(v, chunk)| {
-                if chunk.quads.len() == 0 {
-                    return;
-                }
+        //     let chunk_column = world_loader.chunk_meshes.get(&uw).unwrap();
+        //     chunk_column.iter().enumerate().for_each(|(v, chunk)| {
+        //         if chunk.quads.len() == 0 {
+        //             return;
+        //         }
 
-                data.push((chunk.quads.as_slice(), [uw.0, v as i32, uw.1, 0]));
-            })
-        }
+        //         data.push((chunk.quads.as_slice(), [uw.0, v as i32, uw.1, 0]));
+        //     })
+        // }
 
+        let mut batches_map = HashMap::new();
+        batches_map.insert(TerrainBuckets::SOLID, 10000);
+        batches_map.insert(TerrainBuckets::TRANSPARENT, 5000);
         let ib = MultiDrawIndirectBuffer::new(
             &device,
             "",
-            data,
-            ((2 * CHUNK_RENDER_DISTANCE + 1).pow(2) * 8) as u64,
+            &[TerrainBuckets::SOLID, TerrainBuckets::TRANSPARENT],
+            (2 * CHUNK_RENDER_DISTANCE as usize + 1).pow(2)
+                * usize::min(CHUNK_RENDER_DISTANCE as usize, VERTICAL_CHUNK_COUNT),
+            &batches_map,
         );
-
-        for (loc, region) in ib.occupied_regions.iter() {
-            world_loader.ib_buffered_chunks.insert(
-                (region.uniform[0], region.uniform[1], region.uniform[2]),
-                region.clone(),
-            );
-        }
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("world render pipeline layout"),
@@ -295,11 +293,14 @@ impl WorldRenderer {
     }
 
     pub fn update(&mut self) {
+        let instant = Instant::now();
         self.queue.write_buffer(
             &self.camera_uniform,
             0,
             bytemuck::cast_slice(&[self.camera_controller.get_view_projection_matrix()]),
         );
+
+        let d0 = instant.elapsed();
 
         self.world_loader.update(&self.camera_controller);
         self.world_loader.create_buffers(
@@ -308,12 +309,18 @@ impl WorldRenderer {
             &self.chunk_bind_group_layout,
         );
 
+        let d1 = instant.elapsed();
+
         self.world_loader.update_ib(
             &self.camera_controller,
             &self.device,
             &self.queue,
             &mut self.indirect_draw_buffer,
         );
+
+        let d2 = instant.elapsed();
+
+        // println!("{} {} {}", d0.as_micros(), d1.as_micros(), d2.as_micros());
     }
 
     pub fn render<'a: 'b, 'b>(&'a self, render_pass: &mut RenderPass<'b>) {
@@ -331,14 +338,14 @@ impl WorldRenderer {
             self.indirect_draw_buffer.draw_count() as u32,
         );
 
-        let instances: u64 = self
-            .indirect_draw_buffer
-            .occupied_regions
-            .iter()
-            .map(|(i, region)| region.vb_size)
-            .sum();
+        // let instances: u64 = self
+        //     .indirect_draw_buffer
+        //     .occupied_regions
+        //     .iter()
+        //     .map(|(i, region)| region.vb_size)
+        //     .sum();
 
-        println!("{}", instances);
+        // // println!("{} {}", self.indirect_draw_buffer.draw_count(), instances);
 
         // if let Some(ChunkBuffers {
         //     instance_buffer: Some(buffer),

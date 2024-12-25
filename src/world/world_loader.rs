@@ -1,22 +1,24 @@
+use std::hash::Hash;
+use std::iter;
 use std::{
     cmp,
     collections::HashMap,
-    iter,
-    process::Command,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 use noise::Simplex;
+use wgpu::CommandEncoderDescriptor;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, Buffer, BufferUsages,
-    CommandEncoderDescriptor, Device, Queue,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, Buffer, BufferUsages, Device,
+    Queue,
 };
 
+use crate::renderer::indirect_buffer_manager::BufferRegion;
 use crate::{
     renderer::{
-        indirect_buffer_manager::{BufferRegion, MultiDrawIndirectBuffer},
+        indirect_buffer_manager::{DrawCallBucket, MultiDrawIndirectBuffer},
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     world::{
@@ -26,6 +28,27 @@ use crate::{
         World,
     },
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TerrainBuckets {
+    SOLID,
+    TRANSPARENT,
+}
+
+impl DrawCallBucket for TerrainBuckets {
+    fn instance_size(&self) -> u64 {
+        match *self {
+            TerrainBuckets::SOLID => QuadInstance::desc().array_stride,
+            TerrainBuckets::TRANSPARENT => TransparentQuadInstance::desc().array_stride,
+        }
+    }
+}
+
+impl Hash for TerrainBuckets {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+    }
+}
 
 const MAX_CHUNKS_THREAD_LIMIT: usize = 8;
 
@@ -66,7 +89,7 @@ pub struct WorldLoader {
     chunk_view_distance: u32,
     chunks_per_task: usize,
 
-    pub ib_buffered_chunks: HashMap<ChunkUVW, BufferRegion<[i32; 4]>>,
+    pub ib_buffered_chunks: HashMap<ChunkUVW, BufferRegion>,
 }
 
 impl WorldLoader {
@@ -210,11 +233,12 @@ impl WorldLoader {
         camera: &CameraController,
         device: &Device,
         queue: &Queue,
-        buff: &mut MultiDrawIndirectBuffer<QuadInstance, [i32; 4]>,
+        buff: &mut MultiDrawIndirectBuffer<[i32; 4], TerrainBuckets>,
     ) {
-        // let mut cmd_encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        //     label: Some("World update command encoder"),
-        // });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("Indirect buffer manager update command encoder"),
+        });
+
         let cam_uvw = world::get_chunk_coordinates(camera.get_position());
 
         let mut uvw_to_remove = Vec::new();
@@ -236,21 +260,28 @@ impl WorldLoader {
 
         for (u, v, w) in self.visible_chunk_range_uvw(&camera) {
             if !self.ib_buffered_chunks.contains_key(&(u, v, w)) {
-                if let Some(meshes) = self.chunk_meshes.get(&(u, w)) {
+                if let Some(meshes) = self.buffered_chunks.get(&(u, w)) {
                     let slice = meshes.get(v as usize).unwrap();
 
-                    if !slice.quads.is_empty() {
+                    if !slice.instance_buffer.is_none() {
                         self.ib_buffered_chunks.insert(
                             (u, v, w),
-                            buff.insert_region(queue, (slice.quads.as_slice(), [u, v, w, 0])),
+                            buff.insert_region(
+                                queue,
+                                &mut encoder,
+                                TerrainBuckets::SOLID,
+                                slice.instance_buffer.as_ref().unwrap(),
+                                slice.quad_instance_count as u64,
+                                [u, v, w, 0],
+                            ),
                         );
                     }
                 }
             }
         }
 
-        // let cmd_buffer = cmd_encoder.finish();
-        // queue.submit(iter::once(cmd_buffer));
+        let command_buffer = encoder.finish();
+        queue.submit(iter::once(command_buffer));
     }
 
     pub fn sync_tasks(&mut self) {
@@ -293,7 +324,7 @@ impl WorldLoader {
                         Some(device.create_buffer_init(&BufferInitDescriptor {
                             label: Some(format!("u={u} v={v} w={w} instance buffer").as_str()),
                             contents: bytemuck::cast_slice(meshed_chunks[v].quads.as_slice()),
-                            usage: BufferUsages::VERTEX,
+                            usage: BufferUsages::VERTEX | BufferUsages::COPY_SRC,
                         }))
                     };
 
