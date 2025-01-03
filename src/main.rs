@@ -1,7 +1,8 @@
+mod renderer;
+pub mod tests;
 mod texture;
 mod window;
 mod world;
-mod renderer;
 
 fn main() {
     env_logger::init();

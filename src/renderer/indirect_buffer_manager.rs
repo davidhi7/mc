@@ -5,7 +5,6 @@ use std::{collections::BTreeMap, marker::PhantomData};
 
 use std::fmt::Debug;
 
-use bytemuck::Pod;
 use wgpu::util::DrawIndirectArgs;
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -13,32 +12,67 @@ use wgpu::{
     CommandEncoder, Device, Queue, ShaderStages,
 };
 
-pub trait DrawCallBucket: Copy + Eq + Hash {
+use crate::renderer::buffers::block_allocator::{BlockAllocator, RcBlockAllocator, RcBlockHandle};
+use crate::renderer::buffers::pool_allocator::{PoolAllocator, SegmentHandle};
+use crate::renderer::buffers::{AsBytes, BufferMemoryTarget};
+
+// TODO assess if traits are required
+pub trait DrawCallBucket: Copy + Debug + Eq + Hash {
     /// Size of a single instance, in bytes
     fn instance_size(&self) -> u64;
 }
 
-pub struct MultiDrawIndirectBuffer<Uniform: Pod + Debug, Bucket: DrawCallBucket> {
+// TODO assess if traits are required
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DrawCallHandle<Uniform: Clone + Copy, Bucket: Clone + Copy> {
+    pub uniform: Uniform,
+    pub bucket: Bucket,
+}
+
+#[derive(Debug)]
+pub struct DrawCallData {
+    indirect_buffer_handle: u64,
+    vertex_allocator_handle: SegmentHandle,
+    uniform_allocator_handle: RcBlockHandle,
+    first_instance: u32,
+    instance_count: u32,
+}
+
+pub struct MultiDrawIndirectBuffer<
+    Uniform: Clone + Copy + Debug + Hash + Eq + AsBytes,
+    Bucket: DrawCallBucket,
+    const BUCKET_COUNT: usize,
+> {
     pub indirect_buffer: Buffer,
     pub vertex_buffer: Buffer,
     uniform_buffer: Buffer,
     pub uniform_bind_group_layout: BindGroupLayout,
     pub uniform_bind_group: BindGroup,
-    occupied_regions: BTreeMap<BufferRegion, BufferRegionData<Uniform, Bucket>>,
-    empty_regions: BTreeMap<u64, u64>,
-    batches_count: usize,
+    indirect_buffer_allocator: BlockAllocator<DrawIndirectArgs>,
+    vertex_buffer_allocator: PoolAllocator,
+    uniform_buffer_allocator: RcBlockAllocator<Uniform>,
+    draw_calls: HashMap<DrawCallHandle<Uniform, Bucket>, DrawCallData>,
+    // TOOD rename
+    batches_count: u64,
+    buckets: [Bucket; BUCKET_COUNT],
+    draw_count_per_bucket: [u64; BUCKET_COUNT],
     phantom_uniform: PhantomData<Uniform>,
     phantom_bucket: PhantomData<Bucket>,
 }
 
 const DRAW_ARGS_SIZE: usize = std::mem::size_of::<DrawIndirectArgs>();
 
-impl<Uniform: Pod + Debug, Bucket: DrawCallBucket> MultiDrawIndirectBuffer<Uniform, Bucket> {
+impl<
+        Uniform: Clone + Copy + Debug + Hash + Eq + AsBytes,
+        Bucket: DrawCallBucket,
+        const BUCKET_COUNT: usize,
+    > MultiDrawIndirectBuffer<Uniform, Bucket, BUCKET_COUNT>
+{
     pub fn new(
         device: &Device,
         label: &str,
-        buckets: &[Bucket],
-        batches_count: usize,
+        buckets: [Bucket; BUCKET_COUNT],
+        batches_count: u64,
         max_batch_size_map: &HashMap<Bucket, u64>,
     ) -> Self {
         let mut empty_regions = BTreeMap::new();
@@ -48,13 +82,14 @@ impl<Uniform: Pod + Debug, Bucket: DrawCallBucket> MultiDrawIndirectBuffer<Unifo
             vertex_buffer_size_bytes += batches_count as u64
                 * bucket.instance_size()
                 * *max_batch_size_map
-                    .get(bucket)
-                    .expect("Bucket not valid key in `average_batch_size_map`");
+                    .get(&bucket)
+                    .expect("Bucket not valid key in max_batch_size_map");
         }
 
+        // Indirect buffer contains one slot for every batch and bucket combination
         let indirect_buffer = device.create_buffer(&BufferDescriptor {
             label: Some(&("indirect buffer ".to_owned() + label)),
-            size: (batches_count * DRAW_ARGS_SIZE) as u64,
+            size: batches_count * DRAW_ARGS_SIZE as u64 * BUCKET_COUNT as u64,
             usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -64,9 +99,10 @@ impl<Uniform: Pod + Debug, Bucket: DrawCallBucket> MultiDrawIndirectBuffer<Unifo
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Uniform/storage buffer contains one slot for every batch, optionally referred to by draw calls of multiple buckets
         let uniform_buffer = device.create_buffer(&BufferDescriptor {
             label: Some(&("chunk uniform buffer ".to_owned() + label)),
-            size: (batches_count * std::mem::size_of::<Uniform>()) as u64,
+            size: batches_count * std::mem::size_of::<Uniform>() as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -97,94 +133,80 @@ impl<Uniform: Pod + Debug, Bucket: DrawCallBucket> MultiDrawIndirectBuffer<Unifo
             }],
         });
 
+        let indirect_buffer_allocator = BlockAllocator::new(batches_count * BUCKET_COUNT as u64);
+        let vertex_buffer_allocator = PoolAllocator::new(vertex_buffer_size_bytes);
+        let uniform_buffer_allocator = RcBlockAllocator::new(batches_count);
+
         Self {
+            indirect_buffer_allocator,
             indirect_buffer,
-            vertex_buffer,
-            uniform_buffer,
             uniform_bind_group_layout,
             uniform_bind_group,
-            occupied_regions: BTreeMap::new(),
-            empty_regions,
+            // occupied_regions: HashMap::new(),
+            uniform_buffer_allocator,
+            vertex_buffer_allocator,
             batches_count,
+            buckets,
+            draw_count_per_bucket: [0; BUCKET_COUNT],
+            // stored_uniform_values: HashMap::new(),
             phantom_uniform: PhantomData,
             phantom_bucket: PhantomData,
+            vertex_buffer,
+            uniform_buffer,
+            draw_calls: HashMap::new(),
         }
     }
 
-    pub fn drop_region(&mut self, queue: &Queue, target_region: &BufferRegion) {
+    pub fn drop_region(
+        &mut self,
+        queue: &Queue,
+        command_encoder: &mut CommandEncoder,
+        handle: DrawCallHandle<Uniform, Bucket>,
+    ) {
         // TODO is clone neccessary here?
-        let region_data = self
-            .occupied_regions
-            .get(target_region)
-            .expect("TODO")
-            .clone();
+        let draw_call_data = self.draw_calls.get(&handle).expect("TODO");
 
         // If the region doesn't own the last indirect/uniform buffer slot, fill the slot with another region
-        if region_data.indirect_buffer_slot < self.occupied_regions.len() as u64 - 1 {
-            // Find BufferRegionData instance with highest indirect buffer slot
-            let (.., last_region) = self
-                .occupied_regions
+        if draw_call_data.indirect_buffer_handle % self.batches_count + 1
+            < self.draw_count(handle.bucket)
+        {
+            // Find BufferRegionData instance in the same bucket with highest indirect buffer slot
+            let (last_draw_call_handle, last_draw_call_data) = self
+                .draw_calls
                 .iter()
-                .max_by_key(|(.., region)| region.indirect_buffer_slot)
-                .expect("`occupied_regions` empty");
+                .filter(|&(key, ..)| key.bucket == handle.bucket)
+                .max_by_key(|(.., data)| data.indirect_buffer_handle)
+                .unwrap();
 
-            // Move last draw call & uniform to new empty spot, write to buffers
-            // TODO alignment
-            queue.write_buffer(
-                &self.indirect_buffer,
-                region_data.indirect_buffer_slot * std::mem::size_of::<DrawIndirectArgs>() as u64,
+            let new_indirect_buffer_handle = draw_call_data.indirect_buffer_handle;
+
+            // Move last draw call to new empty slot
+            self.indirect_buffer_allocator.allocate_block(
+                &mut BufferMemoryTarget::new(&self.indirect_buffer, queue, command_encoder),
                 &DrawIndirectArgs {
                     vertex_count: 4,
-                    instance_count: (last_region.region.vb_size
-                        / last_region.bucket.instance_size())
-                        as u32,
-                    first_vertex: 4 * region_data.indirect_buffer_slot as u32,
-                    first_instance: (last_region.region.vb_location
-                        / last_region.bucket.instance_size())
-                        as u32,
-                }
-                .as_bytes(),
+                    instance_count: last_draw_call_data.instance_count,
+                    first_vertex: 4 * *last_draw_call_data.uniform_allocator_handle as u32,
+                    first_instance: last_draw_call_data.first_instance,
+                },
+                new_indirect_buffer_handle,
             );
 
-            queue.write_buffer(
-                &self.uniform_buffer,
-                region_data.indirect_buffer_slot * std::mem::size_of::<Uniform>() as u64,
-                bytemuck::bytes_of(&last_region.uniform),
-            );
-
-            self.occupied_regions
-                .entry(last_region.region)
-                .and_modify(|entry| entry.indirect_buffer_slot = region_data.indirect_buffer_slot);
+            // TODO improve
+            self.draw_calls
+                .entry(last_draw_call_handle.clone())
+                .and_modify(|entry| entry.indirect_buffer_handle = new_indirect_buffer_handle);
         }
 
-        self.occupied_regions
-            .remove(target_region)
-            .expect("Region `target_region` key missing in `occupied_regions`");
+        self.vertex_buffer_allocator.deallocate(
+            &self
+                .draw_calls
+                .remove(&handle)
+                .expect("Region `target_region` key missing in `occupied_regions`")
+                .vertex_allocator_handle,
+        );
 
-        // Mark region as empty
-        // TODO check whether to enforce this
-        let following_empty_region = self
-            .empty_regions
-            .remove(&(&region_data.region.vb_location + &region_data.region.vb_size));
-
-        let empty_region_before = self
-            .empty_regions
-            .iter()
-            .filter(|(vb_location, vb_size)| {
-                **vb_location + **vb_size == region_data.region.vb_location
-            })
-            .last();
-
-        let mut new_region_location = region_data.region.vb_location;
-        let mut new_region_size: u64 =
-            region_data.region.vb_size + following_empty_region.unwrap_or(0);
-
-        if let Some((location, size)) = empty_region_before {
-            new_region_location = *location;
-            new_region_size += size;
-        }
-        self.empty_regions
-            .insert(new_region_location, new_region_size);
+        self.draw_count_per_bucket[self.bucket_id(handle.bucket)] -= 1;
     }
 
     pub fn insert_region(
@@ -193,118 +215,95 @@ impl<Uniform: Pod + Debug, Bucket: DrawCallBucket> MultiDrawIndirectBuffer<Unifo
         command_encoder: &mut CommandEncoder,
         bucket: Bucket,
         batch_vb: &Buffer,
-        batch_instance_count: u64,
+        instance_count: u32,
         uniform: Uniform,
-    ) -> BufferRegion {
-        if self.batches_count < self.occupied_regions.len() + 1 {
+    ) -> DrawCallHandle<Uniform, Bucket> {
+        if self.batches_count < self.draw_count_per_bucket[self.bucket_id(bucket)] + 1 {
             panic!(
-                "Not enough indirect buffer space available for {} regions",
-                self.occupied_regions.len() + 1
+                "Not enough indirect buffer space available for {} regions in bucket {:?}",
+                self.draw_count_per_bucket[self.bucket_id(bucket)] as usize + 1,
+                bucket
             );
         }
 
-        let (new_region_offset, new_region_size) = self
-            .empty_regions
+        let vertex_allocator_handle = self.vertex_buffer_allocator.allocate_from_buffer(
+            &mut BufferMemoryTarget::new(&self.vertex_buffer, queue, command_encoder),
+            batch_vb,
+            instance_count as u64 * bucket.instance_size(),
+            bucket.instance_size(),
+        );
+        let first_instance = (vertex_allocator_handle.offset / bucket.instance_size()) as u32;
+
+        // TODO use block_allocator functionality
+        let indirect_buffer_handle =
+            self.indirect_buffer_bucket_position_offset(bucket, self.draw_count(bucket));
+
+        let uniform_allocator_handle = if let Some(entry) = self
+            .draw_calls
             .iter()
-            .filter(|(.., size)| **size >= batch_instance_count * bucket.instance_size())
-            .min_by_key(|(.., size)| **size)
-            .expect(&format!(
-                "Not enough vertex buffer space available for region of size {}",
-                batch_instance_count * bucket.instance_size()
-            ));
+            .find(|(key, value)| key.uniform == uniform)
+        {
+            entry.1.uniform_allocator_handle.clone()
+        } else {
+            let handle = self.uniform_buffer_allocator.allocate_first_free_block(
+                &mut BufferMemoryTarget::new(&self.uniform_buffer, queue, command_encoder),
+                &uniform,
+            );
 
-        let new_region_offset = *new_region_offset;
-        let new_region_size = *new_region_size;
-
-        let indirect_buffer_slot = self.occupied_regions.len() as u64;
-        let region_data = BufferRegionData {
-            region: BufferRegion {
-                vb_location: new_region_offset,
-                vb_size: batch_instance_count * bucket.instance_size(),
-            },
-            indirect_buffer_slot,
-            uniform,
-            bucket,
+            handle
         };
 
-        // TODO handle alignment!
-        self.occupied_regions
-            .insert(region_data.region, region_data);
-        queue.write_buffer(
-            &self.indirect_buffer,
-            indirect_buffer_slot * std::mem::size_of::<DrawIndirectArgs>() as u64,
+        // TODO validate in block_allocator
+        self.indirect_buffer_allocator.allocate_block(
+            &mut BufferMemoryTarget::new(&self.indirect_buffer, queue, command_encoder),
             &DrawIndirectArgs {
                 vertex_count: 4,
-                instance_count: batch_instance_count as u32,
-                first_vertex: 4 * indirect_buffer_slot as u32,
-                first_instance: region_data.region.vb_location as u32
-                    / bucket.instance_size() as u32,
-            }
-            .as_bytes(),
-        );
-        queue.write_buffer(
-            &self.uniform_buffer,
-            indirect_buffer_slot * std::mem::size_of::<Uniform>() as u64,
-            bytemuck::bytes_of(&uniform),
-        );
-        command_encoder.copy_buffer_to_buffer(
-            batch_vb,
-            0,
-            &self.vertex_buffer,
-            new_region_offset,
-            batch_instance_count * bucket.instance_size(),
+                instance_count: instance_count,
+                first_vertex: 4 * *uniform_allocator_handle as u32,
+                first_instance: first_instance,
+            },
+            indirect_buffer_handle,
         );
 
-        self.empty_regions.remove(&new_region_offset);
-        if new_region_size > region_data.region.vb_size {
-            self.empty_regions.insert(
-                new_region_offset + region_data.region.vb_size,
-                new_region_size - region_data.region.vb_size,
-            );
-        }
+        let draw_call_handle = DrawCallHandle { uniform, bucket };
 
-        region_data.region
+        self.draw_calls.insert(
+            draw_call_handle,
+            DrawCallData {
+                indirect_buffer_handle,
+                vertex_allocator_handle,
+                uniform_allocator_handle,
+                first_instance,
+                instance_count,
+            },
+        );
+
+        self.draw_count_per_bucket[self.bucket_id(bucket)] += 1;
+
+        draw_call_handle
     }
 
-    pub fn draw_count(&self) -> u32 {
-        self.occupied_regions.len() as u32
+    pub fn draw_count(&self, bucket: Bucket) -> u64 {
+        self.draw_count_per_bucket[self.bucket_id(bucket)]
     }
-}
 
-/// Struct describing a segment in the vertex/instance buffer
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BufferRegion {
-    /// Offset of the vertex/instance buffer segment, in bytes
-    vb_location: u64,
-    /// Size of the vertex/instance buffer segment, in bytes
-    vb_size: u64,
-}
-
-impl PartialOrd for BufferRegion {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        match self.vb_location.partial_cmp(&other.vb_location) {
-            Some(core::cmp::Ordering::Equal) => {}
-            ord => return ord,
-        }
-        self.vb_size.partial_cmp(&other.vb_size)
+    fn bucket_id(&self, bucket: Bucket) -> usize {
+        self.buckets
+            .iter()
+            .position(|&b| b == bucket)
+            .expect("Invalid bucket provided")
     }
-}
 
-impl Ord for BufferRegion {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(other).unwrap()
+    // TODO function für position mit offset
+    pub fn indirect_buffer_bucket_offset(&self, bucket: Bucket) -> u64 {
+        self.batches_count * self.bucket_id(bucket) as u64
     }
-}
 
-/// Struct describing a segment in the vertex/instance buffer as well as indirect- and uniform buffer
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BufferRegionData<Uniform: Pod, Bucket: DrawCallBucket> {
-    /// Data describing associated vertex/instance buffer segment
-    region: BufferRegion,
-    /// Slot of the corresponding draw call and uniform entry in the indirect/uniform buffers
-    indirect_buffer_slot: u64,
-    /// Uniform data
-    uniform: Uniform,
-    /// Bucket type
-    bucket: Bucket,
+    pub fn indirect_buffer_bucket_position_offset(&self, bucket: Bucket, position: u64) -> u64 {
+        self.indirect_buffer_bucket_offset(bucket) + position
+    }
+
+    pub fn indirect_buffer_bucket_offset_bytes(&self, bucket: Bucket) -> u64 {
+        self.indirect_buffer_bucket_offset(bucket) * DRAW_ARGS_SIZE as u64
+    }
 }

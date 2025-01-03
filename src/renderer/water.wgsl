@@ -14,7 +14,7 @@ var<uniform> camera: CameraUniform;
 var<uniform> vertices: array<Vertex, 48>;
 
 @group(3) @binding(0)
-var<storage> chunk: array<vec3i, 200>;
+var<storage> chunk: array<vec3i>;
 
 struct InstanceInput {
     @location(0) attributes: u32,
@@ -32,6 +32,9 @@ fn vs_main(
     instance: InstanceInput,
     @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
+    let drawID = vertex_index >> 2;
+    let real_vertex_index = vertex_index % 4;
+
     let chunk_relative_coords = vec3i(
         i32((instance.attributes >>  0) & 0x1F),
         i32((instance.attributes >>  5) & 0x1F),
@@ -41,8 +44,8 @@ fn vs_main(
     let tex_index = (instance.attributes >> 15) & 0xFF;
     let direction = (instance.attributes >> 23) & 0x7;
 
-    let vertex = vertices[2 * direction * 4 + vertex_index];
-    let global_position = vec3f(32 * chunk[0] + chunk_relative_coords) + vertex.position;
+    let vertex = vertices[2 * direction * 4 + real_vertex_index];
+    let global_position = vec3f(32 * chunk[drawID] + chunk_relative_coords) + vertex.position;
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4f(global_position, 1);

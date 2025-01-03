@@ -15,7 +15,7 @@ use wgpu::{
     Queue,
 };
 
-use crate::renderer::indirect_buffer_manager::BufferRegion;
+use crate::renderer::indirect_buffer_manager::DrawCallHandle;
 use crate::{
     renderer::{
         indirect_buffer_manager::{DrawCallBucket, MultiDrawIndirectBuffer},
@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerrainBuckets {
     SOLID,
     TRANSPARENT,
@@ -89,7 +89,7 @@ pub struct WorldLoader {
     chunk_view_distance: u32,
     chunks_per_task: usize,
 
-    pub ib_buffered_chunks: HashMap<ChunkUVW, BufferRegion>,
+    pub ib_buffered_chunks: Vec<DrawCallHandle<[i32; 4], TerrainBuckets>>,
 }
 
 impl WorldLoader {
@@ -101,7 +101,7 @@ impl WorldLoader {
             tasks: Vec::new(),
             chunk_view_distance,
             chunks_per_task: 2 * chunk_view_distance as usize + 1,
-            ib_buffered_chunks: HashMap::new(),
+            ib_buffered_chunks: Vec::new(),
         }
     }
 
@@ -233,7 +233,7 @@ impl WorldLoader {
         camera: &CameraController,
         device: &Device,
         queue: &Queue,
-        buff: &mut MultiDrawIndirectBuffer<[i32; 4], TerrainBuckets>,
+        buff: &mut MultiDrawIndirectBuffer<[i32; 4], TerrainBuckets, 2>,
     ) {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("Indirect buffer manager update command encoder"),
@@ -241,40 +241,61 @@ impl WorldLoader {
 
         let cam_uvw = world::get_chunk_coordinates(camera.get_position());
 
-        let mut uvw_to_remove = Vec::new();
-        for (uvw, region) in self.ib_buffered_chunks.iter() {
-            if [uvw.0 - cam_uvw.0, uvw.1 - cam_uvw.1, uvw.2 - cam_uvw.2]
-                .map(|i| i.abs() as u32)
-                .iter()
-                .any(|i| *i > self.chunk_view_distance)
+        self.ib_buffered_chunks.retain(|handle| {
+            if [
+                handle.uniform[0] - cam_uvw.0,
+                handle.uniform[1] - cam_uvw.1,
+                handle.uniform[2] - cam_uvw.2,
+            ]
+            .map(|i| i.abs() as u32)
+            .iter()
+            .any(|i| *i > self.chunk_view_distance)
             {
-                buff.drop_region(queue, &region);
-                uvw_to_remove.push(uvw.to_owned());
+                buff.drop_region(queue, &mut encoder, *handle);
+                false
+            } else {
+                true
             }
-        }
-
-        // TODO implement replace instead of drop followed by insert
-        for uvw in uvw_to_remove {
-            self.ib_buffered_chunks.remove(&uvw).expect("TODO");
-        }
+        });
 
         for (u, v, w) in self.visible_chunk_range_uvw(&camera) {
-            if !self.ib_buffered_chunks.contains_key(&(u, v, w)) {
+            // TODO refactor
+            if !self.ib_buffered_chunks.contains(&DrawCallHandle {
+                uniform: [u, v, w, 0],
+                bucket: TerrainBuckets::SOLID,
+            }) {
                 if let Some(meshes) = self.buffered_chunks.get(&(u, w)) {
                     let slice = meshes.get(v as usize).unwrap();
 
                     if !slice.instance_buffer.is_none() {
-                        self.ib_buffered_chunks.insert(
-                            (u, v, w),
-                            buff.insert_region(
-                                queue,
-                                &mut encoder,
-                                TerrainBuckets::SOLID,
-                                slice.instance_buffer.as_ref().unwrap(),
-                                slice.quad_instance_count as u64,
-                                [u, v, w, 0],
-                            ),
-                        );
+                        self.ib_buffered_chunks.push(buff.insert_region(
+                            queue,
+                            &mut encoder,
+                            TerrainBuckets::SOLID,
+                            slice.instance_buffer.as_ref().unwrap(),
+                            slice.quad_instance_count,
+                            [u, v, w, 0],
+                        ));
+                    }
+                }
+            }
+
+            if !self.ib_buffered_chunks.contains(&DrawCallHandle {
+                uniform: [u, v, w, 0],
+                bucket: TerrainBuckets::TRANSPARENT,
+            }) {
+                if let Some(meshes) = self.buffered_chunks.get(&(u, w)) {
+                    let slice = meshes.get(v as usize).unwrap();
+
+                    if !slice.transparent_instance_buffer.is_none() {
+                        self.ib_buffered_chunks.push(buff.insert_region(
+                            queue,
+                            &mut encoder,
+                            TerrainBuckets::TRANSPARENT,
+                            slice.transparent_instance_buffer.as_ref().unwrap(),
+                            slice.transparent_quad_instance_count,
+                            [u, v, w, 0],
+                        ));
                     }
                 }
             }
@@ -324,7 +345,7 @@ impl WorldLoader {
                         Some(device.create_buffer_init(&BufferInitDescriptor {
                             label: Some(format!("u={u} v={v} w={w} instance buffer").as_str()),
                             contents: bytemuck::cast_slice(meshed_chunks[v].quads.as_slice()),
-                            usage: BufferUsages::VERTEX | BufferUsages::COPY_SRC,
+                            usage: BufferUsages::COPY_SRC,
                         }))
                     };
 
@@ -338,7 +359,7 @@ impl WorldLoader {
                             contents: bytemuck::cast_slice(
                                 meshed_chunks[v].transparent_quads.as_slice(),
                             ),
-                            usage: BufferUsages::VERTEX,
+                            usage: BufferUsages::COPY_SRC,
                         }))
                     };
 

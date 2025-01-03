@@ -13,6 +13,7 @@ use wgpu::{
 
 use crate::{
     renderer::{
+        buffers::AsBytes,
         indirect_buffer_manager::MultiDrawIndirectBuffer,
         ui_renderer::Reticle,
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
@@ -26,11 +27,18 @@ use crate::{
     },
 };
 
+impl AsBytes for [i32; 4] {
+    fn get_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+}
+
+mod buffers;
 pub mod indirect_buffer_manager;
 mod ui_renderer;
 
 pub mod vertex_buffer;
-const CHUNK_RENDER_DISTANCE: u32 = 8;
+const CHUNK_RENDER_DISTANCE: u32 = 1;
 
 pub struct WorldRenderer {
     device: Arc<Device>,
@@ -46,7 +54,7 @@ pub struct WorldRenderer {
     reticle_renderer: ui_renderer::Reticle,
     world_loader: WorldLoader,
     // TODO chunk type
-    indirect_draw_buffer: MultiDrawIndirectBuffer<[i32; 4], TerrainBuckets>,
+    indirect_draw_buffer: MultiDrawIndirectBuffer<[i32; 4], TerrainBuckets, 2>,
 }
 
 impl WorldRenderer {
@@ -148,15 +156,19 @@ impl WorldRenderer {
         //     })
         // }
 
+        // TODO find proper values
         let mut batches_map = HashMap::new();
-        batches_map.insert(TerrainBuckets::SOLID, 10000);
-        batches_map.insert(TerrainBuckets::TRANSPARENT, 5000);
+        batches_map.insert(TerrainBuckets::SOLID, 5000);
+        batches_map.insert(TerrainBuckets::TRANSPARENT, 2000);
         let ib = MultiDrawIndirectBuffer::new(
             &device,
             "",
-            &[TerrainBuckets::SOLID, TerrainBuckets::TRANSPARENT],
-            (2 * CHUNK_RENDER_DISTANCE as usize + 1).pow(2)
-                * usize::min(CHUNK_RENDER_DISTANCE as usize, VERTICAL_CHUNK_COUNT),
+            [TerrainBuckets::SOLID, TerrainBuckets::TRANSPARENT],
+            (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
+                * u64::min(
+                    CHUNK_RENDER_DISTANCE as u64 * 2 + 1,
+                    VERTICAL_CHUNK_COUNT as u64,
+                ),
             &batches_map,
         );
 
@@ -300,8 +312,6 @@ impl WorldRenderer {
             bytemuck::cast_slice(&[self.camera_controller.get_view_projection_matrix()]),
         );
 
-        let d0 = instant.elapsed();
-
         self.world_loader.update(&self.camera_controller);
         self.world_loader.create_buffers(
             &self.camera_controller,
@@ -309,90 +319,37 @@ impl WorldRenderer {
             &self.chunk_bind_group_layout,
         );
 
-        let d1 = instant.elapsed();
-
         self.world_loader.update_ib(
             &self.camera_controller,
             &self.device,
             &self.queue,
             &mut self.indirect_draw_buffer,
         );
-
-        let d2 = instant.elapsed();
-
-        // println!("{} {} {}", d0.as_micros(), d1.as_micros(), d2.as_micros());
     }
 
     pub fn render<'a: 'b, 'b>(&'a self, render_pass: &mut RenderPass<'b>) {
-        render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.vertex_bind_group, &[]);
         render_pass.set_bind_group(3, &self.indirect_draw_buffer.uniform_bind_group, &[]);
-
         render_pass.set_vertex_buffer(0, self.indirect_draw_buffer.vertex_buffer.slice(..));
 
+        render_pass.set_pipeline(&self.render_pipeline);
         render_pass.multi_draw_indirect(
             &self.indirect_draw_buffer.indirect_buffer,
-            0,
-            self.indirect_draw_buffer.draw_count() as u32,
+            self.indirect_draw_buffer
+                .indirect_buffer_bucket_offset_bytes(TerrainBuckets::SOLID),
+            self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) as u32,
         );
 
-        // let instances: u64 = self
-        //     .indirect_draw_buffer
-        //     .occupied_regions
-        //     .iter()
-        //     .map(|(i, region)| region.vb_size)
-        //     .sum();
-
-        // // println!("{} {}", self.indirect_draw_buffer.draw_count(), instances);
-
-        // if let Some(ChunkBuffers {
-        //     instance_buffer: Some(buffer),
-        //     chunk_bind_group,
-        //     quad_instance_count,
-        //     ..
-        // }) = self.world_loader.get_buffer((0, 0, 0))
-        // {
-        //     render_pass.set_bind_group(3, &*chunk_bind_group, &[]);
-        //     // render_pass.set_vertex_buffer(0, buffer.slice(..));
-        //     render_pass.set_vertex_buffer(
-        //         0,
-        //         self.indirect_draw_buffer
-        //             .as_ref()
-        //             .unwrap()
-        //             .vertex_buffer
-        //             .slice(..),
-        //     );
-
-        //     render_pass.multi_draw_indirect(
-        //         &self.indirect_draw_buffer.as_ref().unwrap().indirect_buffer,
-        //         0,
-        //         2,
-        //     );
-
-        //     // render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*quad_instance_count);
-        // }
-
-        // render_pass.set_pipeline(&self.water_render_pipeline);
-
-        // for uvw in self
-        //     .world_loader
-        //     .visible_chunk_range_uvw(&self.camera_controller)
-        // {
-        //     if let Some(ChunkBuffers {
-        //         transparent_instance_buffer: Some(buffer),
-        //         chunk_bind_group,
-        //         transparent_quad_instance_count,
-        //         ..
-        //     }) = self.world_loader.get_buffer(uvw)
-        //     {
-        //         render_pass.set_bind_group(3, &chunk_bind_group, &[]);
-        //         render_pass.set_vertex_buffer(0, buffer.slice(..));
-
-        //     }
-        // }
-        //         render_pass.draw(0..QUAD_VERTEX_COUNT, 0..*transparent_quad_instance_count);
+        render_pass.set_pipeline(&self.water_render_pipeline);
+        render_pass.multi_draw_indirect(
+            &self.indirect_draw_buffer.indirect_buffer,
+            self.indirect_draw_buffer
+                .indirect_buffer_bucket_offset_bytes(TerrainBuckets::TRANSPARENT),
+            self.indirect_draw_buffer
+                .draw_count(TerrainBuckets::TRANSPARENT) as u32,
+        );
 
         self.reticle_renderer
             .render(render_pass, &self.camera_bind_group);
