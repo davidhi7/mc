@@ -33,9 +33,9 @@ impl World {
 }
 
 pub fn get_chunk_coordinates(position: Vec3) -> ChunkUVW {
-    let u = position.x as i32 / CHUNK_WIDTH_I32;
-    let v = position.y as i32 / CHUNK_WIDTH_I32;
-    let w = position.z as i32 / CHUNK_WIDTH_I32;
-
-    return (u, v, w);
+    (
+        (position.x as i32).div_euclid(CHUNK_WIDTH_I32),
+        (position.y as i32).div_euclid(CHUNK_WIDTH_I32),
+        (position.z as i32).div_euclid(CHUNK_WIDTH_I32),
+    )
 }
