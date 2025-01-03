@@ -58,9 +58,9 @@ const QUAD_VERTICES: &[Vertex] = &[
 #[repr(C)]
 pub struct QuadInstance {
     /// Bits starting from the LSB:
-    /// * `0-5`: x coordinate inside the cunk
-    /// * `5-10`: y coordinate inside the cunk
-    /// * `10-15`: z coordinate inside the cunk
+    /// * `0-5`: x coordinate inside the chunk
+    /// * `5-10`: y coordinate inside the chunk
+    /// * `10-15`: z coordinate inside the chunk
     /// * `15-23`: texture id
     /// * `23-26`: direction (`crate::world::blocks::Direction`)
     pub attributes: u32,
