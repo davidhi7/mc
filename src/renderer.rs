@@ -334,22 +334,30 @@ impl WorldRenderer {
         render_pass.set_bind_group(3, &self.indirect_draw_buffer.uniform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.indirect_draw_buffer.vertex_buffer.slice(..));
 
-        render_pass.set_pipeline(&self.render_pipeline);
-        render_pass.multi_draw_indirect(
-            &self.indirect_draw_buffer.indirect_buffer,
-            self.indirect_draw_buffer
-                .indirect_buffer_bucket_offset_bytes(TerrainBuckets::SOLID),
-            self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) as u32,
-        );
+        if self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) > 0 {
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.multi_draw_indirect(
+                &self.indirect_draw_buffer.indirect_buffer,
+                self.indirect_draw_buffer
+                    .indirect_buffer_bucket_offset_bytes(TerrainBuckets::SOLID),
+                self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) as u32,
+            );
+        }
 
-        render_pass.set_pipeline(&self.water_render_pipeline);
-        render_pass.multi_draw_indirect(
-            &self.indirect_draw_buffer.indirect_buffer,
-            self.indirect_draw_buffer
-                .indirect_buffer_bucket_offset_bytes(TerrainBuckets::TRANSPARENT),
-            self.indirect_draw_buffer
-                .draw_count(TerrainBuckets::TRANSPARENT) as u32,
-        );
+        if self
+            .indirect_draw_buffer
+            .draw_count(TerrainBuckets::TRANSPARENT)
+            > 0
+        {
+            render_pass.set_pipeline(&self.water_render_pipeline);
+            render_pass.multi_draw_indirect(
+                &self.indirect_draw_buffer.indirect_buffer,
+                self.indirect_draw_buffer
+                    .indirect_buffer_bucket_offset_bytes(TerrainBuckets::TRANSPARENT),
+                self.indirect_draw_buffer
+                    .draw_count(TerrainBuckets::TRANSPARENT) as u32,
+            );
+        }
 
         self.reticle_renderer
             .render(render_pass, &self.camera_bind_group);

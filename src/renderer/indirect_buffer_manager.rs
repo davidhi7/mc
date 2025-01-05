@@ -207,6 +207,8 @@ impl<
         );
 
         self.draw_count_per_bucket[self.bucket_id(handle.bucket)] -= 1;
+
+        self.draw_calls.remove(&handle);
     }
 
     pub fn insert_region(
