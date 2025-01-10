@@ -173,7 +173,10 @@ impl GfxState {
             .request_device(
                 &DeviceDescriptor {
                     label: None,
-                    required_limits: Limits::default(),
+                    required_limits: Limits {
+                        max_buffer_size: u32::MAX as u64 >> 1,
+                        ..Default::default()
+                    },
                     required_features: Features::TEXTURE_BINDING_ARRAY
                         | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
                         | Features::POLYGON_MODE_LINE

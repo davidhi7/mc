@@ -212,7 +212,7 @@ impl<
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
         bucket: Bucket,
-        batch_vb: &Buffer,
+        vertex_buffer: &Buffer,
         instance_count: u32,
         uniform: Uniform,
     ) -> DrawCallHandle<Uniform, Bucket> {
@@ -226,13 +226,12 @@ impl<
 
         let vertex_buffer_handle = self.vertex_buffer_allocator.allocate_from_buffer(
             &mut BufferMemoryTarget::new(&self.vertex_buffer, queue, command_encoder),
-            batch_vb,
+            vertex_buffer,
             instance_count as u64 * bucket.instance_size(),
             bucket.instance_size(),
         );
         let first_instance = (vertex_buffer_handle.offset / bucket.instance_size()) as u32;
 
-        // TODO use block_allocator functionality
         let indirect_buffer_handle = self.indirect_buffer_offset(bucket, self.draw_count(bucket));
 
         let uniform_buffer_handle = if let Some(entry) = self
@@ -250,7 +249,6 @@ impl<
             handle
         };
 
-        // TODO validate in block_allocator
         self.indirect_buffer_allocator.allocate_block(
             &mut BufferMemoryTarget::new(&self.indirect_buffer, queue, command_encoder),
             &DrawIndirectArgs {
