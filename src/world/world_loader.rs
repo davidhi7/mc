@@ -11,8 +11,7 @@ use noise::Simplex;
 use wgpu::CommandEncoderDescriptor;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, Buffer, BufferUsages, Device,
-    Queue,
+    Buffer, BufferUsages, Device, Queue,
 };
 
 use crate::renderer::indirect_buffer_manager::DrawCallHandle;
@@ -29,7 +28,7 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TerrainBuckets {
     SOLID,
     TRANSPARENT,
@@ -41,12 +40,6 @@ impl DrawCallBucket for TerrainBuckets {
             TerrainBuckets::SOLID => QuadInstance::desc().array_stride,
             TerrainBuckets::TRANSPARENT => TransparentQuadInstance::desc().array_stride,
         }
-    }
-}
-
-impl Hash for TerrainBuckets {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
     }
 }
 
@@ -76,7 +69,6 @@ pub struct ChunkMeshes {
 pub struct ChunkBuffers {
     pub instance_buffer: Option<Buffer>,
     pub transparent_instance_buffer: Option<Buffer>,
-    pub chunk_bind_group: BindGroup,
     pub quad_instance_count: u32,
     pub transparent_quad_instance_count: u32,
 }
@@ -251,7 +243,8 @@ impl WorldLoader {
             .iter()
             .any(|i| *i > self.chunk_view_distance)
             {
-                buff.drop_region(queue, &mut encoder, *handle);
+                // TODO rm clone
+                buff.drop_region(queue, &mut encoder, handle.clone());
                 false
             } else {
                 true
@@ -314,12 +307,7 @@ impl WorldLoader {
         self.complete_finished_threads();
     }
 
-    pub fn create_buffers(
-        &mut self,
-        camera: &CameraController,
-        device: &Device,
-        chunk_bind_group_layout: &BindGroupLayout,
-    ) {
+    pub fn create_buffers(&mut self, camera: &CameraController, device: &Device) {
         // TODO deduplicate code with update function
         for (u, w) in self.visible_chunk_range_uw(camera) {
             if self
@@ -363,25 +351,9 @@ impl WorldLoader {
                         }))
                     };
 
-                    let chunk_uniform: Buffer = device.create_buffer_init(&BufferInitDescriptor {
-                        label: Some(format!("u={u} v={v} w={w} uniform buffer").as_str()),
-                        contents: bytemuck::cast_slice(&[u, v as i32, w, /* alignmnet */ 0]),
-                        usage: BufferUsages::UNIFORM,
-                    });
-
-                    let chunk_bind_group = device.create_bind_group(&BindGroupDescriptor {
-                        label: Some(format!("u={u} v={v} w={w} uniform bind group").as_str()),
-                        layout: chunk_bind_group_layout,
-                        entries: &[BindGroupEntry {
-                            binding: 0,
-                            resource: chunk_uniform.as_entire_binding(),
-                        }],
-                    });
-
                     chunk_buffers.push(ChunkBuffers {
                         instance_buffer,
                         transparent_instance_buffer,
-                        chunk_bind_group,
                         quad_instance_count: chunk_mesh.quads.len() as u32,
                         transparent_quad_instance_count: chunk_mesh.transparent_quads.len() as u32,
                     });
@@ -389,16 +361,6 @@ impl WorldLoader {
                 self.buffered_chunks.insert((u, w), chunk_buffers);
             }
         }
-    }
-
-    pub fn get_buffer(&self, uvw: ChunkUVW) -> Option<&ChunkBuffers> {
-        let (u, v, w) = uvw;
-        if self.buffered_chunks.contains_key(&(u, w)) {
-            let chunk_stack_buffer = self.buffered_chunks.get(&(u, w));
-            let chunk_buffers = chunk_stack_buffer.unwrap().get(v as usize).unwrap();
-            return Some(chunk_buffers);
-        }
-        None
     }
 
     pub fn visible_chunk_range_uw(&self, camera: &CameraController) -> Vec<ChunkUW> {
@@ -414,7 +376,6 @@ impl WorldLoader {
                 chunks_in_order.push((camera_u + x, camera_w - radius));
             }
 
-            // TODO fix this line!
             for z in -(radius - 1)..radius {
                 chunks_in_order.push((camera_u + radius, camera_w + z));
                 chunks_in_order.push((camera_u - radius, camera_w + z));

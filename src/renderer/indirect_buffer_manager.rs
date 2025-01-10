@@ -1,6 +1,4 @@
 use core::panic;
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::{collections::BTreeMap, marker::PhantomData};
 
 use std::fmt::Debug;
@@ -15,45 +13,78 @@ use wgpu::{
 use crate::renderer::buffers::block_allocator::{BlockAllocator, RcBlockAllocator, RcBlockHandle};
 use crate::renderer::buffers::pool_allocator::{PoolAllocator, SegmentHandle};
 use crate::renderer::buffers::{AsBytes, BufferMemoryTarget};
+use crate::renderer::vertex_buffer::QUAD_VERTEX_COUNT;
 
-// TODO assess if traits are required
-pub trait DrawCallBucket: Copy + Debug + Eq + Hash {
+pub struct UniformBinding {
+    pub layout: BindGroupLayout,
+    pub binding: BindGroup,
+}
+
+impl UniformBinding {
+    fn new(device: &Device, buffer: &Buffer) -> Self {
+        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("uniform bind group layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let binding = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("uniform bind group layout"),
+            layout: &layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        UniformBinding { layout, binding }
+    }
+}
+
+/// Trait representing values that act as a bucket identifier for a class of draw calls.
+pub trait DrawCallBucket {
     /// Size of a single instance, in bytes
     fn instance_size(&self) -> u64;
 }
 
-// TODO assess if traits are required
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DrawCallHandle<Uniform: Clone + Copy, Bucket: Clone + Copy> {
+/// Identifier for a single draw call, that is, one uniform and one bucket value.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DrawCallHandle<Uniform: Clone + Ord, Bucket: Clone + Copy> {
     pub uniform: Uniform,
     pub bucket: Bucket,
 }
 
+/// Struct of all data associated with a single draw call.
 #[derive(Debug)]
 pub struct DrawCallData {
     indirect_buffer_handle: u64,
-    vertex_allocator_handle: SegmentHandle,
-    uniform_allocator_handle: RcBlockHandle,
+    vertex_buffer_handle: SegmentHandle,
+    uniform_buffer_handle: RcBlockHandle,
     first_instance: u32,
     instance_count: u32,
 }
 
 pub struct MultiDrawIndirectBuffer<
-    Uniform: Clone + Copy + Debug + Hash + Eq + AsBytes,
-    Bucket: DrawCallBucket,
+    Uniform: Clone + AsBytes + Ord,
+    Bucket: Copy + Debug + DrawCallBucket,
     const BUCKET_COUNT: usize,
 > {
     pub indirect_buffer: Buffer,
     pub vertex_buffer: Buffer,
+    /// Despite its name, this ultimately leads to a storage buffer
+    pub uniform_layout: UniformBinding,
     uniform_buffer: Buffer,
-    pub uniform_bind_group_layout: BindGroupLayout,
-    pub uniform_bind_group: BindGroup,
     indirect_buffer_allocator: BlockAllocator<DrawIndirectArgs>,
     vertex_buffer_allocator: PoolAllocator,
     uniform_buffer_allocator: RcBlockAllocator<Uniform>,
-    draw_calls: HashMap<DrawCallHandle<Uniform, Bucket>, DrawCallData>,
-    // TOOD rename
-    batches_count: u64,
+    draw_calls: BTreeMap<DrawCallHandle<Uniform, Bucket>, DrawCallData>,
+    chunks_per_bucket: u64,
     buckets: [Bucket; BUCKET_COUNT],
     draw_count_per_bucket: [u64; BUCKET_COUNT],
     phantom_uniform: PhantomData<Uniform>,
@@ -63,8 +94,8 @@ pub struct MultiDrawIndirectBuffer<
 const DRAW_ARGS_SIZE: usize = std::mem::size_of::<DrawIndirectArgs>();
 
 impl<
-        Uniform: Clone + Copy + Debug + Hash + Eq + AsBytes,
-        Bucket: DrawCallBucket,
+        Uniform: Clone + Ord + AsBytes,
+        Bucket: Copy + Debug + Ord + DrawCallBucket,
         const BUCKET_COUNT: usize,
     > MultiDrawIndirectBuffer<Uniform, Bucket, BUCKET_COUNT>
 {
@@ -72,14 +103,12 @@ impl<
         device: &Device,
         label: &str,
         buckets: [Bucket; BUCKET_COUNT],
-        batches_count: u64,
-        max_batch_size_map: &HashMap<Bucket, u64>,
+        chunks_per_bucket: u64,
+        max_batch_size_map: &BTreeMap<Bucket, u64>,
     ) -> Self {
-        let mut empty_regions = BTreeMap::new();
-
         let mut vertex_buffer_size_bytes = 0;
         for bucket in buckets {
-            vertex_buffer_size_bytes += batches_count as u64
+            vertex_buffer_size_bytes += chunks_per_bucket as u64
                 * bucket.instance_size()
                 * *max_batch_size_map
                     .get(&bucket)
@@ -89,7 +118,7 @@ impl<
         // Indirect buffer contains one slot for every batch and bucket combination
         let indirect_buffer = device.create_buffer(&BufferDescriptor {
             label: Some(&("indirect buffer ".to_owned() + label)),
-            size: batches_count * DRAW_ARGS_SIZE as u64 * BUCKET_COUNT as u64,
+            size: chunks_per_bucket * DRAW_ARGS_SIZE as u64 * BUCKET_COUNT as u64,
             usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -99,61 +128,33 @@ impl<
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // Uniform/storage buffer contains one slot for every batch, optionally referred to by draw calls of multiple buckets
+        // Storage buffer contains one slot for every batch, referred to by draw calls of multiple buckets
         let uniform_buffer = device.create_buffer(&BufferDescriptor {
             label: Some(&("chunk uniform buffer ".to_owned() + label)),
-            size: batches_count * std::mem::size_of::<Uniform>() as u64,
+            size: chunks_per_bucket * std::mem::size_of::<Uniform>() as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        empty_regions.insert(0, vertex_buffer_size_bytes);
-
-        let uniform_bind_group_layout =
-            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-                label: Some("uniform bind group layout"),
-                entries: &[BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::VERTEX,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-
-        let uniform_bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("uniform bind group layout"),
-            layout: &uniform_bind_group_layout,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        let indirect_buffer_allocator = BlockAllocator::new(batches_count * BUCKET_COUNT as u64);
+        let indirect_buffer_allocator =
+            BlockAllocator::new(chunks_per_bucket * BUCKET_COUNT as u64);
         let vertex_buffer_allocator = PoolAllocator::new(vertex_buffer_size_bytes);
-        let uniform_buffer_allocator = RcBlockAllocator::new(batches_count);
+        let uniform_buffer_allocator = RcBlockAllocator::new(chunks_per_bucket);
 
         Self {
-            indirect_buffer_allocator,
+            vertex_buffer,
             indirect_buffer,
-            uniform_bind_group_layout,
-            uniform_bind_group,
-            // occupied_regions: HashMap::new(),
-            uniform_buffer_allocator,
+            uniform_layout: UniformBinding::new(device, &uniform_buffer),
+            uniform_buffer,
+            indirect_buffer_allocator,
             vertex_buffer_allocator,
-            batches_count,
+            uniform_buffer_allocator,
+            draw_calls: BTreeMap::new(),
+            chunks_per_bucket,
             buckets,
             draw_count_per_bucket: [0; BUCKET_COUNT],
-            // stored_uniform_values: HashMap::new(),
             phantom_uniform: PhantomData,
             phantom_bucket: PhantomData,
-            vertex_buffer,
-            uniform_buffer,
-            draw_calls: HashMap::new(),
         }
     }
 
@@ -163,11 +164,13 @@ impl<
         command_encoder: &mut CommandEncoder,
         handle: DrawCallHandle<Uniform, Bucket>,
     ) {
-        // TODO is clone neccessary here?
-        let draw_call_data = self.draw_calls.get(&handle).expect("TODO");
+        let draw_call_data = self
+            .draw_calls
+            .remove(&handle)
+            .expect("Invalid draw call handle provided");
 
         // If the region doesn't own the last indirect/uniform buffer slot, fill the slot with another region
-        if draw_call_data.indirect_buffer_handle % self.batches_count + 1
+        if (draw_call_data.indirect_buffer_handle % self.chunks_per_bucket) + 1
             < self.draw_count(handle.bucket)
         {
             // Find BufferRegionData instance in the same bucket with highest indirect buffer slot
@@ -184,31 +187,24 @@ impl<
             self.indirect_buffer_allocator.allocate_block(
                 &mut BufferMemoryTarget::new(&self.indirect_buffer, queue, command_encoder),
                 &DrawIndirectArgs {
-                    vertex_count: 4,
+                    vertex_count: QUAD_VERTEX_COUNT,
                     instance_count: last_draw_call_data.instance_count,
-                    first_vertex: 4 * *last_draw_call_data.uniform_allocator_handle as u32,
+                    first_vertex: QUAD_VERTEX_COUNT
+                        * *last_draw_call_data.uniform_buffer_handle as u32,
                     first_instance: last_draw_call_data.first_instance,
                 },
                 new_indirect_buffer_handle,
             );
 
-            // TODO improve
             self.draw_calls
                 .entry(last_draw_call_handle.clone())
                 .and_modify(|entry| entry.indirect_buffer_handle = new_indirect_buffer_handle);
         }
 
-        self.vertex_buffer_allocator.deallocate(
-            &self
-                .draw_calls
-                .remove(&handle)
-                .expect("Region `target_region` key missing in `occupied_regions`")
-                .vertex_allocator_handle,
-        );
+        self.vertex_buffer_allocator
+            .deallocate(&draw_call_data.vertex_buffer_handle);
 
         self.draw_count_per_bucket[self.bucket_id(handle.bucket)] -= 1;
-
-        self.draw_calls.remove(&handle);
     }
 
     pub fn insert_region(
@@ -220,7 +216,7 @@ impl<
         instance_count: u32,
         uniform: Uniform,
     ) -> DrawCallHandle<Uniform, Bucket> {
-        if self.batches_count < self.draw_count_per_bucket[self.bucket_id(bucket)] + 1 {
+        if self.chunks_per_bucket < self.draw_count_per_bucket[self.bucket_id(bucket)] + 1 {
             panic!(
                 "Not enough indirect buffer space available for {} regions in bucket {:?}",
                 self.draw_count_per_bucket[self.bucket_id(bucket)] as usize + 1,
@@ -228,24 +224,23 @@ impl<
             );
         }
 
-        let vertex_allocator_handle = self.vertex_buffer_allocator.allocate_from_buffer(
+        let vertex_buffer_handle = self.vertex_buffer_allocator.allocate_from_buffer(
             &mut BufferMemoryTarget::new(&self.vertex_buffer, queue, command_encoder),
             batch_vb,
             instance_count as u64 * bucket.instance_size(),
             bucket.instance_size(),
         );
-        let first_instance = (vertex_allocator_handle.offset / bucket.instance_size()) as u32;
+        let first_instance = (vertex_buffer_handle.offset / bucket.instance_size()) as u32;
 
         // TODO use block_allocator functionality
-        let indirect_buffer_handle =
-            self.indirect_buffer_bucket_position_offset(bucket, self.draw_count(bucket));
+        let indirect_buffer_handle = self.indirect_buffer_offset(bucket, self.draw_count(bucket));
 
-        let uniform_allocator_handle = if let Some(entry) = self
+        let uniform_buffer_handle = if let Some(entry) = self
             .draw_calls
             .iter()
-            .find(|(key, value)| key.uniform == uniform)
+            .find(|(key, _)| key.uniform == uniform)
         {
-            entry.1.uniform_allocator_handle.clone()
+            entry.1.uniform_buffer_handle.clone()
         } else {
             let handle = self.uniform_buffer_allocator.allocate_first_free_block(
                 &mut BufferMemoryTarget::new(&self.uniform_buffer, queue, command_encoder),
@@ -259,10 +254,10 @@ impl<
         self.indirect_buffer_allocator.allocate_block(
             &mut BufferMemoryTarget::new(&self.indirect_buffer, queue, command_encoder),
             &DrawIndirectArgs {
-                vertex_count: 4,
-                instance_count: instance_count,
-                first_vertex: 4 * *uniform_allocator_handle as u32,
-                first_instance: first_instance,
+                vertex_count: QUAD_VERTEX_COUNT,
+                instance_count,
+                first_vertex: QUAD_VERTEX_COUNT * *uniform_buffer_handle as u32,
+                first_instance,
             },
             indirect_buffer_handle,
         );
@@ -270,11 +265,11 @@ impl<
         let draw_call_handle = DrawCallHandle { uniform, bucket };
 
         self.draw_calls.insert(
-            draw_call_handle,
+            draw_call_handle.clone(),
             DrawCallData {
                 indirect_buffer_handle,
-                vertex_allocator_handle,
-                uniform_allocator_handle,
+                vertex_buffer_handle,
+                uniform_buffer_handle,
                 first_instance,
                 instance_count,
             },
@@ -296,16 +291,11 @@ impl<
             .expect("Invalid bucket provided")
     }
 
-    // TODO function für position mit offset
-    pub fn indirect_buffer_bucket_offset(&self, bucket: Bucket) -> u64 {
-        self.batches_count * self.bucket_id(bucket) as u64
+    pub fn indirect_buffer_offset(&self, bucket: Bucket, position: u64) -> u64 {
+        self.chunks_per_bucket * self.bucket_id(bucket) as u64 + position
     }
 
-    pub fn indirect_buffer_bucket_position_offset(&self, bucket: Bucket, position: u64) -> u64 {
-        self.indirect_buffer_bucket_offset(bucket) + position
-    }
-
-    pub fn indirect_buffer_bucket_offset_bytes(&self, bucket: Bucket) -> u64 {
-        self.indirect_buffer_bucket_offset(bucket) * DRAW_ARGS_SIZE as u64
+    pub fn indirect_buffer_offset_bytes(&self, bucket: Bucket, position: u64) -> u64 {
+        self.indirect_buffer_offset(bucket, position) * DRAW_ARGS_SIZE as u64
     }
 }

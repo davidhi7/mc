@@ -1,14 +1,17 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferBindingType, BufferUsages,
-    ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Device,
-    Face, FragmentState, FrontFace, MultisampleState, PipelineCompilationOptions,
-    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, Queue, RenderPass,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-    StencilState, SurfaceConfiguration, TextureFormat, VertexState,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindingType,
+    BlendState, Buffer, BufferBindingType, BufferUsages, ColorTargetState, ColorWrites,
+    CompareFunction, DepthBiasState, DepthStencilState, Device, Face, FragmentState, FrontFace,
+    MultisampleState, PipelineCompilationOptions, PipelineLayoutDescriptor, PolygonMode,
+    PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor,
+    ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState, SurfaceConfiguration,
+    TextureFormat, VertexState,
 };
 
 use crate::{
@@ -47,7 +50,6 @@ pub struct WorldRenderer {
     vertex_bind_group: BindGroup,
     camera_uniform: Buffer,
     camera_bind_group: BindGroup,
-    chunk_bind_group_layout: BindGroupLayout,
     texture_bind_group: BindGroup,
     render_pipeline: RenderPipeline,
     water_render_pipeline: RenderPipeline,
@@ -106,20 +108,6 @@ impl WorldRenderer {
             label: Some("camera bind group"),
         });
 
-        let chunk_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("chunk bind group layout"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
         let terrain_shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("world terrain shader"),
             source: ShaderSource::Wgsl(include_str!("renderer/terrain.wgsl").into()),
@@ -157,7 +145,7 @@ impl WorldRenderer {
         // }
 
         // TODO find proper values
-        let mut batches_map = HashMap::new();
+        let mut batches_map = BTreeMap::new();
         batches_map.insert(TerrainBuckets::SOLID, 5000);
         batches_map.insert(TerrainBuckets::TRANSPARENT, 2000);
         let ib = MultiDrawIndirectBuffer::new(
@@ -178,7 +166,7 @@ impl WorldRenderer {
                 &texture_bind_group_layout,
                 &camera_bind_group_layout,
                 &vertex_bind_group_layout,
-                &ib.uniform_bind_group_layout,
+                &ib.uniform_layout.layout,
             ],
             push_constant_ranges: &[],
         });
@@ -294,7 +282,6 @@ impl WorldRenderer {
             vertex_bind_group,
             camera_uniform,
             camera_bind_group,
-            chunk_bind_group_layout,
             texture_bind_group,
             render_pipeline,
             water_render_pipeline,
@@ -305,7 +292,6 @@ impl WorldRenderer {
     }
 
     pub fn update(&mut self) {
-        let instant = Instant::now();
         self.queue.write_buffer(
             &self.camera_uniform,
             0,
@@ -313,11 +299,8 @@ impl WorldRenderer {
         );
 
         self.world_loader.update(&self.camera_controller);
-        self.world_loader.create_buffers(
-            &self.camera_controller,
-            &self.device,
-            &self.chunk_bind_group_layout,
-        );
+        self.world_loader
+            .create_buffers(&self.camera_controller, &self.device);
 
         self.world_loader.update_ib(
             &self.camera_controller,
@@ -331,7 +314,7 @@ impl WorldRenderer {
         render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.vertex_bind_group, &[]);
-        render_pass.set_bind_group(3, &self.indirect_draw_buffer.uniform_bind_group, &[]);
+        render_pass.set_bind_group(3, &self.indirect_draw_buffer.uniform_layout.binding, &[]);
         render_pass.set_vertex_buffer(0, self.indirect_draw_buffer.vertex_buffer.slice(..));
 
         if self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) > 0 {
@@ -339,7 +322,7 @@ impl WorldRenderer {
             render_pass.multi_draw_indirect(
                 &self.indirect_draw_buffer.indirect_buffer,
                 self.indirect_draw_buffer
-                    .indirect_buffer_bucket_offset_bytes(TerrainBuckets::SOLID),
+                    .indirect_buffer_offset_bytes(TerrainBuckets::SOLID, 0),
                 self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) as u32,
             );
         }
@@ -353,7 +336,7 @@ impl WorldRenderer {
             render_pass.multi_draw_indirect(
                 &self.indirect_draw_buffer.indirect_buffer,
                 self.indirect_draw_buffer
-                    .indirect_buffer_bucket_offset_bytes(TerrainBuckets::TRANSPARENT),
+                    .indirect_buffer_offset_bytes(TerrainBuckets::TRANSPARENT, 0),
                 self.indirect_draw_buffer
                     .draw_count(TerrainBuckets::TRANSPARENT) as u32,
             );

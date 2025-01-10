@@ -26,23 +26,18 @@ impl<T: AsBytes> BlockAllocator<T> {
         self.blocks_allocated[block as usize] = true;
     }
 
+    #[allow(dead_code)]
     pub fn deallocate_block(&mut self, block: u64) {
         self.blocks_allocated[block as usize] = false;
     }
 
+    #[allow(dead_code)]
     pub fn first_free_block(&self, offset: u64) -> Option<u64> {
-        for (index, allocated) in self
-            .blocks_allocated
+        self.blocks_allocated
             .iter()
             .skip(offset as usize)
-            .enumerate()
-        {
-            if !allocated {
-                return Some(index as u64);
-            }
-        }
-
-        None
+            .position(|allocated| !allocated)
+            .map(|index| index as u64)
     }
 }
 
@@ -66,6 +61,7 @@ impl<T: AsBytes> RcBlockAllocator<T> {
             .map(|index| index as u64)
     }
 
+    #[must_use]
     pub fn allocate_first_free_block<U>(
         &mut self,
         target: &mut impl MemoryTarget<U>,
@@ -73,7 +69,7 @@ impl<T: AsBytes> RcBlockAllocator<T> {
     ) -> RcBlockHandle {
         let index = self.first_free_block().expect("No free block available");
         let handle = Rc::new(index);
-        self.blocks[index as usize] = Rc::downgrade(&Rc::clone(&handle));
+        self.blocks[index as usize] = Rc::downgrade(&handle);
 
         self.block_allocator.allocate_block(target, data, index);
 
