@@ -169,6 +169,10 @@ impl GfxState {
             .await
             .unwrap();
 
+        let adapter_info = adapter.get_info();
+        println!("Backend: {}", adapter_info.backend);
+        println!("Device:\n{}\n{} {}", adapter_info.name, adapter_info.driver, adapter_info.driver_info);
+
         let (device, queue) = adapter
             .request_device(
                 &DeviceDescriptor {
