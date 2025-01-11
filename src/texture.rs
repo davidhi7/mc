@@ -4,14 +4,16 @@ use anyhow::*;
 use image::GenericImageView;
 use wgpu::{BindGroup, BindGroupLayout, TextureUsages, TextureView};
 
+const TEXTURE_DIR: &str = "res/assets/minecraft/textures/";
+
 const TEXTURES: [&str; 7] = [
-    "res/stone.png",
-    "res/grass-top.png",
-    "res/dirt.png",
-    "res/sand.png",
-    "res/gravel.png",
-    "res/andesite.png",
-    "res/snow.png",
+    "block/stone.png",
+    "block/grass_block_top.png",
+    "block/dirt.png",
+    "block/sand.png",
+    "block/gravel.png",
+    "block/andesite.png",
+    "block/snow.png",
 ];
 
 /// Create bind group and bind group layout for a texture array and a texture sampler.
@@ -55,7 +57,7 @@ pub fn load_textures(
     let mut texture_views: Vec<TextureView> = Vec::new();
 
     for file in TEXTURES {
-        let img = image::load_from_memory(fs::read(file)?.as_slice())?;
+        let img = image::load_from_memory(fs::read(TEXTURE_DIR.to_owned() + file)?.as_slice())?;
         let dimensions = img.dimensions();
         let size = wgpu::Extent3d {
             width: dimensions.0,
