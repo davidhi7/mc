@@ -1,3 +1,4 @@
+mod math;
 mod renderer;
 pub mod tests;
 mod texture;
