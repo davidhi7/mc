@@ -114,7 +114,7 @@ impl PoolAllocator {
 #[cfg(test)]
 mod tests {
 
-    use crate::{renderer::buffers::tests::TestMemoryTarget, tests::bad_cmp_vec_unordered};
+    use crate::{renderer::buffers::tests::TestMemoryTarget, tests::cmp_vec_unordered};
 
     use super::*;
 
@@ -183,13 +183,13 @@ mod tests {
     }
 
     #[test]
-    fn test_state() -> Result<(), String> {
+    fn test_state() -> Result<(), ()> {
         let (mut mem, mut pool) = init();
 
         pool.allocate_from_buffer(&mut mem, &[0xEE; 16], 1, 1);
         pool.allocate_from_buffer(&mut mem, &[0xFF; 16], 8, 4);
 
-        bad_cmp_vec_unordered(
+        cmp_vec_unordered(
             &pool.occupied_segments,
             &vec![
                 SegmentHandle { offset: 0, size: 1 },
@@ -197,7 +197,7 @@ mod tests {
             ],
         )?;
 
-        bad_cmp_vec_unordered(
+        cmp_vec_unordered(
             &pool.free_segments,
             &vec![
                 SegmentHandle { offset: 1, size: 3 },
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deallocate() -> Result<(), String> {
+    fn test_deallocate() -> Result<(), ()> {
         let (mut mem, mut pool) = init();
 
         let handle_1 = pool.allocate_from_buffer(&mut mem, &[0xEE; 16], 1, 1);
@@ -220,12 +220,12 @@ mod tests {
 
         pool.deallocate(&handle_1);
 
-        bad_cmp_vec_unordered(
+        cmp_vec_unordered(
             &pool.occupied_segments,
             &vec![SegmentHandle { offset: 4, size: 8 }],
         )?;
 
-        bad_cmp_vec_unordered(
+        cmp_vec_unordered(
             &pool.free_segments,
             &vec![
                 SegmentHandle { offset: 0, size: 4 },
@@ -240,7 +240,7 @@ mod tests {
 
         assert_eq!(pool.occupied_segments.len(), 0);
 
-        bad_cmp_vec_unordered(
+        cmp_vec_unordered(
             &pool.free_segments,
             &vec![SegmentHandle {
                 offset: 0,

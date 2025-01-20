@@ -1,38 +1,36 @@
 use std::fmt::Debug;
 
-pub fn bad_cmp_vec_unordered<T: Clone + Debug + Eq>(
-    first: &Vec<T>,
-    second: &Vec<T>,
-) -> Result<(), String> {
-    let first = first.clone();
-    let mut second = second.clone();
+pub fn cmp_vec_unordered<T: Clone + Debug + Eq>(left: &Vec<T>, right: &Vec<T>) -> Result<(), ()> {
+    println!();
+    let first: Vec<T> = left.clone();
+    let mut second = right.clone();
     for element in first {
-        let index = second
-            .iter()
-            .position(|e| *e == element)
-            .ok_or(String::from(format!(
-                "Element only occurs in `first`: {:?}",
-                element
-            )))?;
+        let index = second.iter().position(|e| *e == element).ok_or_else(|| {
+            println!(
+                "assertion `left == right` failed\n  left: {:?}\n right: {:?}",
+                left, right
+            );
+        })?;
         second.swap_remove(index);
     }
 
     if second.len() == 0 {
         Ok(())
     } else {
-        Err(format!(
-            "Element only occurs in `second`: {:?}",
-            second.into_iter().next().unwrap()
-        ))
+        println!(
+            "assertion `left == right` failed\n  left: {:?}\n right: {:?}",
+            left, right
+        );
+        Err(())
     }
 }
 
 #[test]
 fn test_bad_cmp_vec_unordered() {
-    assert!(bad_cmp_vec_unordered(&vec![0, 1, 2], &vec![0, 1, 2]).is_ok());
-    assert!(bad_cmp_vec_unordered(&vec![0, 1, 2], &vec![2, 0, 1]).is_ok());
-    assert!(bad_cmp_vec_unordered(&vec![0, 1, 2], &vec![0, 2]).is_err());
-    assert!(bad_cmp_vec_unordered(&vec![0, 2], &vec![0, 1, 2]).is_err());
-    assert!(bad_cmp_vec_unordered(&vec![], &vec![0, 1, 2]).is_err());
-    assert!(bad_cmp_vec_unordered(&vec![0, 1, 2], &vec![]).is_err());
+    assert!(cmp_vec_unordered(&vec![0, 1, 2], &vec![0, 1, 2]).is_ok());
+    assert!(cmp_vec_unordered(&vec![0, 1, 2], &vec![2, 0, 1]).is_ok());
+    assert!(cmp_vec_unordered(&vec![0, 1, 2], &vec![0, 2]).is_err());
+    assert!(cmp_vec_unordered(&vec![0, 2], &vec![0, 1, 2]).is_err());
+    assert!(cmp_vec_unordered(&vec![], &vec![0, 1, 2]).is_err());
+    assert!(cmp_vec_unordered(&vec![0, 1, 2], &vec![]).is_err());
 }
