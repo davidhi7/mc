@@ -3,8 +3,8 @@ use std::array::IntoIter;
 #[derive(Debug, Clone, Copy)]
 pub enum BlockType {
     SOLID,
-    INVISIBLE,
     TRANSPARENT,
+    INVISIBLE,
 }
 
 #[allow(dead_code)]
