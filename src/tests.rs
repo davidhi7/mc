@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 
 pub fn cmp_vec_unordered<T: Clone + Debug + Eq>(left: &Vec<T>, right: &Vec<T>) -> Result<(), ()> {
-    println!();
     let first: Vec<T> = left.clone();
     let mut second = right.clone();
     for element in first {
