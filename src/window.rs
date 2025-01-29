@@ -37,7 +37,7 @@ impl ApplicationHandler for App {
 
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("wgpu test"))
+                .create_window(Window::default_attributes().with_title("mc"))
                 .unwrap(),
         );
         window.set_cursor_visible(false);
@@ -129,6 +129,10 @@ impl ApplicationHandler for App {
                 self.mouse_movement = (0.0, 0.0);
                 self.frametime_metrics.push(frametime_start.elapsed());
                 self.frametime_metrics.update_sample();
+                self.window.as_ref().unwrap().set_title(&format!(
+                    "mc | {}ms",
+                    self.frametime_metrics.last_sample_frametime_ms
+                ));
 
                 self.window.as_ref().unwrap().request_redraw();
             }
