@@ -1,5 +1,7 @@
 use core::panic;
-use std::{collections::BTreeMap, marker::PhantomData};
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::marker::PhantomData;
 
 use std::fmt::Debug;
 
@@ -48,14 +50,14 @@ impl UniformBinding {
 }
 
 /// Trait representing values that act as a bucket identifier for a class of draw calls.
-pub trait DrawCallBucket {
+pub trait InstanceSize {
     /// Size of a single instance, in bytes
     fn instance_size(&self) -> u64;
 }
 
 /// Identifier for a single draw call, that is, one uniform and one bucket value.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DrawCallHandle<Uniform: Clone + Ord, Bucket: Clone + Copy> {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DrawCallHandle<Uniform: Clone + Hash, Bucket: Clone + Copy + Hash> {
     pub uniform: Uniform,
     pub bucket: Bucket,
 }
@@ -71,8 +73,8 @@ pub struct DrawCallData {
 }
 
 pub struct MultiDrawIndirectBuffer<
-    Uniform: Clone + AsBytes + Ord,
-    Bucket: Copy + Debug + DrawCallBucket,
+    Uniform: Clone + Debug + Hash + AsBytes,
+    Bucket: Copy + Debug + Hash + InstanceSize,
     const BUCKET_COUNT: usize,
 > {
     pub indirect_buffer: Buffer,
@@ -83,7 +85,7 @@ pub struct MultiDrawIndirectBuffer<
     indirect_buffer_allocator: BlockAllocator<DrawIndirectArgs>,
     vertex_buffer_allocator: PoolAllocator,
     uniform_buffer_allocator: RcBlockAllocator<Uniform>,
-    draw_calls: BTreeMap<DrawCallHandle<Uniform, Bucket>, DrawCallData>,
+    draw_calls: HashMap<DrawCallHandle<Uniform, Bucket>, DrawCallData>,
     chunks_per_bucket: u64,
     buckets: [Bucket; BUCKET_COUNT],
     draw_count_per_bucket: [u64; BUCKET_COUNT],
@@ -94,8 +96,8 @@ pub struct MultiDrawIndirectBuffer<
 const DRAW_ARGS_SIZE: usize = std::mem::size_of::<DrawIndirectArgs>();
 
 impl<
-        Uniform: Clone + Ord + AsBytes,
-        Bucket: Copy + Debug + Ord + DrawCallBucket,
+        Uniform: Clone + Debug + Hash + Eq + AsBytes,
+        Bucket: Copy + Debug + Hash + Eq + InstanceSize,
         const BUCKET_COUNT: usize,
     > MultiDrawIndirectBuffer<Uniform, Bucket, BUCKET_COUNT>
 {
@@ -104,7 +106,7 @@ impl<
         label: &str,
         buckets: [Bucket; BUCKET_COUNT],
         chunks_per_bucket: u64,
-        max_batch_size_map: &BTreeMap<Bucket, u64>,
+        max_batch_size_map: &HashMap<Bucket, u64>,
     ) -> Self {
         let mut vertex_buffer_size_bytes = 0;
         for bucket in buckets {
@@ -149,7 +151,7 @@ impl<
             indirect_buffer_allocator,
             vertex_buffer_allocator,
             uniform_buffer_allocator,
-            draw_calls: BTreeMap::new(),
+            draw_calls: HashMap::new(),
             chunks_per_bucket,
             buckets,
             draw_count_per_bucket: [0; BUCKET_COUNT],
@@ -207,23 +209,63 @@ impl<
         self.draw_count_per_bucket[self.bucket_id(handle.bucket)] -= 1;
     }
 
-    pub fn insert_region(
+    pub fn drop_and_insert_region(
         &mut self,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
+        handle: DrawCallHandle<Uniform, Bucket>,
+        new_bucket: Bucket,
+        new_vertex_buffer: &Buffer,
+        new_instance_count: u32,
+        new_uniform: Uniform,
+    ) -> DrawCallHandle<Uniform, Bucket> {
+        if handle.bucket != new_bucket {
+            // Manually drop and insert
+            self.drop_region(queue, command_encoder, handle);
+            self.insert_region(
+                queue,
+                command_encoder,
+                new_bucket,
+                new_vertex_buffer,
+                new_instance_count,
+                new_uniform,
+            )
+        } else {
+            // Optimally, only write to indirect buffer once
+            let draw_call_data = self
+                .draw_calls
+                .remove(&handle)
+                .expect("Invalid draw call handle provided");
+
+            let indirect_buffer_handle = draw_call_data.indirect_buffer_handle;
+
+            self.vertex_buffer_allocator
+                .deallocate(&draw_call_data.vertex_buffer_handle);
+            drop(draw_call_data);
+            self.draw_count_per_bucket[self.bucket_id(handle.bucket)] -= 1;
+
+            self.insert_region_at(
+                queue,
+                command_encoder,
+                indirect_buffer_handle,
+                new_bucket,
+                new_vertex_buffer,
+                new_instance_count,
+                new_uniform,
+            )
+        }
+    }
+
+    fn insert_region_at(
+        &mut self,
+        queue: &Queue,
+        command_encoder: &mut CommandEncoder,
+        indirect_buffer_handle: u64,
         bucket: Bucket,
         vertex_buffer: &Buffer,
         instance_count: u32,
         uniform: Uniform,
     ) -> DrawCallHandle<Uniform, Bucket> {
-        if self.chunks_per_bucket < self.draw_count_per_bucket[self.bucket_id(bucket)] + 1 {
-            panic!(
-                "Not enough indirect buffer space available for {} regions in bucket {:?}",
-                self.draw_count_per_bucket[self.bucket_id(bucket)] as usize + 1,
-                bucket
-            );
-        }
-
         let vertex_buffer_handle = self.vertex_buffer_allocator.allocate_from_buffer(
             &mut BufferMemoryTarget::new(&self.vertex_buffer, queue, command_encoder),
             vertex_buffer,
@@ -231,8 +273,6 @@ impl<
             bucket.instance_size(),
         );
         let first_instance = (vertex_buffer_handle.offset / bucket.instance_size()) as u32;
-
-        let indirect_buffer_handle = self.indirect_buffer_offset(bucket, self.draw_count(bucket));
 
         let uniform_buffer_handle = if let Some(entry) = self
             .draw_calls
@@ -276,6 +316,36 @@ impl<
         self.draw_count_per_bucket[self.bucket_id(bucket)] += 1;
 
         draw_call_handle
+    }
+
+    pub fn insert_region(
+        &mut self,
+        queue: &Queue,
+        command_encoder: &mut CommandEncoder,
+        bucket: Bucket,
+        vertex_buffer: &Buffer,
+        instance_count: u32,
+        uniform: Uniform,
+    ) -> DrawCallHandle<Uniform, Bucket> {
+        if self.chunks_per_bucket < self.draw_count_per_bucket[self.bucket_id(bucket)] + 1 {
+            panic!(
+                "Not enough indirect buffer space available for {} regions in bucket {:?}",
+                self.draw_count_per_bucket[self.bucket_id(bucket)] as usize + 1,
+                bucket
+            );
+        }
+
+        let indirect_buffer_handle = self.indirect_buffer_offset(bucket, self.draw_count(bucket));
+
+        self.insert_region_at(
+            queue,
+            command_encoder,
+            indirect_buffer_handle,
+            bucket,
+            vertex_buffer,
+            instance_count,
+            uniform,
+        )
     }
 
     pub fn draw_count(&self, bucket: Bucket) -> u64 {

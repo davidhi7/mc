@@ -88,7 +88,6 @@ impl From<ChunkUVW> for IVec3 {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ChunkStack {
     pub uw: ChunkUW,

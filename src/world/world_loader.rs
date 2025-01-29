@@ -1,39 +1,81 @@
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BinaryHeap, HashSet};
 use std::iter;
+use std::ops::RangeInclusive;
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::Arc;
 use std::{
-    cmp,
     collections::HashMap,
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    thread::{self},
 };
 
-use noise::Simplex;
+use bytemuck::{Pod, Zeroable};
+use glam::{ivec2, ivec3, IVec2, IVec3};
+use itertools::Itertools;
 use wgpu::CommandEncoderDescriptor;
-use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
-    Buffer, BufferUsages, Device, Queue,
-};
+use wgpu::{Buffer, Device, Queue};
 
+use crate::math::{self, Aabb2, Aabb3};
+use crate::renderer::buffers::AsBytes;
 use crate::renderer::indirect_buffer_manager::DrawCallHandle;
 use crate::{
     renderer::{
-        indirect_buffer_manager::{DrawCallBucket, MultiDrawIndirectBuffer},
+        indirect_buffer_manager::{InstanceSize, MultiDrawIndirectBuffer},
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     world::{
         self,
         camera::CameraController,
-        chunk::{Chunk, ChunkStack, ChunkUVW, ChunkUW, VERTICAL_CHUNK_COUNT},
+        chunk::{ChunkStack, ChunkUVW, ChunkUW, VERTICAL_CHUNK_COUNT},
         World,
     },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+mod worker;
+
+type InstanceCount = u32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Zeroable, Pod)]
+#[repr(C)]
+pub struct ChunkUniform {
+    pub u: i32,
+    pub v: i32,
+    pub w: i32,
+    _padding: i32,
+}
+
+impl From<ChunkUVW> for ChunkUniform {
+    fn from(value: ChunkUVW) -> Self {
+        let ChunkUVW { u, v, w } = value;
+        Self {
+            u,
+            v,
+            w,
+            _padding: 0,
+        }
+    }
+}
+
+impl From<ChunkUniform> for ChunkUVW {
+    fn from(value: ChunkUniform) -> Self {
+        let ChunkUniform { u, v, w, .. } = value;
+        ChunkUVW { u, v, w }
+    }
+}
+
+impl AsBytes for ChunkUniform {
+    fn get_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TerrainBuckets {
     SOLID,
     TRANSPARENT,
 }
 
-impl DrawCallBucket for TerrainBuckets {
+impl InstanceSize for TerrainBuckets {
     fn instance_size(&self) -> u64 {
         match *self {
             TerrainBuckets::SOLID => QuadInstance::desc().array_stride,
@@ -42,253 +84,332 @@ impl DrawCallBucket for TerrainBuckets {
     }
 }
 
-const MAX_CHUNKS_THREAD_LIMIT: usize = 8;
+#[derive(Clone, Debug)]
+enum ChunkJob {
+    Mesh { chunk_stack: Arc<ChunkStack> },
+    GenerateAndMesh { uw: ChunkUW },
+}
 
-struct ChunkMeshingTaskInput {
+impl ChunkJob {
+    fn get_uw(&self) -> ChunkUW {
+        match self {
+            ChunkJob::Mesh { chunk_stack } => chunk_stack.uw,
+            ChunkJob::GenerateAndMesh { uw } => *uw,
+        }
+    }
+}
+
+struct WorkerThreadHandle {
+    sender: Sender<ChunkJob>,
+    receiver: Receiver<ChunkJobResult>,
+    job_count: usize,
+}
+
+impl PartialEq for WorkerThreadHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.job_count == other.job_count
+    }
+}
+
+impl Eq for WorkerThreadHandle {}
+
+impl PartialOrd for WorkerThreadHandle {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.job_count.cmp(&other.job_count))
+    }
+}
+
+impl Ord for WorkerThreadHandle {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.job_count.cmp(&other.job_count)
+    }
+}
+
+struct ChunkJobResult {
     uw: ChunkUW,
-    chunk_stack: Option<ChunkStack>,
-}
-
-struct ChunkMeshingTaskOutput {
-    uw: ChunkUW,
-    chunk_stack: ChunkStack,
-    chunk_meshes: Vec<ChunkMeshes>,
-}
-
-struct ChunkMeshingTask {
-    uw_list: Vec<ChunkUW>,
-    handle: JoinHandle<Vec<ChunkMeshingTaskOutput>>,
-}
-
-pub struct ChunkMeshes {
-    pub quads: Vec<QuadInstance>,
-    pub transparent_quads: Vec<TransparentQuadInstance>,
+    chunk_stack: Option<Arc<ChunkStack>>,
+    chunk_buffers: Vec<ChunkBuffers>,
 }
 
 pub struct ChunkBuffers {
-    pub instance_buffer: Option<Buffer>,
-    pub transparent_instance_buffer: Option<Buffer>,
-    pub quad_instance_count: u32,
-    pub transparent_quad_instance_count: u32,
+    pub buffers: HashMap<TerrainBuckets, (Buffer, InstanceCount)>,
 }
 
 pub struct WorldLoader {
-    pub world: World,
-    pub chunk_meshes: HashMap<ChunkUW, Vec<ChunkMeshes>>,
+    world: World,
+    render_distance: u32,
+    worker_pool: Vec<WorkerThreadHandle>,
+    tasked_chunk_stacks: HashSet<ChunkUW>,
     buffered_chunks: HashMap<ChunkUW, Vec<ChunkBuffers>>,
-    tasks: Vec<ChunkMeshingTask>,
-    chunk_view_distance: u32,
-    chunks_per_task: usize,
-
-    pub ib_buffered_chunks: Vec<DrawCallHandle<[i32; 4], TerrainBuckets>>,
+    indirect_draw_calls: Vec<DrawCallHandle<ChunkUniform, TerrainBuckets>>,
+    last_camera_chunk: Option<ChunkUVW>,
+    deferred_chunk_stacks: HashSet<ChunkUW>,
 }
 
 impl WorldLoader {
-    pub fn new(world: World, chunk_view_distance: u32) -> WorldLoader {
-        WorldLoader {
+    pub fn new(world: World, thread_count: u32, device: Arc<Device>, render_distance: u32) -> Self {
+        let mut instance = Self {
             world,
-            chunk_meshes: HashMap::new(),
+            render_distance,
+            worker_pool: Vec::new(),
+            tasked_chunk_stacks: HashSet::new(),
             buffered_chunks: HashMap::new(),
-            tasks: Vec::new(),
-            chunk_view_distance,
-            chunks_per_task: 2 * chunk_view_distance as usize + 1,
-            ib_buffered_chunks: Vec::new(),
+            indirect_draw_calls: Vec::new(),
+            last_camera_chunk: None,
+            deferred_chunk_stacks: HashSet::new(),
+        };
+        for _ in 0..thread_count {
+            let (job_sender, job_receiver) = channel();
+            let (result_sender, result_receiver) = channel();
+            let device = Arc::clone(&device);
+            let noise = instance.world.noise.clone();
+            thread::spawn(move || {
+                worker::launch(job_receiver, result_sender, device, noise);
+            });
+
+            instance.worker_pool.push(WorkerThreadHandle {
+                sender: job_sender,
+                receiver: result_receiver,
+                job_count: 0,
+            });
         }
+
+        instance
     }
 
-    pub fn complete_finished_threads(&mut self) {
-        for i in (0..self.tasks.len()).rev() {
-            if self.tasks[i].handle.is_finished() {
-                let task = self.tasks.swap_remove(i);
-                let result = task
-                    .handle
-                    .join()
-                    .expect("Chunk generation/meshing thread panicked");
+    pub fn load_chunks(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        indirect_buffer: &mut MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
+        camera: &CameraController,
+    ) {
+        let camera_chunk = world::get_chunk_coordinates(camera.get_position());
 
-                for element in result {
-                    self.world.insert_chunks(element.uw, element.chunk_stack);
-                    self.chunk_meshes.insert(element.uw, element.chunk_meshes);
-                }
-            }
-        }
-    }
-
-    pub fn update(&mut self, camera: &CameraController) {
-        self.complete_finished_threads();
-
-        let mut chunks_to_mesh: Vec<ChunkMeshingTaskInput> = Vec::new();
-
-        for (u, w) in self.visible_chunk_range_uw(camera) {
-            let coords: ChunkUW = (u, w);
-            if self.tasks.iter().any(|task| task.uw_list.contains(&coords)) {
-                // If chunk is currently generated and/or meshed, continue
-                continue;
-            }
-            if self.chunk_meshes.get(&coords).is_none() {
-                // If chunk hasn't been meshed, do so
-                chunks_to_mesh.push(ChunkMeshingTaskInput {
-                    uw: (coords.0, coords.1),
-                    chunk_stack: self
-                        .world
-                        .chunk_stacks
-                        .get(&coords)
-                        .map_or(None, |chunks| Some(chunks.clone())),
-                });
-            }
+        if let Some(last_camera_chunk) = self.last_camera_chunk {
+            self.handle_results();
+            self.update_indirect_buffer(
+                device,
+                queue,
+                indirect_buffer,
+                camera_chunk,
+                last_camera_chunk,
+            );
         }
 
-        if chunks_to_mesh.is_empty() {
+        // If the u/w coordinates are identical, there are no new chunk stacks to generate/mesh
+        if self
+            .last_camera_chunk
+            .is_some_and(|chunk| chunk.to_uw() == camera_chunk.to_uw())
+        {
+            // Update anyways in case the v coordinate changed
+            self.last_camera_chunk = Some(camera_chunk);
             return;
         }
 
-        let mut batches: Vec<Vec<ChunkMeshingTaskInput>> = Vec::new();
-        let mut last_batch = Vec::new();
-        let mut chunks_iter = chunks_to_mesh.into_iter();
+        let chunks = if let Some(old_camera_chunk) = self.last_camera_chunk {
+            let aabb = Self::visible_chunk_range_aabb2(camera_chunk.to_uw(), self.render_distance);
+            let subtracted_aabb =
+                Self::visible_chunk_range_aabb2(old_camera_chunk.to_uw(), self.render_distance);
 
-        while batches.len() + self.tasks.len() < MAX_CHUNKS_THREAD_LIMIT {
-            let next = chunks_iter.next();
+            math::area_subtract_overlap_2d(aabb, subtracted_aabb)
+                .into_iter()
+                .flat_map(Self::iterate_aabb_chunks_2d)
+                .map(ChunkUW::from)
+                .collect::<Vec<_>>()
+        } else {
+            Self::visible_chunk_range_uw(camera_chunk.to_uw(), self.render_distance)
+        };
 
-            // If no more elements are inside the iterator, save last batch if not empty and break the loop
-            if next.is_none() {
-                if last_batch.len() > 0 {
-                    batches.push(last_batch);
-                }
-                break;
-            }
+        let filtered_chunks = chunks
+            .into_iter()
+            .filter(|chunk| self.buffered_chunks.get(&chunk).is_none())
+            .filter(|chunk| !self.tasked_chunk_stacks.contains(&chunk));
 
-            // Add new element to last batch
-            if let Some(task_input) = next {
-                last_batch.push(task_input);
-            }
+        let mut jobs = filtered_chunks
+            .map(|uw| match self.world.get_chunk_stack(uw) {
+                Some(chunk_stack) => ChunkJob::Mesh { chunk_stack },
+                None => ChunkJob::GenerateAndMesh { uw },
+            })
+            .collect::<Vec<_>>();
 
-            // Store last batch if it has enough items
-            if last_batch.len() >= self.chunks_per_task {
-                batches.push(last_batch);
-                last_batch = Vec::new();
-            }
+        jobs.sort_unstable_by_key(|chunk| {
+            (IVec2::from(camera_chunk.to_uw()) - IVec2::from(chunk.get_uw())).length_squared()
+        });
+
+        if self.last_camera_chunk.is_none() {
+            // If self.last_camera_chunk is none and this Self::load_chunks is called for the first time,
+            // then simply store the chunks for the next Self::update_indirect_buffer call and skip the call itself
+            self.deferred_chunk_stacks
+                .extend(jobs.iter().map(|job| job.get_uw()));
         }
 
-        let noise: Simplex = self.world.noise;
+        self.assign_jobs_to_workers(jobs);
+        self.last_camera_chunk = Some(camera_chunk);
+    }
 
-        for batch in batches.into_iter() {
-            let chunk_coordinates: Vec<ChunkUW> = batch.iter().map(|item| item.uw).collect();
+    fn assign_jobs_to_workers(&mut self, jobs: Vec<ChunkJob>) {
+        if jobs.is_empty() {
+            return;
+        }
 
-            let handle = thread::spawn(move || {
-                let start_time = Instant::now();
+        // Priority queue (min-heap) to manage workers by their job count
+        let mut worker_heap: BinaryHeap<Reverse<&mut _>> =
+            self.worker_pool.iter_mut().map(Reverse).collect();
 
-                let mut output: Vec<ChunkMeshingTaskOutput> = Vec::new();
+        for job in jobs {
+            // Get the worker with the least job count
+            let Reverse(worker) = worker_heap.pop().unwrap();
 
-                for chunk in batch {
-                    let chunk_stack = chunk
-                        .chunk_stack
-                        .unwrap_or_else(|| Chunk::generate_stack(&noise, chunk.uw));
+            // Assign the job to this worker
+            self.tasked_chunk_stacks.insert(job.get_uw());
+            worker
+                .sender
+                .send(job)
+                .expect("Failed to send job to chunk worker thread");
+            worker.job_count += 1;
 
-                    let chunk_meshes = (0..VERTICAL_CHUNK_COUNT)
-                        .map(|v| chunk_stack.chunks[v].generate_mesh())
-                        .map(|meshes| ChunkMeshes {
-                            quads: meshes.0,
-                            transparent_quads: meshes.1,
-                        })
-                        .collect::<Vec<ChunkMeshes>>();
-
-                    output.push(ChunkMeshingTaskOutput {
-                        uw: chunk.uw,
-                        chunk_stack,
-                        chunk_meshes,
-                    });
-                }
-
-                println!(
-                    "Processed {} chunk stacks in {}ms",
-                    output.len(),
-                    start_time.elapsed().as_millis()
-                );
-
-                output
-            });
-
-            println!(
-                "Spawned thread for meshing chunks at uw = {:?}",
-                chunk_coordinates
-            );
-
-            self.tasks.push(ChunkMeshingTask {
-                uw_list: chunk_coordinates,
-                handle,
-            });
+            // Push the worker back into the heap with updated job count
+            worker_heap.push(Reverse(worker));
         }
     }
 
-    pub fn update_ib(
-        &mut self,
-        camera: &CameraController,
-        device: &Device,
-        queue: &Queue,
-        buff: &mut MultiDrawIndirectBuffer<[i32; 4], TerrainBuckets, 2>,
-    ) {
-        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("Indirect buffer manager update command encoder"),
-        });
-
-        let cam_uvw = world::get_chunk_coordinates(camera.get_position());
-
-        self.ib_buffered_chunks.retain(|handle| {
-            if [
-                handle.uniform[0] - cam_uvw.0,
-                handle.uniform[1] - cam_uvw.1,
-                handle.uniform[2] - cam_uvw.2,
-            ]
-            .map(|i| i.abs() as u32)
-            .iter()
-            .any(|i| *i > self.chunk_view_distance)
-            {
-                // TODO rm clone
-                buff.drop_region(queue, &mut encoder, handle.clone());
-                false
-            } else {
-                true
-            }
-        });
-
-        for (u, v, w) in self.visible_chunk_range_uvw(&camera) {
-            // TODO refactor
-            if !self.ib_buffered_chunks.contains(&DrawCallHandle {
-                uniform: [u, v, w, 0],
-                bucket: TerrainBuckets::SOLID,
-            }) {
-                if let Some(meshes) = self.buffered_chunks.get(&(u, w)) {
-                    let slice = meshes.get(v as usize).unwrap();
-
-                    if !slice.instance_buffer.is_none() {
-                        self.ib_buffered_chunks.push(buff.insert_region(
-                            queue,
-                            &mut encoder,
-                            TerrainBuckets::SOLID,
-                            slice.instance_buffer.as_ref().unwrap(),
-                            slice.quad_instance_count,
-                            [u, v, w, 0],
-                        ));
+    fn handle_results(&mut self) {
+        for worker in self.worker_pool.iter_mut() {
+            loop {
+                match worker.receiver.try_recv() {
+                    Ok(result) => {
+                        if let Some(chunk_stack) = result.chunk_stack {
+                            self.world.insert_chunks(result.uw, chunk_stack);
+                        }
+                        self.buffered_chunks.insert(result.uw, result.chunk_buffers);
+                        self.tasked_chunk_stacks.remove(&result.uw);
+                    }
+                    Err(TryRecvError::Empty) => {
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        panic!("Worker thread disconnected")
                     }
                 }
             }
+        }
+    }
 
-            if !self.ib_buffered_chunks.contains(&DrawCallHandle {
-                uniform: [u, v, w, 0],
-                bucket: TerrainBuckets::TRANSPARENT,
-            }) {
-                if let Some(meshes) = self.buffered_chunks.get(&(u, w)) {
-                    let slice = meshes.get(v as usize).unwrap();
+    fn update_indirect_buffer(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        buf: &mut MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
+        camera_chunk: ChunkUVW,
+        old_camera_chunk: ChunkUVW,
+    ) {
+        if old_camera_chunk == camera_chunk && self.deferred_chunk_stacks.is_empty() {
+            return;
+        }
 
-                    if !slice.transparent_instance_buffer.is_none() {
-                        self.ib_buffered_chunks.push(buff.insert_region(
-                            queue,
-                            &mut encoder,
-                            TerrainBuckets::TRANSPARENT,
-                            slice.transparent_instance_buffer.as_ref().unwrap(),
-                            slice.transparent_quad_instance_count,
-                            [u, v, w, 0],
-                        ));
-                    }
+        let camera_aabb2 =
+            Self::visible_chunk_range_aabb2(camera_chunk.to_uw(), self.render_distance);
+        let camera_aabb3 = Self::visible_chunk_range_aabb3(camera_chunk, self.render_distance);
+        let old_camera_aabb3 =
+            Self::visible_chunk_range_aabb3(old_camera_chunk, self.render_distance);
+
+        let mut new_chunks = math::volume_subtract_overlap_3d(camera_aabb3, old_camera_aabb3)
+            .into_iter()
+            .flat_map(|aabb| Self::iterate_aabb_chunks_3d(aabb))
+            .map(ChunkUVW::from)
+            .collect::<Vec<_>>();
+
+        self.deferred_chunk_stacks.retain(|chunk_stack| {
+            if self.buffered_chunks.contains_key(chunk_stack) {
+                // Always remove chunk stack from list, but only prepare for rendering if actually visible
+                if camera_aabb2.contains((*chunk_stack).into()) {
+                    let v_range =
+                        Self::vertical_visible_chunk_range(camera_chunk, self.render_distance)
+                            .clone();
+
+                    v_range.map(|v| chunk_stack.to_uvw(v)).for_each(|uvw| {
+                        if !new_chunks.contains(&uvw) {
+                            new_chunks.push(uvw)
+                        }
+                    });
+                }
+                return false;
+            }
+            true
+        });
+
+        let old_chunks_aabb = math::volume_subtract_overlap_3d(old_camera_aabb3, camera_aabb3);
+        let mut old_draw_call_handles = Vec::new();
+        let mut i: usize = 0;
+        while i < self.indirect_draw_calls.len() {
+            let handle = &self.indirect_draw_calls[i];
+            let chunk = ChunkUVW::from(handle.uniform).into();
+
+            if old_chunks_aabb.iter().any(|aabb| aabb.contains(chunk)) {
+                old_draw_call_handles.push(self.indirect_draw_calls.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+
+        let new_chunks_vertical_groups = new_chunks.into_iter().chunk_by(|chunk| chunk.to_uw());
+
+        let new_chunk_buffers_iterator = new_chunks_vertical_groups
+            .into_iter()
+            .filter(|(uw, _)| {
+                if self.buffered_chunks.contains_key(uw) {
+                    true
+                } else {
+                    self.deferred_chunk_stacks.insert(*uw);
+                    false
+                }
+            })
+            .flat_map(|(_, group)| group.into_iter())
+            .cartesian_product([TerrainBuckets::SOLID, TerrainBuckets::TRANSPARENT])
+            .filter_map(|(chunk, bucket)| {
+                let chunk_stack = self.buffered_chunks.get(&chunk.to_uw());
+
+                chunk_stack
+                    .and_then(|buffers| buffers.get(chunk.v as usize))
+                    .and_then(|buffers| buffers.buffers.get(&bucket))
+                    .map(|buffer| (chunk, bucket, &buffer.0, buffer.1))
+            });
+
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("Indirect buffer update command encoder"),
+        });
+
+        for element in new_chunk_buffers_iterator.zip_longest(old_draw_call_handles.into_iter()) {
+            match element {
+                itertools::EitherOrBoth::Both(
+                    (chunk, bucket, buffer, instance_count),
+                    old_handle,
+                ) => {
+                    let new_handle = buf.drop_and_insert_region(
+                        queue,
+                        &mut encoder,
+                        old_handle,
+                        bucket,
+                        &buffer,
+                        instance_count,
+                        chunk.into(),
+                    );
+                    self.indirect_draw_calls.push(new_handle);
+                }
+                itertools::EitherOrBoth::Left((chunk, bucket, buffer, instance_count)) => {
+                    let handle = buf.insert_region(
+                        queue,
+                        &mut encoder,
+                        bucket,
+                        &buffer,
+                        instance_count,
+                        chunk.into(),
+                    );
+                    self.indirect_draw_calls.push(handle);
+                }
+                itertools::EitherOrBoth::Right(old_handle) => {
+                    buf.drop_region(queue, &mut encoder, old_handle);
                 }
             }
         }
@@ -297,112 +418,117 @@ impl WorldLoader {
         queue.submit(iter::once(command_buffer));
     }
 
-    pub fn sync_tasks(&mut self) {
-        for task in self.tasks.iter_mut() {
-            while !task.handle.is_finished() {
-                thread::sleep(Duration::from_secs(2));
-            }
-        }
-        self.complete_finished_threads();
-    }
-
-    pub fn create_buffers(&mut self, camera: &CameraController, device: &Device) {
-        // TODO deduplicate code with update function
-        for (u, w) in self.visible_chunk_range_uw(camera) {
-            if self
-                .tasks
-                .iter()
-                .any(|task: &ChunkMeshingTask| task.uw_list.contains(&(u, w)))
-            {
-                // If chunk is currently generated or meshed, continue
-                continue;
-            }
-            if !self.buffered_chunks.contains_key(&(u, w))
-                && self.chunk_meshes.contains_key(&(u, w))
-            {
-                // If chunk is meshed but not stored in a wgpu buffer, buffer it
-                let meshed_chunks = self.chunk_meshes.get(&(u, w)).unwrap();
-                let mut chunk_buffers = Vec::new();
-                for v in 0..VERTICAL_CHUNK_COUNT {
-                    let chunk_mesh = &meshed_chunks[v];
-
-                    let instance_buffer = if chunk_mesh.quads.len() == 0 {
-                        None
-                    } else {
-                        Some(device.create_buffer_init(&BufferInitDescriptor {
-                            label: Some(format!("u={u} v={v} w={w} instance buffer").as_str()),
-                            contents: bytemuck::cast_slice(meshed_chunks[v].quads.as_slice()),
-                            usage: BufferUsages::COPY_SRC,
-                        }))
-                    };
-
-                    let transparent_instance_buffer = if chunk_mesh.transparent_quads.len() == 0 {
-                        None
-                    } else {
-                        Some(device.create_buffer_init(&BufferInitDescriptor {
-                            label: Some(
-                                format!("u={u} v={v} w={w} transparent instance buffer").as_str(),
-                            ),
-                            contents: bytemuck::cast_slice(
-                                meshed_chunks[v].transparent_quads.as_slice(),
-                            ),
-                            usage: BufferUsages::COPY_SRC,
-                        }))
-                    };
-
-                    chunk_buffers.push(ChunkBuffers {
-                        instance_buffer,
-                        transparent_instance_buffer,
-                        quad_instance_count: chunk_mesh.quads.len() as u32,
-                        transparent_quad_instance_count: chunk_mesh.transparent_quads.len() as u32,
-                    });
-                }
-                self.buffered_chunks.insert((u, w), chunk_buffers);
-            }
-        }
-    }
-
-    pub fn visible_chunk_range_uw(&self, camera: &CameraController) -> Vec<ChunkUW> {
-        let (camera_u, _, camera_w) = world::get_chunk_coordinates(camera.get_position());
+    fn visible_chunk_range_uw(camera_position: ChunkUW, render_distance: u32) -> Vec<ChunkUW> {
+        let ChunkUW { u, w } = camera_position;
 
         let mut chunks_in_order: Vec<ChunkUW> =
-            Vec::with_capacity((self.chunk_view_distance * 2 + 1).pow(2) as usize);
+            Vec::with_capacity((render_distance * 2 + 1).pow(2) as usize);
 
-        chunks_in_order.push((camera_u, camera_w));
-        for radius in 1..=self.chunk_view_distance as i32 {
+        chunks_in_order.push(ChunkUW { u, w });
+        for radius in 1..=render_distance as i32 {
             for x in (-radius)..=radius {
-                chunks_in_order.push((camera_u + x, camera_w + radius));
-                chunks_in_order.push((camera_u + x, camera_w - radius));
+                chunks_in_order.push(ChunkUW {
+                    u: u + x,
+                    w: w + radius,
+                });
+                chunks_in_order.push(ChunkUW {
+                    u: u + x,
+                    w: w - radius,
+                });
             }
 
             for z in -(radius - 1)..radius {
-                chunks_in_order.push((camera_u + radius, camera_w + z));
-                chunks_in_order.push((camera_u - radius, camera_w + z));
+                chunks_in_order.push(ChunkUW {
+                    u: u + radius,
+                    w: w + z,
+                });
+                chunks_in_order.push(ChunkUW {
+                    u: u - radius,
+                    w: w + z,
+                });
             }
         }
 
         chunks_in_order
     }
 
-    pub fn visible_chunk_range_uvw(&self, camera: &CameraController) -> Vec<ChunkUVW> {
-        let (_, v, _) = world::get_chunk_coordinates(camera.get_position());
-        let vec = self
-            .visible_chunk_range_uw(camera)
-            .into_iter()
-            .flat_map(|uw| {
-                let v_min = cmp::max(0, v - self.chunk_view_distance as i32);
-                let v_max = cmp::min(
-                    VERTICAL_CHUNK_COUNT as i32 - 1,
-                    v + self.chunk_view_distance as i32,
-                );
+    fn vertical_visible_chunk_range(
+        camera_position: ChunkUVW,
+        render_distance: u32,
+    ) -> RangeInclusive<i32> {
+        let v_min = (camera_position.v - render_distance as i32).max(0);
+        let v_max =
+            (camera_position.v + render_distance as i32).min(VERTICAL_CHUNK_COUNT as i32 - 1);
 
-                (v_min..=v_max)
-                    .into_iter()
-                    .map(move |v| (uw.0, v, uw.1))
-                    .collect::<Vec<ChunkUVW>>()
-            })
+        v_min..=v_max
+    }
+
+    #[allow(dead_code)]
+    fn visible_chunk_range_uvw(camera_position: ChunkUVW, render_distance: u32) -> Vec<ChunkUVW> {
+        let vec = Self::visible_chunk_range_uw(camera_position.to_uw(), render_distance)
+            .into_iter()
+            .cartesian_product(Self::vertical_visible_chunk_range(
+                camera_position,
+                render_distance,
+            ))
+            .map(|(uw, v)| uw.to_uvw(v))
             .collect();
 
         vec
+    }
+
+    fn visible_chunk_range_aabb2(position: ChunkUW, render_distance: u32) -> Aabb2 {
+        Aabb2::new(
+            ivec2(
+                position.u - render_distance as i32,
+                position.w - render_distance as i32,
+            ),
+            ivec2(
+                position.u + render_distance as i32,
+                position.w + render_distance as i32,
+            ),
+        )
+    }
+
+    fn visible_chunk_range_aabb3(position: ChunkUVW, render_distance: u32) -> Aabb3 {
+        Aabb3::new(
+            ivec3(
+                position.u - render_distance as i32,
+                position.v - render_distance as i32,
+                position.w - render_distance as i32,
+            ),
+            ivec3(
+                position.u + render_distance as i32,
+                position.v + render_distance as i32,
+                position.w + render_distance as i32,
+            ),
+        )
+    }
+
+    fn iterate_aabb_chunks_2d(aabb: Aabb2) -> Vec<IVec2> {
+        let extends = aabb.max - aabb.min;
+        let capacity = ((extends.x + 1) * (extends.y + 1)) as usize;
+        let mut result: Vec<IVec2> = Vec::with_capacity(capacity);
+        for x in aabb.min.x..=aabb.max.x {
+            for y in aabb.min.y..=aabb.max.y {
+                result.push(ivec2(x, y));
+            }
+        }
+        assert!(capacity == result.len());
+        result
+    }
+
+    fn iterate_aabb_chunks_3d(aabb: Aabb3) -> Vec<IVec3> {
+        let extends = aabb.max - aabb.min;
+        let capacity = ((extends.x + 1) * (extends.y + 1) * (extends.z + 1)) as usize;
+        let mut result: Vec<IVec3> = Vec::with_capacity(capacity);
+        for x in aabb.min.x..=aabb.max.x {
+            for y in aabb.min.y..=aabb.max.y {
+                for z in aabb.min.z..=aabb.max.z {
+                    result.push(ivec3(x, y, z));
+                }
+            }
+        }
+        result
     }
 }

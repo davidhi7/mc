@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
@@ -16,7 +13,6 @@ use wgpu::{
 
 use crate::{
     renderer::{
-        buffers::AsBytes,
         indirect_buffer_manager::MultiDrawIndirectBuffer,
         ui_renderer::Reticle,
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
@@ -25,23 +21,18 @@ use crate::{
     world::{
         camera::CameraController,
         chunk::VERTICAL_CHUNK_COUNT,
-        world_loader::{TerrainBuckets, WorldLoader},
+        world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
         World,
     },
 };
 
-impl AsBytes for [i32; 4] {
-    fn get_bytes(&self) -> &[u8] {
-        bytemuck::bytes_of(self)
-    }
-}
-
-mod buffers;
+pub mod buffers;
 pub mod indirect_buffer_manager;
 mod ui_renderer;
 
 pub mod vertex_buffer;
-const CHUNK_RENDER_DISTANCE: u32 = 1;
+
+const CHUNK_RENDER_DISTANCE: u32 = 16;
 
 pub struct WorldRenderer {
     device: Arc<Device>,
@@ -55,8 +46,7 @@ pub struct WorldRenderer {
     water_render_pipeline: RenderPipeline,
     reticle_renderer: ui_renderer::Reticle,
     world_loader: WorldLoader,
-    // TODO chunk type
-    indirect_draw_buffer: MultiDrawIndirectBuffer<[i32; 4], TerrainBuckets, 2>,
+    indirect_draw_buffer: MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
 }
 
 impl WorldRenderer {
@@ -74,7 +64,7 @@ impl WorldRenderer {
             surface_config.width as f32 / surface_config.height as f32,
             0.1,
             1000.0,
-            10.0,
+            100.0,
             0.002,
         );
 
@@ -123,32 +113,14 @@ impl WorldRenderer {
         let (texture_bind_group_layout, texture_bind_group) =
             texture::load_textures(&device, &queue).unwrap();
 
-        let mut world_loader = WorldLoader::new(world, CHUNK_RENDER_DISTANCE);
-        world_loader.update(&camera_controller);
-        world_loader.sync_tasks();
+        let mut world_loader =
+            WorldLoader::new(world, 8, Arc::clone(&device), CHUNK_RENDER_DISTANCE);
 
-        // let mut data = Vec::new();
-
-        // for uw in world_loader.visible_chunk_range_uw(&camera_controller) {
-        //     if !world_loader.chunk_meshes.contains_key(&uw) {
-        //         continue;
-        //     }
-
-        //     let chunk_column = world_loader.chunk_meshes.get(&uw).unwrap();
-        //     chunk_column.iter().enumerate().for_each(|(v, chunk)| {
-        //         if chunk.quads.len() == 0 {
-        //             return;
-        //         }
-
-        //         data.push((chunk.quads.as_slice(), [uw.0, v as i32, uw.1, 0]));
-        //     })
-        // }
-
-        // TODO find proper values
-        let mut batches_map = BTreeMap::new();
-        batches_map.insert(TerrainBuckets::SOLID, 5000);
-        batches_map.insert(TerrainBuckets::TRANSPARENT, 2000);
-        let ib = MultiDrawIndirectBuffer::new(
+        // TODO find better values
+        let mut batches_map = HashMap::new();
+        batches_map.insert(TerrainBuckets::SOLID, 3000);
+        batches_map.insert(TerrainBuckets::TRANSPARENT, 1000);
+        let mut ib = MultiDrawIndirectBuffer::new(
             &device,
             "",
             [TerrainBuckets::SOLID, TerrainBuckets::TRANSPARENT],
@@ -159,6 +131,8 @@ impl WorldRenderer {
                 ),
             &batches_map,
         );
+
+        world_loader.load_chunks(&device, &queue, &mut ib, &camera_controller);
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("world render pipeline layout"),
@@ -286,7 +260,7 @@ impl WorldRenderer {
             render_pipeline,
             water_render_pipeline,
             reticle_renderer,
-            world_loader: world_loader,
+            world_loader,
             indirect_draw_buffer: ib,
         }
     }
@@ -298,15 +272,11 @@ impl WorldRenderer {
             bytemuck::cast_slice(&[self.camera_controller.get_view_projection_matrix()]),
         );
 
-        self.world_loader.update(&self.camera_controller);
-        self.world_loader
-            .create_buffers(&self.camera_controller, &self.device);
-
-        self.world_loader.update_ib(
-            &self.camera_controller,
+        self.world_loader.load_chunks(
             &self.device,
             &self.queue,
             &mut self.indirect_draw_buffer,
+            &self.camera_controller,
         );
     }
 
