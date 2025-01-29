@@ -56,6 +56,8 @@ fn vs_main(
         quad_index += 1u;
 
         // Map old to new AO attribute index
+        // Specifically map 0 -> 1, 1 -> 3, 2 -> 0, 3 -> 2
+        // maybte the following code is better? vertex_ao_factor_index = 0x8Du >> (2 * real_vertex_index) & 0x3u;
         var ao_index_permutation = array<u32, 4>(1, 3, 0, 2);
         vertex_ao_factor_index = ao_index_permutation[vertex_index];
     }
