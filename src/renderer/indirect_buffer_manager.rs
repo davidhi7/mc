@@ -17,20 +17,35 @@ use crate::renderer::buffers::pool_allocator::{PoolAllocator, SegmentHandle};
 use crate::renderer::buffers::{AsBytes, BufferMemoryTarget};
 use crate::renderer::vertex_buffer::QUAD_VERTEX_COUNT;
 
+pub mod frustum_culling;
+
+pub enum UniformBindingType {
+    ComputeReadWrite,
+    Vertex,
+}
+
 pub struct UniformBinding {
     pub layout: BindGroupLayout,
     pub binding: BindGroup,
 }
 
 impl UniformBinding {
-    fn new(device: &Device, buffer: &Buffer) -> Self {
+    fn new(device: &Device, buffer: &Buffer, binding_type: UniformBindingType) -> Self {
         let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("uniform bind group layout"),
+            label: Some("uniform layout"),
             entries: &[BindGroupLayoutEntry {
                 binding: 0,
-                visibility: ShaderStages::VERTEX,
+                visibility: match binding_type {
+                    UniformBindingType::ComputeReadWrite => ShaderStages::COMPUTE,
+                    UniformBindingType::Vertex => ShaderStages::VERTEX,
+                },
                 ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
+                    ty: BufferBindingType::Storage {
+                        read_only: match binding_type {
+                            UniformBindingType::ComputeReadWrite => false,
+                            UniformBindingType::Vertex => true,
+                        },
+                    },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -38,14 +53,46 @@ impl UniformBinding {
             }],
         });
         let binding = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("uniform bind group layout"),
+            label: Some("uniform binding"),
             layout: &layout,
             entries: &[BindGroupEntry {
                 binding: 0,
                 resource: buffer.as_entire_binding(),
             }],
         });
-        UniformBinding { layout, binding }
+        Self { layout, binding }
+    }
+}
+
+pub struct IndirectBufferBinding {
+    pub layout: BindGroupLayout,
+    pub binding: BindGroup,
+}
+
+impl IndirectBufferBinding {
+    fn new(device: &Device, buffer: &Buffer) -> Self {
+        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("indirect buffer layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let binding = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("indirect buffer binding"),
+            layout: &layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        Self { layout, binding }
     }
 }
 
@@ -77,10 +124,12 @@ pub struct MultiDrawIndirectBuffer<
     Bucket: Copy + Debug + Hash + InstanceSize,
     const BUCKET_COUNT: usize,
 > {
+    pub indirect_binding: IndirectBufferBinding,
     pub indirect_buffer: Buffer,
     pub vertex_buffer: Buffer,
     /// Despite its name, this ultimately leads to a storage buffer
-    pub uniform_layout: UniformBinding,
+    pub uniform_binding_ro: UniformBinding,
+    pub uniform_binding_rw: UniformBinding,
     uniform_buffer: Buffer,
     indirect_buffer_allocator: BlockAllocator<DrawIndirectArgs>,
     vertex_buffer_allocator: PoolAllocator,
@@ -121,7 +170,7 @@ impl<
         let indirect_buffer = device.create_buffer(&BufferDescriptor {
             label: Some(&("indirect buffer ".to_owned() + label)),
             size: chunks_per_bucket * DRAW_ARGS_SIZE as u64 * BUCKET_COUNT as u64,
-            usage: BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+            usage: BufferUsages::INDIRECT | BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let vertex_buffer = device.create_buffer(&BufferDescriptor {
@@ -144,9 +193,19 @@ impl<
         let uniform_buffer_allocator = RcBlockAllocator::new(chunks_per_bucket);
 
         Self {
-            vertex_buffer,
+            indirect_binding: IndirectBufferBinding::new(device, &indirect_buffer),
             indirect_buffer,
-            uniform_layout: UniformBinding::new(device, &uniform_buffer),
+            vertex_buffer,
+            uniform_binding_ro: UniformBinding::new(
+                device,
+                &uniform_buffer,
+                UniformBindingType::Vertex,
+            ),
+            uniform_binding_rw: UniformBinding::new(
+                device,
+                &uniform_buffer,
+                UniformBindingType::ComputeReadWrite,
+            ),
             uniform_buffer,
             indirect_buffer_allocator,
             vertex_buffer_allocator,

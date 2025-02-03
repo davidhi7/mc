@@ -1,19 +1,21 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, iter, sync::Arc};
 
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindingType,
     BlendState, Buffer, BufferBindingType, BufferUsages, ColorTargetState, ColorWrites,
-    CompareFunction, DepthBiasState, DepthStencilState, Device, Face, FragmentState, FrontFace,
-    MultisampleState, PipelineCompilationOptions, PipelineLayoutDescriptor, PolygonMode,
-    PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor,
-    ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState, SurfaceConfiguration,
-    TextureFormat, VertexState,
+    CommandEncoderDescriptor, CompareFunction, DepthBiasState, DepthStencilState, Device, Face,
+    FragmentState, FrontFace, MultisampleState, PipelineCompilationOptions,
+    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, Queue, RenderPass,
+    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    StencilState, SurfaceConfiguration, TextureFormat, VertexState,
 };
 
 use crate::{
     renderer::{
-        indirect_buffer_manager::MultiDrawIndirectBuffer,
+        indirect_buffer_manager::{
+            frustum_culling::FrustumCullingComputePass, MultiDrawIndirectBuffer,
+        },
         ui_renderer::Reticle,
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
@@ -47,6 +49,7 @@ pub struct WorldRenderer {
     reticle_renderer: ui_renderer::Reticle,
     world_loader: WorldLoader,
     indirect_draw_buffer: MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
+    frustum_culling_pass: FrustumCullingComputePass,
 }
 
 impl WorldRenderer {
@@ -56,11 +59,11 @@ impl WorldRenderer {
         surface_config: &SurfaceConfiguration,
         world: World,
     ) -> Self {
-        let camera_controller: CameraController = CameraController::new(
+        let camera_controller = CameraController::new(
             glam::Vec3::NEG_X,
-            -0.5,
-            0.0,
-            1.6,
+            glam::Vec3::Z,
+            glam::Vec3::Y,
+            f32::to_radians(90.0),
             surface_config.width as f32 / surface_config.height as f32,
             0.1,
             1000.0,
@@ -70,7 +73,7 @@ impl WorldRenderer {
 
         let camera_uniform = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("camera uniform buffer"),
-            contents: bytemuck::cast_slice(&[camera_controller.get_view_projection_matrix()]),
+            contents: bytemuck::bytes_of(&camera_controller.get_view_projection_matrix()),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
 
@@ -120,15 +123,17 @@ impl WorldRenderer {
         let mut batches_map = HashMap::new();
         batches_map.insert(TerrainBuckets::SOLID, 3000);
         batches_map.insert(TerrainBuckets::TRANSPARENT, 1000);
+
+        let chunks_per_bucket = (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
+            * u64::min(
+                CHUNK_RENDER_DISTANCE as u64 * 2 + 1,
+                VERTICAL_CHUNK_COUNT as u64,
+            );
         let mut ib = MultiDrawIndirectBuffer::new(
             &device,
             "",
             [TerrainBuckets::SOLID, TerrainBuckets::TRANSPARENT],
-            (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
-                * u64::min(
-                    CHUNK_RENDER_DISTANCE as u64 * 2 + 1,
-                    VERTICAL_CHUNK_COUNT as u64,
-                ),
+            chunks_per_bucket,
             &batches_map,
         );
 
@@ -140,7 +145,7 @@ impl WorldRenderer {
                 &texture_bind_group_layout,
                 &camera_bind_group_layout,
                 &vertex_bind_group_layout,
-                &ib.uniform_layout.layout,
+                &ib.uniform_binding_ro.layout,
             ],
             push_constant_ranges: &[],
         });
@@ -249,6 +254,14 @@ impl WorldRenderer {
         let reticle_renderer =
             Reticle::new(&device, camera_bind_group_layout, surface_config.format);
 
+        let frustum_culling_pass = FrustumCullingComputePass::new(
+            &device,
+            &ib.uniform_binding_rw,
+            &ib.indirect_binding,
+            chunks_per_bucket as u32,
+            2 * chunks_per_bucket as u32,
+        );
+
         WorldRenderer {
             device,
             queue,
@@ -262,6 +275,7 @@ impl WorldRenderer {
             reticle_renderer,
             world_loader,
             indirect_draw_buffer: ib,
+            frustum_culling_pass,
         }
     }
 
@@ -269,7 +283,7 @@ impl WorldRenderer {
         self.queue.write_buffer(
             &self.camera_uniform,
             0,
-            bytemuck::cast_slice(&[self.camera_controller.get_view_projection_matrix()]),
+            bytemuck::bytes_of(&self.camera_controller.get_view_projection_matrix()),
         );
 
         self.world_loader.load_chunks(
@@ -278,13 +292,31 @@ impl WorldRenderer {
             &mut self.indirect_draw_buffer,
             &self.camera_controller,
         );
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor { label: None });
+
+        self.frustum_culling_pass.run(
+            &self.queue,
+            &mut encoder,
+            &self.camera_controller,
+            &self.indirect_draw_buffer.uniform_binding_rw,
+            &self.indirect_draw_buffer.indirect_binding,
+        );
+
+        self.queue.submit(iter::once(encoder.finish()));
     }
 
     pub fn render<'a: 'b, 'b>(&'a self, render_pass: &mut RenderPass<'b>) {
         render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
         render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.vertex_bind_group, &[]);
-        render_pass.set_bind_group(3, &self.indirect_draw_buffer.uniform_layout.binding, &[]);
+        render_pass.set_bind_group(
+            3,
+            &self.indirect_draw_buffer.uniform_binding_ro.binding,
+            &[],
+        );
         render_pass.set_vertex_buffer(0, self.indirect_draw_buffer.vertex_buffer.slice(..));
 
         if self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) > 0 {

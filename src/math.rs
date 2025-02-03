@@ -1,4 +1,12 @@
-use glam::{ivec2, ivec3, IVec2, IVec3};
+use bytemuck::{Pod, Zeroable};
+use glam::{ivec2, ivec3, IVec2, IVec3, Vec3};
+
+#[derive(Clone, Copy, Debug, Zeroable, Pod)]
+#[repr(C)]
+pub struct Plane {
+    pub normal: Vec3,
+    pub distance: f32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Aabb2 {
