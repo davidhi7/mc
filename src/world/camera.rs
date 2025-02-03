@@ -139,8 +139,6 @@ impl CameraController {
         if pressed_keys.contains(&KeyCode::ControlLeft) {
             self.view.eye.y -= time_adjusted_speed * speed_multiplier;
         }
-
-        println!("{}", self.yaw);
     }
 
     pub fn get_view_projection_matrix(&self) -> Mat4 {

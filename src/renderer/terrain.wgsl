@@ -14,7 +14,7 @@ var<uniform> camera: CameraUniform;
 var<uniform> vertices: array<Vertex, 48>;
 
 @group(3) @binding(0)
-var<storage> chunk: array<vec3i>;
+var<storage> chunks: array<vec3i>;
 
 struct InstanceInput {
     @location(0) attributes: u32,
@@ -34,7 +34,7 @@ fn vs_main(
     instance: InstanceInput,
     @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
-    let drawID = vertex_index >> 2;
+    let chunk_index = vertex_index >> 2;
     let real_vertex_index = vertex_index % 4;
 
     let chunk_relative_coords = vec3i(
@@ -65,7 +65,7 @@ fn vs_main(
 
     let ao_intensity = (instance.ao_attributes >> (2 * vertex_ao_factor_index)) & 0x3;
     let vertex = vertices[quad_index * 4 + real_vertex_index];
-    let global_position = vec3f(32 * chunk[drawID] + chunk_relative_coords) + vertex.position;
+    let global_position = vec3f(32 * chunks[chunk_index] + chunk_relative_coords) + vertex.position;
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4f(global_position, 1);
