@@ -18,7 +18,7 @@ impl Reticle {
     ) -> Self {
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("reticle shader"),
-            source: ShaderSource::Wgsl(include_str!("reticle.wgsl").into()),
+            source: ShaderSource::Wgsl(include_str!("../../res/shaders/reticle.wgsl").into()),
         });
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {

@@ -103,12 +103,12 @@ impl WorldRenderer {
 
         let terrain_shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("world terrain shader"),
-            source: ShaderSource::Wgsl(include_str!("renderer/terrain.wgsl").into()),
+            source: ShaderSource::Wgsl(include_str!("../res/shaders/terrain.wgsl").into()),
         });
 
         let water_shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("world water shader"),
-            source: ShaderSource::Wgsl(include_str!("renderer/water.wgsl").into()),
+            source: ShaderSource::Wgsl(include_str!("../res/shaders/water.wgsl").into()),
         });
 
         let (vertex_bind_group_layout, vertex_bind_group) = vertex_buffer::get_bind_group(&device);
