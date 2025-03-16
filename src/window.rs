@@ -166,7 +166,7 @@ impl GfxState {
 
         let adapter = instance
             .request_adapter(&RequestAdapterOptions {
-                power_preference: PowerPreference::default(),
+                power_preference: PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -175,17 +175,25 @@ impl GfxState {
 
         let adapter_info = adapter.get_info();
         println!("Backend: {}", adapter_info.backend);
-        println!("Device:\n{}\n{} {}", adapter_info.name, adapter_info.driver, adapter_info.driver_info);
+        println!(
+            "Device:\n{}\n{} {}",
+            adapter_info.name, adapter_info.driver, adapter_info.driver_info
+        );
 
         let (device, queue) = adapter
             .request_device(
                 &DeviceDescriptor {
                     label: None,
-                    required_limits: Limits::default(),
+                    required_limits: Limits {
+                        max_buffer_size: u32::MAX as u64 >> 1,
+                        ..Default::default()
+                    },
                     required_features: Features::TEXTURE_BINDING_ARRAY
                         | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
-                        | Features::POLYGON_MODE_LINE,
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
+                        | Features::POLYGON_MODE_LINE
+                        | Features::MULTI_DRAW_INDIRECT
+                        | Features::INDIRECT_FIRST_INSTANCE,
+                    memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
             )

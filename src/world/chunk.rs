@@ -1,5 +1,6 @@
 use std::array;
 
+use glam::{ivec2, ivec3, IVec2, IVec3};
 use noise::NoiseFn;
 
 use crate::{
@@ -11,60 +12,109 @@ use crate::{
 };
 
 pub const CHUNK_WIDTH_BITS: u32 = 5;
-// TODO make into usize
-pub const CHUNK_WIDTH: u32 = 2_u32.pow(CHUNK_WIDTH_BITS);
+pub const CHUNK_WIDTH: usize = 2_usize.pow(CHUNK_WIDTH_BITS);
 pub const CHUNK_WIDTH_I32: i32 = CHUNK_WIDTH as i32;
-const CHUNK_WIDTH_P: u32 = CHUNK_WIDTH + 2;
+
+const CHUNK_WIDTH_P: usize = CHUNK_WIDTH + 2;
 const CHUNK_WIDTH_P_I32: i32 = CHUNK_WIDTH_P as i32;
 
 pub const VERTICAL_CHUNK_COUNT: usize = 8;
-pub const WORLD_HEIGHT: u32 = CHUNK_WIDTH * VERTICAL_CHUNK_COUNT as u32;
 
-const MIN_HEIGHT: u32 = 8;
-const SEA_LEVEL: u32 = 24;
+pub const WORLD_HEIGHT: usize = CHUNK_WIDTH * VERTICAL_CHUNK_COUNT;
 
-pub type ChunkUW = (i32, i32);
-pub type ChunkUVW = (i32, i32, i32);
+const MIN_HEIGHT: usize = 8;
+const SEA_LEVEL: usize = 24;
 
-#[allow(dead_code)]
-#[derive(Clone)]
-pub struct ChunkStack {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChunkUW {
     pub u: i32,
     pub w: i32,
-    pub chunks: [Chunk; VERTICAL_CHUNK_COUNT],
-    pub height_map: [u32; (CHUNK_WIDTH * CHUNK_WIDTH) as usize],
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChunkUVW {
+    pub u: i32,
+    pub v: i32,
+    pub w: i32,
+}
+
+impl ChunkUW {
+    pub fn to_uvw(&self, v: i32) -> ChunkUVW {
+        ChunkUVW {
+            u: self.u,
+            v,
+            w: self.w,
+        }
+    }
+}
+
+impl From<IVec2> for ChunkUW {
+    fn from(value: IVec2) -> Self {
+        ChunkUW {
+            u: value.x,
+            w: value.y,
+        }
+    }
+}
+
+impl From<ChunkUW> for IVec2 {
+    fn from(value: ChunkUW) -> Self {
+        ivec2(value.u, value.w)
+    }
+}
+
+impl ChunkUVW {
+    pub fn to_uw(&self) -> ChunkUW {
+        ChunkUW {
+            u: self.u,
+            w: self.w,
+        }
+    }
+}
+
+impl From<IVec3> for ChunkUVW {
+    fn from(value: IVec3) -> Self {
+        ChunkUVW {
+            u: value.x,
+            v: value.y,
+            w: value.z,
+        }
+    }
+}
+
+impl From<ChunkUVW> for IVec3 {
+    fn from(value: ChunkUVW) -> Self {
+        ivec3(value.u, value.v, value.w)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ChunkStack {
+    pub uw: ChunkUW,
+    pub chunks: [Chunk; VERTICAL_CHUNK_COUNT],
+}
+
+#[derive(Clone, Debug)]
 pub struct Chunk {
     data: Box<[Block]>,
 }
 
 impl Chunk {
     pub fn generate_stack(noise: &impl NoiseFn<f64, 2>, uw: ChunkUW) -> ChunkStack {
-        const TOTAL_BLOCK_COUNT: usize = (CHUNK_WIDTH as usize + 2).pow(3);
+        const TOTAL_BLOCK_COUNT: usize = (CHUNK_WIDTH_P).pow(3);
 
-        // Directly generating an array with something like [Block::AIR; TOTAL_BLOCK_COUNT] on the stack could cause a stack overflow
-        let mut blocks = Vec::with_capacity(TOTAL_BLOCK_COUNT);
-        for _ in 0..TOTAL_BLOCK_COUNT {
-            blocks.push(Block::AIR);
-        }
+        let blocks = vec![Block::AIR; TOTAL_BLOCK_COUNT];
 
         let chunks: [Chunk; VERTICAL_CHUNK_COUNT] = array::from_fn(|_| Chunk {
             data: blocks.clone().into_boxed_slice(),
         });
 
-        let mut chunk_stack = ChunkStack {
-            u: uw.0,
-            w: uw.1,
-            chunks,
-            height_map: [0; CHUNK_WIDTH.pow(2) as usize],
-        };
+        let mut chunk_stack = ChunkStack { uw, chunks };
 
         for x in (-1)..CHUNK_WIDTH_I32 + 1 {
             for z in (-1)..CHUNK_WIDTH_I32 + 1 {
-                let nx = uw.0 as f64 + (x as f64 / CHUNK_WIDTH as f64) - 0.5;
-                let nz = uw.1 as f64 + (z as f64 / CHUNK_WIDTH as f64) - 0.5;
+                let nx = uw.u as f64 + (x as f64 / CHUNK_WIDTH as f64) - 0.5;
+                let nz = uw.w as f64 + (z as f64 / CHUNK_WIDTH as f64) - 0.5;
 
                 let mut height = noise.get([0.3 * nx, 0.3 * nz])
                     + 0.5 * noise.get([nx, nz])
@@ -74,7 +124,7 @@ impl Chunk {
                 height = height.powf(2.5 * (2.0 + noise.get([nx / 10.0, nx / 10.0])));
                 height *= (WORLD_HEIGHT - MIN_HEIGHT - 1) as f64;
                 // Always have a height >= MIN_HEIGHT
-                let height = height.round() as u32 + MIN_HEIGHT;
+                let height = height.round() as usize + MIN_HEIGHT;
 
                 let mut block_array = Vec::new();
                 block_array.push((0..height, Block::STONE));
@@ -90,10 +140,6 @@ impl Chunk {
                         Chunk::insert_into_chunk_stack(&mut chunk_stack, x, y, z, block);
                     }
                 }
-
-                if (0..CHUNK_WIDTH as i32).contains(&z) && (0..CHUNK_WIDTH as i32).contains(&x) {
-                    chunk_stack.height_map[(z as u32 * CHUNK_WIDTH + x as u32) as usize] = height;
-                }
             }
         }
 
@@ -103,12 +149,12 @@ impl Chunk {
     fn insert_into_chunk_stack(
         chunk_stack: &mut ChunkStack,
         x: i32,
-        global_y: u32,
+        global_y: usize,
         z: i32,
         block: Block,
     ) {
         let y = global_y % CHUNK_WIDTH;
-        let v = (global_y / CHUNK_WIDTH) as usize;
+        let v = global_y / CHUNK_WIDTH;
 
         *chunk_stack.chunks[v].at_mut(x, y as i32, z) = block;
 
@@ -124,12 +170,15 @@ impl Chunk {
         range.contains(&x) && range.contains(&y) && range.contains(&z)
     }
 
+    fn array_index(x: i32, y: i32, z: i32) -> usize {
+        (((x + 1) * CHUNK_WIDTH_P_I32 + y + 1) * CHUNK_WIDTH_P_I32 + z + 1) as usize
+    }
+
     pub fn at(&self, x: i32, y: i32, z: i32) -> &Block {
-        if !Chunk::validate_chunk_coordinates(x, y, z) {
+        if cfg!(debug_assertions) && !Chunk::validate_chunk_coordinates(x, y, z) {
             panic!("Invalid chunk coordinates x={} y={} z={} ", x, y, z);
         }
-        let index = (((x + 1) * CHUNK_WIDTH_P_I32 + y + 1) * CHUNK_WIDTH_P_I32 + z + 1) as usize;
-        &self.data[index]
+        &self.data[Chunk::array_index(x, y, z)]
     }
 
     pub fn at_coords(&self, coords: Coordinates) -> &Block {
@@ -137,11 +186,10 @@ impl Chunk {
     }
 
     pub fn at_mut(&mut self, x: i32, y: i32, z: i32) -> &mut Block {
-        if !Chunk::validate_chunk_coordinates(x, y, z) {
+        if cfg!(debug_assertions) && !Chunk::validate_chunk_coordinates(x, y, z) {
             panic!("Invalid chunk coordinates x={} y={} z={} ", x, y, z);
         }
-        let index = (((x + 1) * CHUNK_WIDTH_P_I32 + y + 1) * CHUNK_WIDTH_P_I32 + z + 1) as usize;
-        &mut self.data[index]
+        &mut self.data[Chunk::array_index(x, y, z)]
     }
 
     pub fn generate_mesh(&self) -> (Vec<QuadInstance>, Vec<TransparentQuadInstance>) {
@@ -149,8 +197,8 @@ impl Chunk {
         let mut transparent_instances = Vec::new();
 
         for x in 0..CHUNK_WIDTH_I32 {
-            for z in 0..CHUNK_WIDTH_I32 {
-                for y in 0..CHUNK_WIDTH_I32 {
+            for y in 0..CHUNK_WIDTH_I32 {
+                for z in 0..CHUNK_WIDTH_I32 {
                     let block_type = self.at(x, y, z).get_block_type();
                     if let BlockType::INVISIBLE = block_type {
                         continue;
