@@ -87,13 +87,15 @@ var s_diffuse: sampler;
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let lighting_factor = 1.0 - in.ao_intensity * 0.3;
 
+    var frag_color = textureSample(t_diffuse[in.tex_index], s_diffuse, in.tex_coordinates);
+
     // Hack to render grayscale grass texture green
-    var blend_color: vec4f;
     if in.tex_index == 1 {
-        blend_color = vec4f(0.27, 0.62, 0.00, 1.0);
-    } else {
-        blend_color = vec4f(1.0);
+        // Color for minecraft foreest biome
+        // Convert sRGB to linear RGB color
+        let grass_color = pow(vec3f(0.47, 0.75, 0.35), vec3f(2.2));
+        frag_color = frag_color * vec4f(grass_color, 1.0);
     }
 
-    return lighting_factor * blend_color * textureSample(t_diffuse[in.tex_index], s_diffuse, in.tex_coordinates);
+    return lighting_factor * frag_color;
 }
