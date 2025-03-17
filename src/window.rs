@@ -200,18 +200,9 @@ impl GfxState {
             .await
             .unwrap();
 
-        let surface_caps = surface.get_capabilities(&adapter);
-        // Use sRGB surface
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
-
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
+            format: TextureFormat::Rgba8UnormSrgb,
             width: size.width,
             height: size.height,
             present_mode: PresentMode::AutoNoVsync,
