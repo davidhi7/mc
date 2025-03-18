@@ -1,29 +1,30 @@
 use wgpu::{
-    BindGroup, BindGroupLayout, BlendState, ColorTargetState, ColorWrites, CompareFunction,
-    DepthBiasState, DepthStencilState, Device, FragmentState, FrontFace, MultisampleState,
-    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, RenderPass,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, StencilState,
-    TextureFormat, VertexState,
+    BlendState, ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState,
+    Device, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, PolygonMode,
+    PrimitiveState, PrimitiveTopology, RenderPass, RenderPipeline, RenderPipelineDescriptor,
+    ShaderModuleDescriptor, ShaderSource, StencilState, TextureFormat, VertexState,
 };
 
-pub struct Reticle {
-    render_pipeline: RenderPipeline,
+use crate::renderer::pipelines::GlobalsBinding;
+
+pub struct UiPipeline {
+    pipeline: RenderPipeline,
 }
 
-impl Reticle {
+impl UiPipeline {
     pub fn new(
         device: &Device,
-        camera_bind_group_layout: BindGroupLayout,
-        color_format: TextureFormat,
+        globals_binding: &GlobalsBinding,
+        surface_format: TextureFormat,
     ) -> Self {
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("reticle shader"),
-            source: ShaderSource::Wgsl(include_str!("../../res/shaders/reticle.wgsl").into()),
+            source: ShaderSource::Wgsl(include_str!("../../../res/shaders/reticle.wgsl").into()),
         });
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("reticle render pipeline layout"),
-            bind_group_layouts: &[&camera_bind_group_layout],
+            bind_group_layouts: &[&globals_binding.layout],
             push_constant_ranges: &[],
         });
 
@@ -40,7 +41,7 @@ impl Reticle {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(ColorTargetState {
-                    format: color_format,
+                    format: surface_format,
                     blend: Some(BlendState::REPLACE),
                     write_mask: ColorWrites::ALL,
                 })],
@@ -71,16 +72,18 @@ impl Reticle {
             cache: None,
         });
 
-        Reticle { render_pipeline }
+        UiPipeline {
+            pipeline: render_pipeline,
+        }
     }
 
     pub fn render<'a: 'b, 'b>(
         &'a self,
         render_pass: &mut RenderPass<'b>,
-        camera_bind_group: &'b BindGroup,
+        globals_binding: &GlobalsBinding,
     ) {
-        render_pass.set_pipeline(&self.render_pipeline);
-        render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &globals_binding.binding, &[]);
         render_pass.draw(0..6, 0..1);
     }
 }

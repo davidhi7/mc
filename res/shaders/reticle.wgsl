@@ -1,11 +1,11 @@
 const line_length: f32 = 0.03;
 
-struct CameraUniform {
+struct Globals {
     view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0)
-var<uniform> camera: CameraUniform;
+var<uniform> globals: Globals;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -17,7 +17,7 @@ fn vs_main(
     @builtin(vertex_index) vertex_index: u32
 ) -> VertexOutput {
     // Remove translation component of VP matrix, so reticle is at z=0
-    let modified_camera = mat4x4f(camera.view_proj[0], camera.view_proj[1], camera.view_proj[2], vec4f(0.0, 0.0, 0.0, 1.0));
+    let modified_camera = mat4x4f(globals.view_proj[0], globals.view_proj[1], globals.view_proj[2], vec4f(0.0, 0.0, 0.0, 1.0));
 
     // If vertex_index is even, this is 0, otherwise 1. Relevant because all even vertices are at (0.0, 0.0, 0.0)
     let uneven_vertex = (vertex_index + 1) & 1;

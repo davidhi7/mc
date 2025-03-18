@@ -1,4 +1,4 @@
-struct CameraUniform {
+struct Globals {
     view_proj: mat4x4<f32>,
 };
 
@@ -7,14 +7,20 @@ struct Vertex {
     tex_coordinates: vec2<f32>,
 };
 
-@group(1) @binding(0)
-var<uniform> camera: CameraUniform;
+@group(0) @binding(0)
+var<uniform> globals: Globals;
 
-@group(2) @binding(0)
+@group(1) @binding(0)
 var<uniform> vertices: array<Vertex, 48>;
 
-@group(3) @binding(0)
+@group(1) @binding(1)
 var<storage> chunks: array<vec3i>;
+
+@group(1) @binding(2)
+var textures: binding_array<texture_2d<f32>>;
+
+@group(1) @binding(3)
+var texture_sampler: sampler;
 
 struct InstanceInput {
     @location(0) attributes: u32,
@@ -70,7 +76,7 @@ fn vs_main(
     let global_position = vec3f(32 * chunks[chunk_index] + chunk_relative_coords) + vertex.position;
 
     var out: VertexOutput;
-    out.clip_position = camera.view_proj * vec4f(global_position, 1);
+    out.clip_position = globals.view_proj * vec4f(global_position, 1);
     out.tex_coordinates = vertex.tex_coordinates;
     out.tex_index = tex_index;
     out.direction = direction;
@@ -78,16 +84,11 @@ fn vs_main(
     return out;
 }
 
-@group(0) @binding(0)
-var t_diffuse: binding_array<texture_2d<f32>>;
-@group(0) @binding(1)
-var s_diffuse: sampler;
-
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let lighting_factor = 1.0 - in.ao_intensity * 0.3;
 
-    var frag_color = textureSample(t_diffuse[in.tex_index], s_diffuse, in.tex_coordinates);
+    var frag_color = textureSample(textures[in.tex_index], texture_sampler, in.tex_coordinates);
 
     // Hack to render grayscale grass texture green
     if in.tex_index == 1 {

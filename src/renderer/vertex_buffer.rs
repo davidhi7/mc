@@ -4,9 +4,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::{swizzles::*, vec2, vec3, Vec2, Vec3, Vec4};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, Buffer, BufferAddress, BufferUsages, Device, ShaderStages,
-    VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
+    Buffer, BufferAddress, BufferUsages, Device, VertexAttribute, VertexBufferLayout, VertexFormat,
+    VertexStepMode,
 };
 
 use crate::world::blocks::Direction;
@@ -192,31 +191,4 @@ fn flip_quad_vertex(vertex: Vertex) -> Vertex {
     v.tex_coordinates = v.tex_coordinates.yx();
 
     v
-}
-
-pub fn get_bind_group(device: &Device) -> (BindGroupLayout, BindGroup) {
-    let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("quad vertices bind group layout"),
-        entries: &[BindGroupLayoutEntry {
-            binding: 0,
-            visibility: ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
-    });
-
-    let bind_group = device.create_bind_group(&BindGroupDescriptor {
-        label: Some("quad vertices bind group"),
-        layout: &bind_group_layout,
-        entries: &[BindGroupEntry {
-            binding: 0,
-            resource: create_vertex_buffer(device).as_entire_binding(),
-        }],
-    });
-
-    (bind_group_layout, bind_group)
 }

@@ -1,8 +1,11 @@
-use std::{fs, num::NonZeroU32};
+use std::fs;
 
 use anyhow::*;
 use image::GenericImageView;
-use wgpu::{BindGroup, BindGroupLayout, TextureUsages, TextureView};
+use wgpu::{
+    Device, Sampler, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+    TextureView, TextureViewDescriptor,
+};
 
 const TEXTURE_DIR: &str = "res/assets/minecraft/textures/";
 
@@ -16,45 +19,9 @@ const TEXTURES: [&str; 7] = [
     "block/snow.png",
 ];
 
-/// Create bind group and bind group layout for a texture array and a texture sampler.
-pub fn load_textures(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> Result<(BindGroupLayout, BindGroup)> {
-    let texture_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: NonZeroU32::new(TEXTURES.len() as u32),
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-            label: Some("texture bind group layout"),
-        });
-
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        address_mode_u: wgpu::AddressMode::Repeat,
-        address_mode_v: wgpu::AddressMode::Repeat,
-        address_mode_w: wgpu::AddressMode::Repeat,
-        mag_filter: wgpu::FilterMode::Nearest,
-        min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::FilterMode::Nearest,
-        ..Default::default()
-    });
-
-    let mut texture_views: Vec<TextureView> = Vec::new();
+/// Load textures and return texture views
+pub fn load_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<TextureView>> {
+    let mut texture_views = Vec::new();
 
     for file in TEXTURES {
         let img = image::load_from_memory(fs::read(TEXTURE_DIR.to_owned() + file)?.as_slice())?;
@@ -65,13 +32,13 @@ pub fn load_textures(
             depth_or_array_layers: 1,
         };
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.create_texture(&TextureDescriptor {
             label: Some(&("texture ".to_owned() + file)),
             size,
             mip_level_count: 1,
             sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -87,25 +54,21 @@ pub fn load_textures(
             size,
         );
 
-        texture_views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        texture_views.push(texture.create_view(&TextureViewDescriptor::default()));
     }
 
-    let texture_view_refs: Vec<&TextureView> = texture_views.iter().collect();
+    Ok(texture_views)
+}
 
-    let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        layout: &texture_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureViewArray(&texture_view_refs),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(&sampler),
-            },
-        ],
-        label: Some("texture bind group"),
-    });
-
-    Ok((texture_bind_group_layout, texture_bind_group))
+/// Create texture sampler
+pub fn create_sampler(device: &Device) -> Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_w: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    })
 }

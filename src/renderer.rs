@@ -1,23 +1,14 @@
 use std::{collections::HashMap, iter, sync::Arc};
 
-use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindingType,
-    BlendState, Buffer, BufferBindingType, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompareFunction, DepthBiasState, DepthStencilState, Device, Face,
-    FragmentState, FrontFace, MultisampleState, PipelineCompilationOptions,
-    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, Queue, RenderPass,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-    StencilState, SurfaceConfiguration, TextureFormat, VertexState,
-};
+use wgpu::{CommandEncoderDescriptor, Device, Queue, RenderPass, SurfaceConfiguration};
 
 use crate::{
     renderer::{
-        indirect_buffer_manager::{
-            frustum_culling::FrustumCullingComputePass, MultiDrawIndirectBuffer,
+        indirect_buffer_manager::MultiDrawIndirectBuffer,
+        pipelines::{
+            frustum_culling::FrustumCullingComputePass, terrain::TerrainPipeline, ui::UiPipeline,
+            GlobalsBinding,
         },
-        ui_renderer::Reticle,
-        vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     texture,
     world::{
@@ -30,7 +21,7 @@ use crate::{
 
 pub mod buffers;
 pub mod indirect_buffer_manager;
-mod ui_renderer;
+mod pipelines;
 
 pub mod vertex_buffer;
 
@@ -40,13 +31,9 @@ pub struct WorldRenderer {
     device: Arc<Device>,
     queue: Arc<Queue>,
     pub camera_controller: CameraController,
-    vertex_bind_group: BindGroup,
-    camera_uniform: Buffer,
-    camera_bind_group: BindGroup,
-    texture_bind_group: BindGroup,
-    render_pipeline: RenderPipeline,
-    water_render_pipeline: RenderPipeline,
-    reticle_renderer: ui_renderer::Reticle,
+    globals: GlobalsBinding,
+    ui_pipeline: UiPipeline,
+    terrain_pipeline: TerrainPipeline,
     world_loader: WorldLoader,
     indirect_draw_buffer: MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
     frustum_culling_pass: FrustumCullingComputePass,
@@ -71,50 +58,7 @@ impl WorldRenderer {
             0.002,
         );
 
-        let camera_uniform = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("camera uniform buffer"),
-            contents: bytemuck::bytes_of(&camera_controller.get_view_projection_matrix()),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-                label: Some("camera bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::VERTEX,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-
-        let camera_bind_group = device.create_bind_group(&BindGroupDescriptor {
-            layout: &camera_bind_group_layout,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: camera_uniform.as_entire_binding(),
-            }],
-            label: Some("camera bind group"),
-        });
-
-        let terrain_shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("world terrain shader"),
-            source: ShaderSource::Wgsl(include_str!("../res/shaders/terrain.wgsl").into()),
-        });
-
-        let water_shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("world water shader"),
-            source: ShaderSource::Wgsl(include_str!("../res/shaders/water.wgsl").into()),
-        });
-
-        let (vertex_bind_group_layout, vertex_bind_group) = vertex_buffer::get_bind_group(&device);
-
-        let (texture_bind_group_layout, texture_bind_group) =
-            texture::load_textures(&device, &queue).unwrap();
+        let globals = GlobalsBinding::new(&device, &camera_controller);
 
         let mut world_loader =
             WorldLoader::new(world, 8, Arc::clone(&device), CHUNK_RENDER_DISTANCE);
@@ -139,125 +83,22 @@ impl WorldRenderer {
 
         world_loader.load_chunks(&device, &queue, &mut ib, &camera_controller);
 
-        let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("world render pipeline layout"),
-            bind_group_layouts: &[
-                &texture_bind_group_layout,
-                &camera_bind_group_layout,
-                &vertex_bind_group_layout,
-                &ib.uniform_binding_ro.layout,
-            ],
-            push_constant_ranges: &[],
-        });
+        let terrain_pipeline = TerrainPipeline::new(
+            &device,
+            &globals,
+            &vertex_buffer::create_vertex_buffer(&device),
+            &ib.uniform_buffer,
+            texture::load_textures(&device, &queue).unwrap(),
+            &texture::create_sampler(&device),
+            surface_config.format,
+        );
 
-        let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("world render pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: VertexState {
-                module: &terrain_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[QuadInstance::desc()],
-                compilation_options: PipelineCompilationOptions {
-                    constants: &HashMap::new(),
-                    zero_initialize_workgroup_memory: false,
-                },
-            },
-            fragment: Some(FragmentState {
-                module: &terrain_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(ColorTargetState {
-                    format: surface_config.format,
-                    blend: Some(BlendState::REPLACE),
-                    write_mask: ColorWrites::ALL,
-                })],
-                compilation_options: PipelineCompilationOptions {
-                    constants: &HashMap::new(),
-                    zero_initialize_workgroup_memory: false,
-                },
-            }),
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: FrontFace::Cw,
-                cull_mode: Some(Face::Back),
-                polygon_mode: PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(DepthStencilState {
-                format: TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
-                stencil: StencilState::default(),
-                bias: DepthBiasState::default(),
-            }),
-            multisample: MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-            cache: None,
-        });
-
-        let water_render_pipeline: RenderPipeline =
-            device.create_render_pipeline(&RenderPipelineDescriptor {
-                label: Some("world water render pipeline"),
-                layout: Some(&render_pipeline_layout),
-                vertex: VertexState {
-                    module: &water_shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[TransparentQuadInstance::desc()],
-                    compilation_options: PipelineCompilationOptions {
-                        constants: &HashMap::new(),
-                        zero_initialize_workgroup_memory: false,
-                    },
-                },
-                fragment: Some(FragmentState {
-                    module: &water_shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(ColorTargetState {
-                        format: surface_config.format,
-                        blend: Some(BlendState::ALPHA_BLENDING),
-                        write_mask: ColorWrites::ALL,
-                    })],
-                    compilation_options: PipelineCompilationOptions {
-                        constants: &HashMap::new(),
-                        zero_initialize_workgroup_memory: false,
-                    },
-                }),
-                primitive: PrimitiveState {
-                    topology: PrimitiveTopology::TriangleStrip,
-                    strip_index_format: None,
-                    front_face: FrontFace::Cw,
-                    cull_mode: Some(Face::Back),
-                    polygon_mode: PolygonMode::Fill,
-                    unclipped_depth: false,
-                    conservative: false,
-                },
-                depth_stencil: Some(DepthStencilState {
-                    format: TextureFormat::Depth32Float,
-                    depth_write_enabled: true,
-                    depth_compare: CompareFunction::Less,
-                    stencil: StencilState::default(),
-                    bias: DepthBiasState::default(),
-                }),
-                multisample: MultisampleState {
-                    count: 1,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                multiview: None,
-                cache: None,
-            });
-
-        let reticle_renderer =
-            Reticle::new(&device, camera_bind_group_layout, surface_config.format);
+        let ui_pipeline = UiPipeline::new(&device, &globals, surface_config.format);
 
         let frustum_culling_pass = FrustumCullingComputePass::new(
             &device,
-            &ib.uniform_binding_rw,
-            &ib.indirect_binding,
+            &ib.uniform_buffer,
+            &ib.indirect_buffer,
             chunks_per_bucket as u32,
             2 * chunks_per_bucket as u32,
         );
@@ -266,13 +107,9 @@ impl WorldRenderer {
             device,
             queue,
             camera_controller,
-            vertex_bind_group,
-            camera_uniform,
-            camera_bind_group,
-            texture_bind_group,
-            render_pipeline,
-            water_render_pipeline,
-            reticle_renderer,
+            globals,
+            ui_pipeline,
+            terrain_pipeline,
             world_loader,
             indirect_draw_buffer: ib,
             frustum_culling_pass,
@@ -280,11 +117,7 @@ impl WorldRenderer {
     }
 
     pub fn update(&mut self) {
-        self.queue.write_buffer(
-            &self.camera_uniform,
-            0,
-            bytemuck::bytes_of(&self.camera_controller.get_view_projection_matrix()),
-        );
+        self.globals.update(&self.queue, &self.camera_controller);
 
         self.world_loader.load_chunks(
             &self.device,
@@ -297,31 +130,18 @@ impl WorldRenderer {
             .device
             .create_command_encoder(&CommandEncoderDescriptor { label: None });
 
-        self.frustum_culling_pass.run(
-            &self.queue,
-            &mut encoder,
-            &self.camera_controller,
-            &self.indirect_draw_buffer.uniform_binding_rw,
-            &self.indirect_draw_buffer.indirect_binding,
-        );
+        self.frustum_culling_pass
+            .run(&self.queue, &mut encoder, &self.camera_controller);
 
         self.queue.submit(iter::once(encoder.finish()));
     }
 
     pub fn render<'a: 'b, 'b>(&'a self, render_pass: &mut RenderPass<'b>) {
-        render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-        render_pass.set_bind_group(2, &self.vertex_bind_group, &[]);
-        render_pass.set_bind_group(
-            3,
-            &self.indirect_draw_buffer.uniform_binding_ro.binding,
-            &[],
-        );
-        render_pass.set_vertex_buffer(0, self.indirect_draw_buffer.vertex_buffer.slice(..));
-
         if self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) > 0 {
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.multi_draw_indirect(
+            self.terrain_pipeline.render_terrain(
+                render_pass,
+                &self.globals,
+                &self.indirect_draw_buffer.vertex_buffer,
                 &self.indirect_draw_buffer.indirect_buffer,
                 self.indirect_draw_buffer
                     .indirect_buffer_offset_bytes(TerrainBuckets::SOLID, 0),
@@ -334,8 +154,10 @@ impl WorldRenderer {
             .draw_count(TerrainBuckets::TRANSPARENT)
             > 0
         {
-            render_pass.set_pipeline(&self.water_render_pipeline);
-            render_pass.multi_draw_indirect(
+            self.terrain_pipeline.render_water(
+                render_pass,
+                &self.globals,
+                &self.indirect_draw_buffer.vertex_buffer,
                 &self.indirect_draw_buffer.indirect_buffer,
                 self.indirect_draw_buffer
                     .indirect_buffer_offset_bytes(TerrainBuckets::TRANSPARENT, 0),
@@ -344,7 +166,6 @@ impl WorldRenderer {
             );
         }
 
-        self.reticle_renderer
-            .render(render_pass, &self.camera_bind_group);
+        self.ui_pipeline.render(render_pass, &self.globals);
     }
 }

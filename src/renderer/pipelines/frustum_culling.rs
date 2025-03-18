@@ -2,15 +2,12 @@ use wgpu::{
     include_wgsl,
     util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, Buffer, BufferDescriptor, BufferUsages, CommandEncoder,
-    ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device,
+    BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferUsages,
+    CommandEncoder, ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device,
     PipelineLayoutDescriptor, Queue, ShaderStages,
 };
 
-use crate::{
-    renderer::indirect_buffer_manager::{IndirectBufferBinding, UniformBinding},
-    world::camera::{CameraController, CameraFrustum},
-};
+use crate::world::camera::{CameraController, CameraFrustum};
 
 struct CullingDataBinding {
     layout: BindGroupLayout,
@@ -18,25 +15,55 @@ struct CullingDataBinding {
 }
 
 impl CullingDataBinding {
-    fn new(device: &Device, frustum_buffer: &Buffer, bounds_buffer: &Buffer) -> Self {
+    fn new(
+        device: &Device,
+        frustum_buffer: &Buffer,
+        bounds_buffer: &Buffer,
+        uniform_buffer: &Buffer,
+        draw_buffer: &Buffer,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("culling data layout"),
             entries: &[
+                // Frustum planes buffer
                 BindGroupLayoutEntry {
                     binding: 0,
                     visibility: ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
                     count: None,
                 },
+                // Uniform and indirect draw count buffer
                 BindGroupLayoutEntry {
                     binding: 1,
                     visibility: ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Uniform buffer
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Indirect draw buffer
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -56,6 +83,14 @@ impl CullingDataBinding {
                     binding: 1,
                     resource: bounds_buffer.as_entire_binding(),
                 },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: draw_buffer.as_entire_binding(),
+                },
             ],
         });
         Self { layout, binding }
@@ -65,7 +100,6 @@ impl CullingDataBinding {
 pub struct FrustumCullingComputePass {
     culling_data_binding: CullingDataBinding,
     frustum_buffer: Buffer,
-    bounds_buffer: Buffer,
     visibility_check_pipeline: ComputePipeline,
     visibility_writeback_pipeline: ComputePipeline,
     uniform_count: u32,
@@ -75,8 +109,8 @@ pub struct FrustumCullingComputePass {
 impl FrustumCullingComputePass {
     pub fn new(
         device: &Device,
-        uniform_binding: &UniformBinding,
-        indirect_buffer_binding: &IndirectBufferBinding,
+        uniform_buffer: &Buffer,
+        indirect_draw_buffer: &Buffer,
         uniform_count: u32,
         draw_count: u32,
     ) -> FrustumCullingComputePass {
@@ -93,7 +127,13 @@ impl FrustumCullingComputePass {
             contents: bytemuck::cast_slice(&[uniform_count, draw_count]),
         });
 
-        let culling_data_binding = CullingDataBinding::new(device, &frustum_buffer, &bounds_buffer);
+        let culling_data_binding = CullingDataBinding::new(
+            device,
+            &frustum_buffer,
+            &bounds_buffer,
+            uniform_buffer,
+            indirect_draw_buffer,
+        );
 
         let shader =
             device.create_shader_module(include_wgsl!("../../../res/shaders/frustum-culling.wgsl"));
@@ -103,7 +143,7 @@ impl FrustumCullingComputePass {
                 label: Some("chunk visibility check pipeline"),
                 layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                     label: Some("chunk visibility check pipeline layout"),
-                    bind_group_layouts: &[&culling_data_binding.layout, &uniform_binding.layout],
+                    bind_group_layouts: &[&culling_data_binding.layout],
                     push_constant_ranges: &[],
                 })),
                 module: &shader,
@@ -117,11 +157,7 @@ impl FrustumCullingComputePass {
                 label: Some("chunk visibility writeback pipeline"),
                 layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                     label: Some("chunk visibility writeback pipeline layout"),
-                    bind_group_layouts: &[
-                        &culling_data_binding.layout,
-                        &uniform_binding.layout,
-                        &indirect_buffer_binding.layout,
-                    ],
+                    bind_group_layouts: &[&culling_data_binding.layout],
                     push_constant_ranges: &[],
                 })),
                 module: &shader,
@@ -133,7 +169,6 @@ impl FrustumCullingComputePass {
         Self {
             culling_data_binding,
             frustum_buffer,
-            bounds_buffer,
             visibility_check_pipeline,
             visibility_writeback_pipeline,
             uniform_count,
@@ -141,14 +176,7 @@ impl FrustumCullingComputePass {
         }
     }
 
-    pub fn run(
-        &self,
-        queue: &Queue,
-        encoder: &mut CommandEncoder,
-        camera: &CameraController,
-        uniform_binding: &UniformBinding,
-        indirect_buffer_binding: &IndirectBufferBinding,
-    ) {
+    pub fn run(&self, queue: &Queue, encoder: &mut CommandEncoder, camera: &CameraController) {
         queue.write_buffer(
             &self.frustum_buffer,
             0,
@@ -161,8 +189,6 @@ impl FrustumCullingComputePass {
         });
 
         cpass.set_bind_group(0, &self.culling_data_binding.binding, &[]);
-        cpass.set_bind_group(1, &uniform_binding.binding, &[]);
-        cpass.set_bind_group(2, &indirect_buffer_binding.binding, &[]);
 
         cpass.set_pipeline(&self.visibility_check_pipeline);
         cpass.dispatch_workgroups(self.uniform_count.div_ceil(64), 1, 1);
