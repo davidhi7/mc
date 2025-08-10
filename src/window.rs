@@ -295,6 +295,7 @@ impl GfxState {
             pressed_keys,
             mouse_movement,
             now.duration_since(self.last_update).as_secs_f32(),
+            &self.world_renderer.world_loader.world,
         );
 
         self.world_renderer.update();

@@ -1,5 +1,7 @@
 use std::array::IntoIter;
 
+use glam::{IVec3, Vec3};
+
 #[derive(Debug, Clone, Copy)]
 pub enum BlockType {
     SOLID,
@@ -74,5 +76,27 @@ impl Direction {
             Direction::Z,
         ]
         .into_iter()
+    }
+
+    pub fn get_unit_vector(&self) -> Vec3 {
+        match self {
+            Direction::NegX => Vec3::NEG_X,
+            Direction::X => Vec3::X,
+            Direction::NegY => Vec3::NEG_Y,
+            Direction::Y => Vec3::Y,
+            Direction::NegZ => Vec3::NEG_Z,
+            Direction::Z => Vec3::Z,
+        }
+    }
+
+    pub fn get_unit_vector_i32(&self) -> IVec3 {
+        match self {
+            Direction::NegX => IVec3::NEG_X,
+            Direction::X => IVec3::X,
+            Direction::NegY => IVec3::NEG_Y,
+            Direction::Y => IVec3::Y,
+            Direction::NegZ => IVec3::NEG_Z,
+            Direction::Z => IVec3::Z,
+        }
     }
 }

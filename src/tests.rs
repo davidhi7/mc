@@ -5,7 +5,7 @@ pub fn cmp_vec_unordered<T: Clone + Debug + Eq>(left: &Vec<T>, right: &Vec<T>) -
     let mut second = right.clone();
     for element in first {
         let index = second.iter().position(|e| *e == element).ok_or_else(|| {
-            println!(
+            eprintln!(
                 "assertion `left == right` failed\n  left: {:?}\n right: {:?}",
                 left, right
             );
@@ -16,7 +16,7 @@ pub fn cmp_vec_unordered<T: Clone + Debug + Eq>(left: &Vec<T>, right: &Vec<T>) -
     if second.len() == 0 {
         Ok(())
     } else {
-        println!(
+        eprintln!(
             "assertion `left == right` failed\n  left: {:?}\n right: {:?}",
             left, right
         );

@@ -1,6 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{ivec2, ivec3, IVec2, IVec3, Vec3};
 
+pub mod ray_caster;
+
 #[derive(Clone, Copy, Debug, Zeroable, Pod)]
 #[repr(C)]
 pub struct Plane {

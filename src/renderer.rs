@@ -1,5 +1,6 @@
 use std::{collections::HashMap, iter, sync::Arc};
 
+use glam::vec3;
 use wgpu::{CommandEncoderDescriptor, Device, Queue, RenderPass, SurfaceConfiguration};
 
 use crate::{
@@ -25,7 +26,7 @@ mod pipelines;
 
 pub mod vertex_buffer;
 
-const CHUNK_RENDER_DISTANCE: u32 = 16;
+const CHUNK_RENDER_DISTANCE: u32 = 8;
 
 pub struct WorldRenderer {
     device: Arc<Device>,
@@ -34,7 +35,7 @@ pub struct WorldRenderer {
     globals: GlobalsBinding,
     ui_pipeline: UiPipeline,
     terrain_pipeline: TerrainPipeline,
-    world_loader: WorldLoader,
+    pub world_loader: WorldLoader,
     indirect_draw_buffer: MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
     frustum_culling_pass: FrustumCullingComputePass,
 }
@@ -47,14 +48,14 @@ impl WorldRenderer {
         world: World,
     ) -> Self {
         let camera_controller = CameraController::new(
-            glam::Vec3::NEG_X,
+            vec3(177.0, 33.61, 142.1),
             glam::Vec3::Z,
             glam::Vec3::Y,
             f32::to_radians(90.0),
             surface_config.width as f32 / surface_config.height as f32,
             0.1,
             1000.0,
-            100.0,
+            10.0,
             0.002,
         );
 

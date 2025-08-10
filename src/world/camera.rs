@@ -1,11 +1,14 @@
 use core::f32;
-use std::{collections::HashSet, f32::consts::PI};
+use std::{collections::HashSet, f32::consts::PI, time::Instant};
 
 use bytemuck::{Pod, Zeroable};
 use glam::{vec3, Mat4, Vec3};
 use winit::keyboard::KeyCode;
 
-use crate::math::Plane;
+mod block_ray_caster;
+mod movement;
+
+use crate::{math::Plane, world::World};
 
 struct Perspective {
     fov_y: f32,
@@ -83,62 +86,84 @@ impl CameraController {
         pressed_keys: &HashSet<KeyCode>,
         mouse_movement: (f64, f64),
         delta_s: f32,
+        world: &World,
     ) {
         let (dx, dy) = mouse_movement;
 
         let time_adjusted_speed = self.speed * delta_s;
-        let mut speed_multiplier = 1.0;
 
         let mut new_yaw = self.yaw - (dx as f32) * self.sensitivity;
+        let new_pitch = (self.pitch - (dy as f32) * self.sensitivity).clamp(-0.5, 0.5);
+
         // Normalize yaw value
         new_yaw %= 2.0;
         if new_yaw < 0.0 {
             new_yaw += 2.0;
         }
 
-        let new_pitch = (self.pitch - (dy as f32) * self.sensitivity).clamp(-0.5, 0.5);
+        self.yaw = new_yaw;
+        self.pitch = new_pitch;
 
         let (yaw_sin, yaw_cos) = ((new_yaw) * PI).sin_cos();
         let (pitch_sin, pitch_cos) = ((new_pitch) * PI).sin_cos();
 
+        // View direction projected to xz plane
         let xz_forward = vec3(yaw_cos, 0.0, yaw_sin);
-        // Effectively rotate xz_forward by 90 degrees
-        let xz_right = vec3(yaw_sin, 0.0, -yaw_cos);
 
         self.view.direction = vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin);
-        self.yaw = new_yaw;
-        self.pitch = new_pitch;
-
-        self.view.right = xz_right;
+        // Effectively rotate xz_forward by 90 deg around y axis
+        self.view.right = vec3(yaw_sin, 0.0, -yaw_cos);
         self.view.up = self.view.direction.cross(self.view.right);
 
-        if pressed_keys.contains(&KeyCode::ShiftLeft) {
-            speed_multiplier = 3.0;
-        }
+        debug_assert!(xz_forward.is_normalized());
+        debug_assert!(self.view.direction.is_normalized());
+        debug_assert!(self.view.right.is_normalized());
+        debug_assert!(self.view.up.is_normalized());
+
+        let mut position_translation = Vec3::ZERO;
 
         if pressed_keys.contains(&KeyCode::KeyW) {
-            self.view.eye += xz_forward * time_adjusted_speed * speed_multiplier;
+            position_translation += xz_forward * time_adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::KeyS) {
-            self.view.eye -= xz_forward * time_adjusted_speed * speed_multiplier;
+            position_translation -= xz_forward * time_adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::KeyA) {
-            self.view.eye -= xz_right * time_adjusted_speed * speed_multiplier;
+            position_translation -= self.view.right * time_adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::KeyD) {
-            self.view.eye += xz_right * time_adjusted_speed * speed_multiplier;
-        }
-
-        if pressed_keys.contains(&KeyCode::Space) {
-            self.view.eye.y += time_adjusted_speed * speed_multiplier;
+            position_translation += self.view.right * time_adjusted_speed;
         }
 
         if pressed_keys.contains(&KeyCode::ControlLeft) {
-            self.view.eye.y -= time_adjusted_speed * speed_multiplier;
+            position_translation.y -= time_adjusted_speed;
         }
+
+        if pressed_keys.contains(&KeyCode::Space) {
+            position_translation.y += time_adjusted_speed;
+        }
+
+        if pressed_keys.contains(&KeyCode::ShiftLeft) {
+            position_translation *= 3.0;
+        }
+
+        if position_translation.length() == 0.0 {
+            return;
+        }
+
+        let before = Instant::now();
+        self.view.eye = movement::handle_collisions(
+            world,
+            self.view.eye,
+            position_translation.normalize(),
+            position_translation.length(),
+        );
+        println!("{}", before.elapsed().as_micros());
+
+        println!("{}", self.view.eye);
     }
 
     pub fn get_view_projection_matrix(&self) -> Mat4 {

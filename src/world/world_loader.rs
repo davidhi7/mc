@@ -136,7 +136,7 @@ pub struct ChunkBuffers {
 }
 
 pub struct WorldLoader {
-    world: World,
+    pub world: World,
     render_distance: u32,
     worker_pool: Vec<WorkerThreadHandle>,
     tasked_chunk_stacks: HashSet<ChunkUW>,
@@ -184,7 +184,7 @@ impl WorldLoader {
         indirect_buffer: &mut MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
         camera: &CameraController,
     ) {
-        let camera_chunk = world::get_chunk_coordinates(camera.get_position());
+        let camera_chunk = world::get_chunk_coordinates_f32(camera.get_position());
 
         if let Some(last_camera_chunk) = self.last_camera_chunk {
             self.handle_results();
