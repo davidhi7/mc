@@ -15,7 +15,7 @@ use itertools::Itertools;
 use wgpu::CommandEncoderDescriptor;
 use wgpu::{Buffer, Device, Queue};
 
-use crate::math::{self, Aabb2, Aabb3};
+use crate::math::{self, Aabb2I, Aabb3I};
 use crate::renderer::buffers::AsBytes;
 use crate::renderer::indirect_buffer_manager::DrawCallHandle;
 use crate::{
@@ -323,7 +323,7 @@ impl WorldLoader {
         self.deferred_chunk_stacks.retain(|chunk_stack| {
             if self.buffered_chunks.contains_key(chunk_stack) {
                 // Always remove chunk stack from list, but only prepare for rendering if actually visible
-                if camera_aabb2.contains((*chunk_stack).into()) {
+                if camera_aabb2.contains_point((*chunk_stack).into()) {
                     let v_range =
                         Self::vertical_visible_chunk_range(camera_chunk, self.render_distance)
                             .clone();
@@ -346,7 +346,10 @@ impl WorldLoader {
             let handle = &self.indirect_draw_calls[i];
             let chunk = ChunkUVW::from(handle.uniform).into();
 
-            if old_chunks_aabb.iter().any(|aabb| aabb.contains(chunk)) {
+            if old_chunks_aabb
+                .iter()
+                .any(|aabb| aabb.contains_point(chunk))
+            {
                 old_draw_call_handles.push(self.indirect_draw_calls.remove(i));
             } else {
                 i += 1;
@@ -477,8 +480,8 @@ impl WorldLoader {
         vec
     }
 
-    fn visible_chunk_range_aabb2(position: ChunkUW, render_distance: u32) -> Aabb2 {
-        Aabb2::new(
+    fn visible_chunk_range_aabb2(position: ChunkUW, render_distance: u32) -> Aabb2I {
+        Aabb2I::new(
             ivec2(
                 position.u - render_distance as i32,
                 position.w - render_distance as i32,
@@ -490,22 +493,22 @@ impl WorldLoader {
         )
     }
 
-    fn visible_chunk_range_aabb3(position: ChunkUVW, render_distance: u32) -> Aabb3 {
-        Aabb3::new(
-            ivec3(
+    fn visible_chunk_range_aabb3(position: ChunkUVW, render_distance: u32) -> Aabb3I {
+        Aabb3I {
+            min: ivec3(
                 position.u - render_distance as i32,
                 position.v - render_distance as i32,
                 position.w - render_distance as i32,
             ),
-            ivec3(
+            max: ivec3(
                 position.u + render_distance as i32,
                 position.v + render_distance as i32,
                 position.w + render_distance as i32,
             ),
-        )
+        }
     }
 
-    fn iterate_aabb_chunks_2d(aabb: Aabb2) -> Vec<IVec2> {
+    fn iterate_aabb_chunks_2d(aabb: Aabb2I) -> Vec<IVec2> {
         let extends = aabb.max - aabb.min;
         let capacity = ((extends.x + 1) * (extends.y + 1)) as usize;
         let mut result: Vec<IVec2> = Vec::with_capacity(capacity);
@@ -518,7 +521,7 @@ impl WorldLoader {
         result
     }
 
-    fn iterate_aabb_chunks_3d(aabb: Aabb3) -> Vec<IVec3> {
+    fn iterate_aabb_chunks_3d(aabb: Aabb3I) -> Vec<IVec3> {
         let extends = aabb.max - aabb.min;
         let capacity = ((extends.x + 1) * (extends.y + 1) * (extends.z + 1)) as usize;
         let mut result: Vec<IVec3> = Vec::with_capacity(capacity);

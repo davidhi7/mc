@@ -235,7 +235,7 @@ impl Chunk {
                         let attributes =
                             common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
-                        if let BlockType::SOLID = block_type {
+                        if let BlockType::OPAQUE = block_type {
                             let instance = QuadInstance {
                                 attributes,
                                 ao_attributes: self
@@ -259,12 +259,12 @@ impl Chunk {
         // If the block is transparent, only sides adjacent to transparent blocks are visible
         match block {
             BlockType::INVISIBLE => false,
-            BlockType::SOLID => match adjacent_block {
-                BlockType::SOLID => false,
+            BlockType::OPAQUE => match adjacent_block {
+                BlockType::OPAQUE => false,
                 BlockType::TRANSPARENT | BlockType::INVISIBLE => true,
             },
             BlockType::TRANSPARENT => match adjacent_block {
-                BlockType::SOLID | BlockType::TRANSPARENT => false,
+                BlockType::OPAQUE | BlockType::TRANSPARENT => false,
                 BlockType::INVISIBLE => true,
             },
         }

@@ -276,7 +276,8 @@ impl GfxState {
             self.surface.configure(&self.device, &self.surface_config);
 
             self.world_renderer
-                .camera_controller
+                .player
+                .camera
                 .set_aspect_ratio(new_size.width as f32 / new_size.height as f32);
 
             let (depth_texture, depth_texture_view) = GfxState::create_depth_texture(
@@ -291,11 +292,17 @@ impl GfxState {
 
     fn update(&mut self, pressed_keys: &HashSet<KeyCode>, mouse_movement: (f64, f64)) {
         let now = Instant::now();
-        self.world_renderer.camera_controller.handle_input(
+        self.world_renderer.player.handle_input(
             pressed_keys,
             mouse_movement,
             now.duration_since(self.last_update).as_secs_f32(),
-            &self.world_renderer.world_loader.world,
+            |coordinates| {
+                self.world_renderer
+                    .world_loader
+                    .world
+                    .get_block(coordinates)
+                    .is_some_and(|block| block.is_solid())
+            },
         );
 
         self.world_renderer.update();
@@ -349,7 +356,7 @@ impl GfxState {
 }
 
 pub async fn run() {
-    let event_loop: EventLoop<()> = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new().unwrap();
     event_loop
         .run_app(&mut App {
             window: None,

@@ -42,7 +42,7 @@ pub fn find_looked_at_blocks(camera: &CameraController, world: &World) -> Looked
          }| {
             if let Some(block) = world.get_block(voxel) {
                 match block.get_block_type() {
-                    BlockType::SOLID => {
+                    BlockType::OPAQUE => {
                         focused_blocks.solid_block = Some(BlockInfo {
                             coords: voxel,
                             block,

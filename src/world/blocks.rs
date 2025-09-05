@@ -4,7 +4,7 @@ use glam::{IVec3, Vec3};
 
 #[derive(Debug, Clone, Copy)]
 pub enum BlockType {
-    SOLID,
+    OPAQUE,
     TRANSPARENT,
     INVISIBLE,
 }
@@ -42,13 +42,13 @@ impl Block {
         match self {
             Block::AIR => BlockType::INVISIBLE,
             Block::WATER => BlockType::TRANSPARENT,
-            _ => BlockType::SOLID,
+            _ => BlockType::OPAQUE,
         }
     }
 
     pub fn is_solid(&self) -> bool {
         match self.get_block_type() {
-            BlockType::SOLID => true,
+            BlockType::OPAQUE => true,
             _ => false,
         }
     }

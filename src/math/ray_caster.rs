@@ -57,10 +57,11 @@ pub fn cast_ray(
     let mut t_max_y = get_tmax(origin.y, direction.y);
     let mut t_max_z = get_tmax(origin.z, direction.z);
 
-    let start_voxel = origin.floor();
-    let mut x = start_voxel.x as i32;
-    let mut y = start_voxel.y as i32;
-    let mut z = start_voxel.z as i32;
+    let IVec3 {
+        mut x,
+        mut y,
+        mut z,
+    } = origin.floor().as_ivec3();
     // TODO why?
     // if direction.x >= 0.0 && origin.x.fract() == 0.0 {
     //     callback(RaycastHit {
@@ -168,7 +169,6 @@ mod tests {
         assert_that!(get_tmax(-1.0, 1.0), approx_eq(0.0));
     }
 
-    /// positive position
     #[test]
     fn test_get_tmax_positive() {
         assert_that!(get_tmax(0.5, 1.0), approx_eq(0.5));
@@ -177,7 +177,6 @@ mod tests {
         assert_that!(get_tmax(0.25, 0.25), approx_eq(3.0));
     }
 
-    /// negative position
     #[test]
     fn test_get_tmax_negative() {
         assert_that!(get_tmax(-0.5, 1.0), approx_eq(0.5));
@@ -186,7 +185,6 @@ mod tests {
         assert_that!(get_tmax(-0.75, 0.25), approx_eq(3.0));
     }
 
-    /// extreme cases
     #[test]
     fn test_get_tmax_extremes() {
         assert!(!get_tmax(1.1, 0.0).is_finite());

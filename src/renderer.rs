@@ -13,7 +13,7 @@ use crate::{
     },
     texture,
     world::{
-        camera::CameraController,
+        camera::{player::Player, CameraController},
         chunk::VERTICAL_CHUNK_COUNT,
         world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
         World,
@@ -31,7 +31,7 @@ const CHUNK_RENDER_DISTANCE: u32 = 8;
 pub struct WorldRenderer {
     device: Arc<Device>,
     queue: Arc<Queue>,
-    pub camera_controller: CameraController,
+    pub player: Player,
     globals: GlobalsBinding,
     ui_pipeline: UiPipeline,
     terrain_pipeline: TerrainPipeline,
@@ -55,8 +55,6 @@ impl WorldRenderer {
             surface_config.width as f32 / surface_config.height as f32,
             0.1,
             1000.0,
-            10.0,
-            0.002,
         );
 
         let globals = GlobalsBinding::new(&device, &camera_controller);
@@ -107,7 +105,7 @@ impl WorldRenderer {
         WorldRenderer {
             device,
             queue,
-            camera_controller,
+            player: Player::new(camera_controller, 10.0, 0.002),
             globals,
             ui_pipeline,
             terrain_pipeline,
@@ -118,13 +116,13 @@ impl WorldRenderer {
     }
 
     pub fn update(&mut self) {
-        self.globals.update(&self.queue, &self.camera_controller);
+        self.globals.update(&self.queue, &self.player.camera);
 
         self.world_loader.load_chunks(
             &self.device,
             &self.queue,
             &mut self.indirect_draw_buffer,
-            &self.camera_controller,
+            &self.player.camera,
         );
 
         let mut encoder = self
@@ -132,7 +130,7 @@ impl WorldRenderer {
             .create_command_encoder(&CommandEncoderDescriptor { label: None });
 
         self.frustum_culling_pass
-            .run(&self.queue, &mut encoder, &self.camera_controller);
+            .run(&self.queue, &mut encoder, &self.player.camera);
 
         self.queue.submit(iter::once(encoder.finish()));
     }
