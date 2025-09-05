@@ -3,7 +3,7 @@ use core::f32;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
-mod block_ray_caster;
+pub mod block_ray_caster;
 pub mod player;
 
 use crate::math::Plane;

@@ -7,13 +7,13 @@ use crate::{
     renderer::{
         indirect_buffer_manager::MultiDrawIndirectBuffer,
         pipelines::{
-            frustum_culling::FrustumCullingComputePass, terrain::TerrainPipeline, ui::UiPipeline,
-            GlobalsBinding,
+            block_outlines::BlockOutlinePipeline, frustum_culling::FrustumCullingComputePass,
+            terrain::TerrainPipeline, ui::UiPipeline, GlobalsBinding,
         },
     },
     texture,
     world::{
-        camera::{player::Player, CameraController},
+        camera::{block_ray_caster, player::Player, CameraController},
         chunk::VERTICAL_CHUNK_COUNT,
         world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
         World,
@@ -38,6 +38,7 @@ pub struct WorldRenderer {
     pub world_loader: WorldLoader,
     indirect_draw_buffer: MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
     frustum_culling_pass: FrustumCullingComputePass,
+    block_outline_pipeline: BlockOutlinePipeline,
 }
 
 impl WorldRenderer {
@@ -102,6 +103,9 @@ impl WorldRenderer {
             2 * chunks_per_bucket as u32,
         );
 
+        let block_outline_pipeline =
+            BlockOutlinePipeline::new(&device, &globals, surface_config.format);
+
         WorldRenderer {
             device,
             queue,
@@ -112,6 +116,7 @@ impl WorldRenderer {
             world_loader,
             indirect_draw_buffer: ib,
             frustum_culling_pass,
+            block_outline_pipeline,
         }
     }
 
@@ -131,6 +136,14 @@ impl WorldRenderer {
 
         self.frustum_culling_pass
             .run(&self.queue, &mut encoder, &self.player.camera);
+
+        let focused_block =
+            block_ray_caster::find_looked_at_blocks(&self.player.camera, &self.world_loader.world);
+
+        self.block_outline_pipeline.set_outlined_block(
+            &self.queue,
+            focused_block.solid_block.map(|block| block.coords),
+        );
 
         self.queue.submit(iter::once(encoder.finish()));
     }
@@ -165,6 +178,8 @@ impl WorldRenderer {
             );
         }
 
+        self.block_outline_pipeline
+            .render(render_pass, &self.globals);
         self.ui_pipeline.render(render_pass, &self.globals);
     }
 }

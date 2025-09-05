@@ -13,15 +13,15 @@ const FOCUS_DISTANCE: f32 = 10.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct BlockInfo {
-    coords: IVec3,
-    block: Block,
-    face: Option<Direction>,
+    pub coords: IVec3,
+    pub block: Block,
+    pub face: Option<Direction>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct LookedAtBlockResult {
-    solid_block: Option<BlockInfo>,
-    liquid_block: Option<BlockInfo>,
+    pub solid_block: Option<BlockInfo>,
+    pub liquid_block: Option<BlockInfo>,
 }
 
 pub fn find_looked_at_blocks(camera: &CameraController, world: &World) -> LookedAtBlockResult {

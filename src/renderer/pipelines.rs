@@ -8,6 +8,7 @@ use wgpu::{
 
 use crate::world::camera::CameraController;
 
+pub mod block_outlines;
 pub mod frustum_culling;
 pub mod terrain;
 pub mod ui;
