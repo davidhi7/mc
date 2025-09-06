@@ -62,40 +62,6 @@ pub fn cast_ray(
         mut y,
         mut z,
     } = origin.floor().as_ivec3();
-    // TODO why?
-    // if direction.x >= 0.0 && origin.x.fract() == 0.0 {
-    //     callback(RaycastHit {
-    //         voxel: ivec3(x, y, z),
-    //         voxel_face: inverse_direction_x,
-    //         t: 0.0,
-    //     });
-    //     t_max_x = t_dx;
-    // }
-    // if direction.y >= 0.0 && origin.y.fract() == 0.0 {
-    //     callback(RaycastHit {
-    //         voxel: ivec3(x, y, z),
-    //         voxel_face: inverse_direction_y,
-    //         t: 0.0,
-    //     });
-    //     t_max_y = t_dy;
-    // }
-    // if direction.z >= 0.0 && origin.z.fract() == 0.0 {
-    //     callback(RaycastHit {
-    //         voxel: ivec3(x, y, z),
-    //         voxel_face: inverse_direction_z,
-    //         t: 0.0,
-    //     });
-    //     t_max_z = t_dz;
-    // }
-
-    // TODO prüfen
-    // if let RaycastStatus::Stop = callback(RaycastHit {
-    //     voxel: ivec3(x, y, z),
-    //     voxel_face: None,
-    //     t: 0.0,
-    // }) {
-    //     return;
-    // }
 
     loop {
         let min_t_max = t_max_x.min(t_max_y).min(t_max_z);
@@ -131,24 +97,20 @@ pub fn cast_ray(
     }
 }
 
-/// Minimum positive t so that origin + t * direction is an integer, but always f32::INFINITY if direction is 0
+/// If direction is 0.0, then return [`f32::INFINITY`],
+/// otherwise return the minimum positive value for t so that origin + t * direction is in a different voxel than origin is.
 fn get_tmax(origin: f32, direction: f32) -> f32 {
     // Distance between origin_fract and the next smaller integer
     let origin_fract = origin - origin.floor();
 
-    if direction == 0.0 {
-        return f32::INFINITY;
-    }
-
-    if origin_fract == 0.0 {
-        return 0.0;
-    }
-
-    // If direction is positive, we need the distance to the next integer, not last integer
     let distance_to_next_voxel = if direction.signum() > 0.0 {
+        // If direction is positive, then we need to go forward to the next integer to cross the boundary
         1.0 - origin_fract
-    } else {
+    } else if direction.signum() < 0.0 {
+        // If direction is negative, go to the previous integer. If origin_fract is zero, we are already on the boundary
         origin_fract
+    } else {
+        return f32::INFINITY;
     };
 
     // Compute value of t, so that origin + t * direction is the nearest integer value
@@ -164,13 +126,14 @@ mod tests {
 
     #[test]
     fn test_get_tmax_zero() {
-        assert_that!(get_tmax(0.0, 1.0), approx_eq(0.0));
-        assert_that!(get_tmax(1.0, 1.0), approx_eq(0.0));
-        assert_that!(get_tmax(-1.0, 1.0), approx_eq(0.0));
+        assert_that!(get_tmax(0.0, -1.0), approx_eq(0.0));
+        assert_that!(get_tmax(1.0, -1.0), approx_eq(0.0));
+        assert_that!(get_tmax(-1.0, -1.0), approx_eq(0.0));
     }
 
     #[test]
     fn test_get_tmax_positive() {
+        assert_that!(get_tmax(0.0, 1.0), approx_eq(1.0));
         assert_that!(get_tmax(0.5, 1.0), approx_eq(0.5));
         assert_that!(get_tmax(0.3, 1.0), approx_eq(0.7));
         assert_that!(get_tmax(0.3, -1.0), approx_eq(0.3));
@@ -179,6 +142,7 @@ mod tests {
 
     #[test]
     fn test_get_tmax_negative() {
+        assert_that!(get_tmax(-1.0, 1.0), approx_eq(1.0));
         assert_that!(get_tmax(-0.5, 1.0), approx_eq(0.5));
         assert_that!(get_tmax(-0.3, 1.0), approx_eq(0.3));
         assert_that!(get_tmax(-0.3, -1.0), approx_eq(0.7));

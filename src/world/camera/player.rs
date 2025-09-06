@@ -8,10 +8,10 @@ use crate::{
     world::camera::CameraController,
 };
 
-const HEIGHT: f32 = 1.8;
+const HITBOX_HEIGHT: f32 = 1.8;
 const EYE_HEIGHT: f32 = 1.6;
-const WIDTH: f32 = 0.6;
-const HALF_WIDTH: f32 = WIDTH / 2.0;
+const HITBOX_WIDTH: f32 = 0.6;
+const HALF_HITBOX_WIDTH: f32 = HITBOX_WIDTH / 2.0;
 
 pub struct Player {
     pub camera: CameraController,
@@ -19,20 +19,30 @@ pub struct Player {
     speed: f32,
     /// Camera rotation per mouse movement step, multiplied by pi
     sensitivity: f32,
+    /// Player aabb. Stored separatly from the camera eye coordinates for floating point precission during collision detection
+    aabb: Aabb3,
 }
 
 impl Player {
     pub fn new(camera: CameraController, speed: f32, sensitivity: f32) -> Self {
+        let aabb = Player::aabb_from_camera(&camera);
+
         Self {
             camera,
             speed,
             sensitivity,
+            aabb,
         }
     }
 
-    pub fn get_aabb(&self) -> Aabb3 {
-        let min = self.camera.view.eye - vec3(HALF_WIDTH, EYE_HEIGHT, HALF_WIDTH);
-        let max = self.camera.view.eye + vec3(HALF_WIDTH, HEIGHT - EYE_HEIGHT, HALF_WIDTH);
+    fn aabb_from_camera(camera: &CameraController) -> Aabb3 {
+        let min = camera.view.eye - vec3(HALF_HITBOX_WIDTH, EYE_HEIGHT, HALF_HITBOX_WIDTH);
+        let max = camera.view.eye
+            + vec3(
+                HALF_HITBOX_WIDTH,
+                HITBOX_HEIGHT - EYE_HEIGHT,
+                HALF_HITBOX_WIDTH,
+            );
 
         Aabb3 { min, max }
     }
@@ -60,8 +70,8 @@ impl Player {
         self.camera.yaw = new_yaw;
         self.camera.pitch = new_pitch;
 
-        let (yaw_sin, yaw_cos) = ((new_yaw) * PI).sin_cos();
-        let (pitch_sin, pitch_cos) = ((new_pitch) * PI).sin_cos();
+        let (yaw_sin, yaw_cos) = (new_yaw * PI).sin_cos();
+        let (pitch_sin, pitch_cos) = (new_pitch * PI).sin_cos();
 
         // View direction projected to xz plane
         let xz_forward = vec3(yaw_cos, 0.0, yaw_sin);
@@ -121,31 +131,46 @@ fn resolve_collisions(player: &mut Player, movement: Vec3, check_is_solid: impl 
         vec3(0.0, 0.0, movement.z),
     ] {
         player.camera.view.eye += axis;
+        player.aabb.min += axis;
+        player.aabb.max += axis;
 
-        let Aabb3I { min, max } = player.get_aabb().to_ivec_aabb();
+        let Aabb3I { min, max } = player.aabb.to_ivec_aabb();
 
         for x in min.x..=max.x {
-            for z in min.z..=max.z {
-                for y in min.y..=max.y {
+            for y in min.y..=max.y {
+                for z in min.z..=max.z {
                     if check_is_solid(ivec3(x, y, z)) {
-                        if !player.get_aabb().intersects(Aabb3 {
-                            min: ivec3(x, y, z).as_vec3(),
-                            max: ivec3(x + 1, y + 1, z + 1).as_vec3(),
+                        // Check if player intersects with the block
+                        if !player.aabb.to_ivec_aabb().intersects(Aabb3I {
+                            min: ivec3(x, y, z),
+                            max: ivec3(x + 1, y + 1, z + 1),
                         }) {
                             continue;
                         }
                         if axis.x < 0.0 {
-                            player.camera.view.eye.x = (x + 1) as f32 + HALF_WIDTH
+                            player.camera.view.eye.x = (x + 1) as f32 + HALF_HITBOX_WIDTH;
+                            player.aabb.min.x = (x + 1) as f32;
+                            player.aabb.max.x = (x + 1) as f32 + HITBOX_WIDTH;
                         } else if axis.y < 0.0 {
-                            player.camera.view.eye.y = (y + 1) as f32 + EYE_HEIGHT
+                            player.camera.view.eye.y = (y + 1) as f32 + EYE_HEIGHT;
+                            player.aabb.min.y = (y + 1) as f32;
+                            player.aabb.max.y = (y + 1) as f32 + HITBOX_HEIGHT;
                         } else if axis.z < 0.0 {
-                            player.camera.view.eye.z = (z + 1) as f32 + HALF_WIDTH
+                            player.camera.view.eye.z = (z + 1) as f32 + HALF_HITBOX_WIDTH;
+                            player.aabb.min.z = (z + 1) as f32;
+                            player.aabb.max.z = (z + 1) as f32 + HITBOX_WIDTH;
                         } else if axis.x > 0.0 {
-                            player.camera.view.eye.x = x as f32 - HALF_WIDTH
+                            player.camera.view.eye.x = x as f32 - HALF_HITBOX_WIDTH;
+                            player.aabb.min.x = x as f32 - HITBOX_WIDTH;
+                            player.aabb.max.x = x as f32;
                         } else if axis.y > 0.0 {
-                            player.camera.view.eye.y = y as f32 - (HEIGHT - EYE_HEIGHT);
+                            player.camera.view.eye.y = y as f32 - (HITBOX_HEIGHT - EYE_HEIGHT);
+                            player.aabb.min.y = y as f32 - HITBOX_HEIGHT;
+                            player.aabb.max.y = y as f32;
                         } else if axis.z > 0.0 {
-                            player.camera.view.eye.z = z as f32 - HALF_WIDTH
+                            player.camera.view.eye.z = z as f32 - HALF_HITBOX_WIDTH;
+                            player.aabb.min.z = z as f32 - HITBOX_WIDTH;
+                            player.aabb.max.z = z as f32;
                         }
                         continue 'axis;
                     }
