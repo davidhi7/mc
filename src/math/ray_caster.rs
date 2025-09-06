@@ -7,10 +7,8 @@ pub struct RaycastHit {
     /// Integer coordinates of the intersected voxel
     pub voxel: IVec3,
     /// Direction of the intersected voxel face. None, if origin is inside this voxel
-    /// Example: If ray is directed in negative x direction and hits a voxel, direction is Direction::X
-    // pub voxel_face: Option<Direction>,
-    /// TODO update
-    pub voxel_face: Direction,
+    /// Example: If ray is directed in negative x direction and hits a voxel, direction is always Direction::X.
+    pub voxel_face: Option<Direction>,
     /// Value of t, so that the intersection is at origin + t * direction
     pub t: f32,
 }
@@ -89,7 +87,7 @@ pub fn cast_ray(
 
         if let RaycastStatus::Stop = callback(RaycastHit {
             voxel: ivec3(x, y, z),
-            voxel_face: direction,
+            voxel_face: Some(direction),
             t: min_t_max,
         }) {
             break;

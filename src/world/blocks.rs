@@ -1,5 +1,3 @@
-use std::array::IntoIter;
-
 use glam::{IVec3, Vec3};
 
 #[derive(Debug, Clone, Copy)]
@@ -66,7 +64,7 @@ pub enum Direction {
 }
 
 impl Direction {
-    pub fn into_iter() -> IntoIter<Direction, 6> {
+    pub fn into_iter() -> impl Iterator<Item = Direction> {
         [
             Direction::NegX,
             Direction::X,

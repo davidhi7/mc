@@ -37,9 +37,9 @@ impl View {
 pub struct CameraController {
     view: View,
     perspective: Perspective,
-    /// Horizontal camera orientation multiplied with pi. Within [0.0, 2.0). 0.0 is facing towards X+ / east; 0.5 is facing towards Z+ / north
+    /// Horizontal camera orientation when multiplied with pi. Within [0.0, 2.0). 0.0 is facing towards X+ / east; 0.5 is facing towards Z+ / north
     yaw: f32,
-    /// vertical camera orientation coefficient multiplied with pi. Within [-0.5, 0.5]. 0.0 is facing forward; -0.5 is facing downward
+    /// vertical camera orientation when multiplied with pi. Within [-0.5, 0.5]. 0.0 is facing forward; -0.5 is facing downward
     pitch: f32,
 }
 

@@ -38,7 +38,7 @@ pub fn find_looked_at_blocks(camera: &CameraController, world: &World) -> Looked
         |RaycastHit {
              voxel,
              voxel_face: direction,
-             t,
+             ..
          }| {
             if let Some(block) = world.get_block(voxel) {
                 match block.get_block_type() {
@@ -46,7 +46,7 @@ pub fn find_looked_at_blocks(camera: &CameraController, world: &World) -> Looked
                         focused_blocks.solid_block = Some(BlockInfo {
                             coords: voxel,
                             block,
-                            face: Some(direction),
+                            face: direction,
                         });
                         RaycastStatus::Stop
                     }
@@ -55,7 +55,7 @@ pub fn find_looked_at_blocks(camera: &CameraController, world: &World) -> Looked
                             focused_blocks.liquid_block = Some(BlockInfo {
                                 coords: voxel,
                                 block,
-                                face: Some(direction),
+                                face: direction,
                             });
                         }
                         RaycastStatus::Continue
