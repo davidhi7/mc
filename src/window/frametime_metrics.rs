@@ -7,7 +7,7 @@ pub struct FrameTimeMetrics {
     deque: VecDeque<Duration>,
     sampling_interval_ms: u128,
     last_sample_instant: Instant,
-    pub last_sample_frametime_ms: f64,
+    last_sample_frametime_ms: f64,
 }
 
 impl FrameTimeMetrics {
@@ -37,5 +37,9 @@ impl FrameTimeMetrics {
             self.deque.clear();
             self.last_sample_instant = now;
         }
+    }
+
+    pub fn get_sample_frametime(&self) -> f64 {
+        self.last_sample_frametime_ms
     }
 }

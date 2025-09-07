@@ -3,8 +3,8 @@ use std::fs;
 use anyhow::*;
 use image::GenericImageView;
 use wgpu::{
-    Device, Sampler, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
-    TextureView, TextureViewDescriptor,
+    Device, Sampler, TexelCopyBufferLayout, TextureDescriptor, TextureDimension, TextureFormat,
+    TextureUsages, TextureView, TextureViewDescriptor,
 };
 
 const TEXTURE_DIR: &str = "res/assets/minecraft/textures/";
@@ -46,7 +46,7 @@ pub fn load_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<T
         queue.write_texture(
             texture.as_image_copy(),
             &img.to_rgba8(),
-            wgpu::ImageDataLayout {
+            TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * dimensions.0),
                 rows_per_image: Some(dimensions.1),

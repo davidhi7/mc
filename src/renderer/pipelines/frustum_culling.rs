@@ -1,5 +1,4 @@
 use wgpu::{
-    include_wgsl,
     util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferUsages,
@@ -7,7 +6,10 @@ use wgpu::{
     PipelineLayoutDescriptor, Queue, ShaderStages,
 };
 
-use crate::world::camera::{CameraController, CameraFrustum};
+use crate::{
+    shaders,
+    world::camera::{CameraController, CameraFrustum},
+};
 
 struct CullingDataBinding {
     layout: BindGroupLayout,
@@ -135,8 +137,7 @@ impl FrustumCullingComputePass {
             indirect_draw_buffer,
         );
 
-        let shader =
-            device.create_shader_module(include_wgsl!("../../../res/shaders/frustum-culling.wgsl"));
+        let shader = device.create_shader_module(shaders::SHADER_FRUSTUM_CULLING);
 
         let visibility_check_pipeline =
             device.create_compute_pipeline(&ComputePipelineDescriptor {

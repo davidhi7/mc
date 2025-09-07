@@ -22,7 +22,7 @@ use crate::world::{
 pub fn launch(
     job_receiver: Receiver<ChunkJob>,
     result_sender: Sender<ChunkJobResult>,
-    device: Arc<Device>,
+    device: Device,
     noise: Simplex,
 ) {
     loop {

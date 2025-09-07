@@ -1,6 +1,8 @@
 mod math;
 mod renderer;
-pub mod tests;
+pub(crate) mod shaders;
+#[cfg(test)]
+pub(crate) mod tests;
 mod texture;
 mod window;
 mod world;

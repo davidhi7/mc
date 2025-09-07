@@ -53,6 +53,8 @@ impl CameraController {
         z_near: f32,
         z_far: f32,
     ) -> Self {
+        assert!(direction.is_normalized());
+        assert!(up.is_normalized());
         CameraController {
             view: View {
                 eye,
@@ -66,6 +68,7 @@ impl CameraController {
                 z_near,
                 z_far,
             },
+            // todo check
             yaw: f32::atan2(direction.x, direction.z),
             pitch: f32::atan(direction.y),
         }

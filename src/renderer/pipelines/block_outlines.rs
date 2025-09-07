@@ -6,12 +6,11 @@ use wgpu::{
     BlendState, Buffer, BufferAddress, BufferDescriptor, BufferUsages, ColorTargetState,
     ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Device, FragmentState,
     FrontFace, MultisampleState, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology,
-    Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor,
-    ShaderSource, StencilState, TextureFormat, VertexAttribute, VertexBufferLayout, VertexState,
-    VertexStepMode,
+    Queue, RenderPass, RenderPipeline, RenderPipelineDescriptor, StencilState, TextureFormat,
+    VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode,
 };
 
-use crate::renderer::pipelines::GlobalsBinding;
+use crate::{renderer::pipelines::GlobalsBinding, shaders};
 
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -78,12 +77,7 @@ impl BlockOutlinePipeline {
         globals_binding: &GlobalsBinding,
         surface_format: TextureFormat,
     ) -> Self {
-        let shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("block outline shader"),
-            source: ShaderSource::Wgsl(
-                include_str!("../../../res/shaders/block-outlines.wgsl").into(),
-            ),
-        });
+        let shader = device.create_shader_module(shaders::SHADER_BLOCK_OUTLINES);
 
         let vertex_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("block outline vertex buffer"),

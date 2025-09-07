@@ -1,4 +1,4 @@
-use std::{collections::HashMap, num::NonZeroU32};
+use std::num::NonZeroU32;
 
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -6,18 +6,31 @@ use wgpu::{
     ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Device,
     Face, FragmentState, FrontFace, MultisampleState, PipelineCompilationOptions,
     PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, RenderPass,
-    RenderPipeline, RenderPipelineDescriptor, Sampler, ShaderModuleDescriptor, ShaderSource,
-    ShaderStages, StencilState, TextureFormat, TextureView, VertexState,
+    RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType, ShaderStages,
+    StencilState, TextureFormat, TextureSampleType, TextureView, TextureViewDimension, VertexState,
 };
 
-use crate::renderer::{
-    pipelines::GlobalsBinding,
-    vertex_buffer::{QuadInstance, TransparentQuadInstance},
+use crate::{
+    renderer::{
+        pipelines::GlobalsBinding,
+        vertex_buffer::{QuadInstance, TransparentQuadInstance},
+    },
+    shaders,
 };
 
-struct TerrainBinding {
+struct TerrainTexturesBinding {
     layout: BindGroupLayout,
     binding: BindGroup,
+}
+
+struct TerrainBuffersBinding {
+    layout: BindGroupLayout,
+    binding: BindGroup,
+}
+
+struct TerrainBinding {
+    buffers: TerrainBuffersBinding,
+    textures: TerrainTexturesBinding,
 }
 
 impl TerrainBinding {
@@ -28,8 +41,8 @@ impl TerrainBinding {
         textures: Vec<TextureView>,
         sampler: &Sampler,
     ) -> Self {
-        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("terrain pipeline data layout"),
+        let layout_buffers = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("terrain pipeline textures layout"),
             entries: &[
                 // Constant vertex buffer
                 BindGroupLayoutEntry {
@@ -53,30 +66,38 @@ impl TerrainBinding {
                     },
                     count: None,
                 },
+            ],
+        });
+
+        let layout_textures = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("terrain pipeline buffers layout"),
+            entries: &[
                 // Textures
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
                         multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        sample_type: TextureSampleType::Float { filterable: true },
                     },
-                    count: NonZeroU32::new(textures.len() as u32),
+                    count: Some(
+                        NonZeroU32::new(textures.len() as u32).expect("Zero textures not allowed"),
+                    ),
                 },
                 // Textures sampler
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
         });
 
-        let binding = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("terrain pipeline data binding"),
-            layout: &layout,
+        let binding_buffers = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("terrain pipeline buffers binding"),
+            layout: &layout_buffers,
             entries: &[
                 BindGroupEntry {
                     binding: 0,
@@ -86,20 +107,37 @@ impl TerrainBinding {
                     binding: 1,
                     resource: chunk_buffer.as_entire_binding(),
                 },
+            ],
+        });
+
+        let binding_textures = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("terrain pipeline textures binding"),
+            layout: &layout_textures,
+            entries: &[
                 BindGroupEntry {
-                    binding: 2,
+                    binding: 0,
                     resource: BindingResource::TextureViewArray(
+                        // Map `TextureView` to `&TextureView`
                         &(textures.iter().collect::<Vec<_>>()),
                     ),
                 },
                 BindGroupEntry {
-                    binding: 3,
+                    binding: 1,
                     resource: BindingResource::Sampler(&sampler),
                 },
             ],
         });
 
-        Self { layout, binding }
+        Self {
+            buffers: TerrainBuffersBinding {
+                layout: layout_buffers,
+                binding: binding_buffers,
+            },
+            textures: TerrainTexturesBinding {
+                layout: layout_textures,
+                binding: binding_textures,
+            },
+        }
     }
 }
 
@@ -121,21 +159,19 @@ impl TerrainPipeline {
     ) -> Self {
         let binding = TerrainBinding::new(device, vertex_buffer, chunk_buffer, textures, sampler);
 
-        let terrain_shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("terrain solid shader"),
-            source: ShaderSource::Wgsl(include_str!("../../../res/shaders/terrain.wgsl").into()),
-        });
+        let terrain_shader = device.create_shader_module(shaders::SHADER_TERRAIN);
 
-        let water_shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("terrain water shader"),
-            source: ShaderSource::Wgsl(include_str!("../../../res/shaders/water.wgsl").into()),
-        });
+        let water_shader = device.create_shader_module(shaders::SHADER_WATER);
 
         let terrain_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("terrain render pipeline"),
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("terrain render pipeline layout"),
-                bind_group_layouts: &[&globals_binding.layout, &binding.layout],
+                bind_group_layouts: &[
+                    &globals_binding.layout,
+                    &binding.buffers.layout,
+                    &binding.textures.layout,
+                ],
                 push_constant_ranges: &[],
             })),
             vertex: VertexState {
@@ -143,7 +179,7 @@ impl TerrainPipeline {
                 entry_point: Some("vs_main"),
                 buffers: &[QuadInstance::desc()],
                 compilation_options: PipelineCompilationOptions {
-                    constants: &HashMap::new(),
+                    constants: &[],
                     zero_initialize_workgroup_memory: false,
                 },
             },
@@ -156,7 +192,7 @@ impl TerrainPipeline {
                     write_mask: ColorWrites::ALL,
                 })],
                 compilation_options: PipelineCompilationOptions {
-                    constants: &HashMap::new(),
+                    constants: &[],
                     zero_initialize_workgroup_memory: false,
                 },
             }),
@@ -189,7 +225,11 @@ impl TerrainPipeline {
             label: Some("terrain water render pipeline"),
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("terrain water render pipeline layout"),
-                bind_group_layouts: &[&globals_binding.layout, &binding.layout],
+                bind_group_layouts: &[
+                    &globals_binding.layout,
+                    &binding.buffers.layout,
+                    &binding.textures.layout,
+                ],
                 push_constant_ranges: &[],
             })),
             vertex: VertexState {
@@ -197,7 +237,7 @@ impl TerrainPipeline {
                 entry_point: Some("vs_main"),
                 buffers: &[TransparentQuadInstance::desc()],
                 compilation_options: PipelineCompilationOptions {
-                    constants: &HashMap::new(),
+                    constants: &[],
                     zero_initialize_workgroup_memory: false,
                 },
             },
@@ -210,7 +250,7 @@ impl TerrainPipeline {
                     write_mask: ColorWrites::ALL,
                 })],
                 compilation_options: PipelineCompilationOptions {
-                    constants: &HashMap::new(),
+                    constants: &[],
                     zero_initialize_workgroup_memory: false,
                 },
             }),
@@ -258,7 +298,8 @@ impl TerrainPipeline {
         render_pass.set_pipeline(&self.terrain_pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_bind_group(0, &globals.binding, &[]);
-        render_pass.set_bind_group(1, Some(&self.binding.binding), &[]);
+        render_pass.set_bind_group(1, Some(&self.binding.buffers.binding), &[]);
+        render_pass.set_bind_group(2, Some(&self.binding.textures.binding), &[]);
         render_pass.multi_draw_indirect(indirect_buffer, indirect_offset, indirect_count);
     }
 
@@ -274,7 +315,8 @@ impl TerrainPipeline {
         render_pass.set_pipeline(&self.water_pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_bind_group(0, &globals.binding, &[]);
-        render_pass.set_bind_group(1, Some(&self.binding.binding), &[]);
+        render_pass.set_bind_group(1, Some(&self.binding.buffers.binding), &[]);
+        render_pass.set_bind_group(2, Some(&self.binding.textures.binding), &[]);
         render_pass.multi_draw_indirect(indirect_buffer, indirect_offset, indirect_count);
     }
 }

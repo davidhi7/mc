@@ -19,6 +19,7 @@ struct Globals {
     view_proj: [[f32; 4]; 4],
 }
 
+/// Binding for ubiquitous data, currently only the view projection matrix.
 pub struct GlobalsBinding {
     globals_buffer: Buffer,
     pub layout: BindGroupLayout,

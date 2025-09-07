@@ -2,10 +2,10 @@ use wgpu::{
     BlendState, ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState,
     Device, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, PolygonMode,
     PrimitiveState, PrimitiveTopology, RenderPass, RenderPipeline, RenderPipelineDescriptor,
-    ShaderModuleDescriptor, ShaderSource, StencilState, TextureFormat, VertexState,
+    StencilState, TextureFormat, VertexState,
 };
 
-use crate::renderer::pipelines::GlobalsBinding;
+use crate::{renderer::pipelines::GlobalsBinding, shaders};
 
 pub struct UiPipeline {
     pipeline: RenderPipeline,
@@ -17,10 +17,7 @@ impl UiPipeline {
         globals_binding: &GlobalsBinding,
         surface_format: TextureFormat,
     ) -> Self {
-        let shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("reticle shader"),
-            source: ShaderSource::Wgsl(include_str!("../../../res/shaders/reticle.wgsl").into()),
-        });
+        let shader = device.create_shader_module(shaders::SHADER_RETICLE);
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("reticle render pipeline layout"),

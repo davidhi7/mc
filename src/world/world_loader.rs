@@ -147,7 +147,7 @@ pub struct WorldLoader {
 }
 
 impl WorldLoader {
-    pub fn new(world: World, thread_count: u32, device: Arc<Device>, render_distance: u32) -> Self {
+    pub fn new(world: World, thread_count: u32, device: Device, render_distance: u32) -> Self {
         let mut instance = Self {
             world,
             render_distance,
@@ -161,10 +161,10 @@ impl WorldLoader {
         for _ in 0..thread_count {
             let (job_sender, job_receiver) = channel();
             let (result_sender, result_receiver) = channel();
-            let device = Arc::clone(&device);
-            let noise = instance.world.noise.clone();
+            let noise_clone = instance.world.noise.clone();
+            let device_clone = device.clone();
             thread::spawn(move || {
-                worker::launch(job_receiver, result_sender, device, noise);
+                worker::launch(job_receiver, result_sender, device_clone, noise_clone);
             });
 
             instance.worker_pool.push(WorkerThreadHandle {
