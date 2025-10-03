@@ -10,7 +10,7 @@ use std::{
 };
 
 use bytemuck::{Pod, Zeroable};
-use glam::{ivec2, ivec3, IVec2, IVec3};
+use glam::{ivec2, ivec3, IVec2, IVec3, Vec3};
 use itertools::Itertools;
 use wgpu::CommandEncoderDescriptor;
 use wgpu::{Buffer, Device, Queue};
@@ -25,7 +25,6 @@ use crate::{
     },
     world::{
         self,
-        camera::CameraController,
         chunk::{ChunkStack, ChunkUVW, ChunkUW, VERTICAL_CHUNK_COUNT},
         World,
     },
@@ -182,9 +181,9 @@ impl WorldLoader {
         device: &Device,
         queue: &Queue,
         indirect_buffer: &mut MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
-        camera: &CameraController,
+        position: Vec3,
     ) {
-        let camera_chunk = world::get_chunk_coordinates_f32(camera.get_position());
+        let camera_chunk = world::get_chunk_coordinates_f32(position);
 
         if let Some(last_camera_chunk) = self.last_camera_chunk {
             self.handle_results();

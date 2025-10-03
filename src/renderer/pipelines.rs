@@ -1,12 +1,11 @@
 use bytemuck::{Pod, Zeroable};
+use glam::Mat4;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferUsages, Device, Queue,
     ShaderStages,
 };
-
-use crate::world::camera::CameraController;
 
 pub mod block_outlines;
 pub mod frustum_culling;
@@ -27,11 +26,11 @@ pub struct GlobalsBinding {
 }
 
 impl GlobalsBinding {
-    pub fn new(device: &Device, camera: &CameraController) -> Self {
+    pub fn new(device: &Device, view_projection_matrix: Mat4) -> Self {
         let globals_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("globals buffer"),
             contents: bytemuck::bytes_of(&Globals {
-                view_proj: camera.get_view_projection_matrix().to_cols_array_2d(),
+                view_proj: view_projection_matrix.to_cols_array_2d(),
             }),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
@@ -66,12 +65,12 @@ impl GlobalsBinding {
         }
     }
 
-    pub fn update(&self, queue: &Queue, camera: &CameraController) {
+    pub fn update(&self, queue: &Queue, view_projection_matrix: Mat4) {
         queue.write_buffer(
             &self.globals_buffer,
             0,
             bytemuck::bytes_of(&Globals {
-                view_proj: camera.get_view_projection_matrix().to_cols_array_2d(),
+                view_proj: view_projection_matrix.to_cols_array_2d(),
             }),
         );
     }

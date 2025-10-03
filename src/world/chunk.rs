@@ -1,6 +1,6 @@
 use std::array;
 
-use glam::{ivec2, ivec3, IVec2, IVec3};
+use glam::{IVec2, IVec3, ivec2, ivec3};
 use noise::NoiseFn;
 
 use crate::{

@@ -1,6 +1,10 @@
-use std::{collections::HashMap, iter, time::Instant};
+use std::{
+    collections::HashMap,
+    iter,
+    time::{Duration, Instant},
+};
 
-use glam::vec3;
+use glam::{Vec3, vec3};
 use wgpu::{
     Color, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue, RenderPass,
     RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp,
@@ -13,17 +17,17 @@ use crate::{
     renderer::{
         indirect_buffer_manager::MultiDrawIndirectBuffer,
         pipelines::{
-            block_outlines::BlockOutlinePipeline, frustum_culling::FrustumCullingComputePass,
-            terrain::TerrainPipeline, ui::UiPipeline, GlobalsBinding,
+            GlobalsBinding, block_outlines::BlockOutlinePipeline,
+            frustum_culling::FrustumCullingComputePass, terrain::TerrainPipeline, ui::UiPipeline,
         },
     },
     texture,
     window::InputState,
     world::{
-        camera::{block_ray_caster, player::Player, CameraController},
+        World,
+        camera::{Perspective, block_ray_caster, player::PlayerState},
         chunk::VERTICAL_CHUNK_COUNT,
         world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
-        World,
     },
 };
 
@@ -164,7 +168,7 @@ impl Renderer {
 pub struct WorldRenderer {
     device: Device,
     queue: Queue,
-    player: Player,
+    player: PlayerState,
     globals: GlobalsBinding,
     ui_pipeline: UiPipeline,
     terrain_pipeline: TerrainPipeline,
@@ -172,7 +176,7 @@ pub struct WorldRenderer {
     indirect_draw_buffer: MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
     frustum_culling_pass: FrustumCullingComputePass,
     block_outline_pipeline: BlockOutlinePipeline,
-    last_update: Instant,
+    update_loop: FixedTimestepLoop,
 }
 
 impl WorldRenderer {
@@ -183,17 +187,18 @@ impl WorldRenderer {
         surface_format: TextureFormat,
         world: World,
     ) -> Self {
-        let camera_controller = CameraController::new(
-            vec3(177.0, 33.61, 142.1),
-            glam::Vec3::Z,
-            glam::Vec3::Y,
-            f32::to_radians(90.0),
-            surface_size.width as f32 / surface_size.height as f32,
-            0.1,
-            1000.0,
+        let player = PlayerState::new(
+            Perspective {
+                fov_y: f32::to_radians(90.0),
+                aspect_ratio: surface_size.width as f32 / surface_size.height as f32,
+                z_near: 0.1,
+                z_far: 1000.0,
+            },
+            vec3(177.0, 50.60, 142.1),
+            Vec3::Z,
         );
 
-        let globals = GlobalsBinding::new(&device, &camera_controller);
+        let globals = GlobalsBinding::new(&device, player.view_projection());
 
         let mut world_loader = WorldLoader::new(world, 8, device.clone(), CHUNK_RENDER_DISTANCE);
 
@@ -215,7 +220,7 @@ impl WorldRenderer {
             &batches_map,
         );
 
-        world_loader.load_chunks(&device, &queue, &mut ib, &camera_controller);
+        world_loader.load_chunks(&device, &queue, &mut ib, player.eye());
 
         let terrain_pipeline = TerrainPipeline::new(
             &device,
@@ -242,7 +247,7 @@ impl WorldRenderer {
         WorldRenderer {
             device,
             queue,
-            player: Player::new(camera_controller, 10.0, 0.002),
+            player,
             globals,
             ui_pipeline,
             terrain_pipeline,
@@ -250,50 +255,75 @@ impl WorldRenderer {
             indirect_draw_buffer: ib,
             frustum_culling_pass,
             block_outline_pipeline,
-            last_update: Instant::now(),
+            update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(1.0 / 50.0)),
         }
     }
 
     fn update_aspect_ratio(&mut self, new_size: PhysicalSize<u32>) {
         self.player
-            .camera
             .set_aspect_ratio(new_size.width as f32 / new_size.height as f32);
     }
 
     pub fn update(&mut self, input_state: &InputState) {
-        let now = Instant::now();
-        self.player.handle_input(
-            &input_state.pressed_keys,
-            input_state.mouse_movement,
-            now.duration_since(self.last_update).as_secs_f32(),
-            |coordinates| {
-                self.world_loader
-                    .world
-                    .get_block(coordinates)
-                    .is_some_and(|block| block.is_solid())
-            },
+        self.player.update_rotation(input_state.mouse_movement);
+
+        let lag_s = self
+            .update_loop
+            .tick(|TickInformation { timestep_s, time_s }| {
+                self.player.update_position(
+                    &input_state.pressed_keys,
+                    timestep_s,
+                    time_s,
+                    |coordinates| {
+                        self.world_loader
+                            .world
+                            .get_block(coordinates)
+                            .is_some_and(|block| block.is_solid())
+                    },
+                );
+            });
+
+        let view = self.player.extrapolate_view(lag_s, &mut |coordinates| {
+            self.world_loader
+                .world
+                .get_block(coordinates)
+                .is_some_and(|block| block.is_solid())
+        });
+
+        self.globals.update(
+            &self.queue,
+            self.player
+                .extrapolate_view_projection(lag_s, &mut |coordinates| {
+                    self.world_loader
+                        .world
+                        .get_block(coordinates)
+                        .is_some_and(|block| block.is_solid())
+                }),
         );
-
-        self.last_update = now;
-
-        self.globals.update(&self.queue, &self.player.camera);
 
         self.world_loader.load_chunks(
             &self.device,
             &self.queue,
             &mut self.indirect_draw_buffer,
-            &self.player.camera,
+            self.player.eye(),
         );
 
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor { label: None });
 
-        self.frustum_culling_pass
-            .run(&self.queue, &mut encoder, &self.player.camera);
+        self.frustum_culling_pass.run(
+            &self.queue,
+            &mut encoder,
+            &self.player.view(),
+            &self.player.perspective(),
+        );
 
-        let focused_block =
-            block_ray_caster::find_looked_at_blocks(&self.player.camera, &self.world_loader.world);
+        let focused_block = block_ray_caster::find_looked_at_blocks(
+            self.player.eye(),
+            self.player.direction(),
+            &self.world_loader.world,
+        );
 
         self.block_outline_pipeline.set_outlined_block(
             &self.queue,
@@ -336,5 +366,44 @@ impl WorldRenderer {
         self.block_outline_pipeline
             .render(render_pass, &self.globals);
         self.ui_pipeline.render(render_pass, &self.globals);
+    }
+}
+
+struct FixedTimestepLoop {
+    timestep_s: f32,
+    accumulator_s: f32,
+    last_tick: Instant,
+    start_time: Instant,
+}
+
+struct TickInformation {
+    timestep_s: f32,
+    time_s: f32,
+}
+
+impl FixedTimestepLoop {
+    fn new(timestep: Duration) -> Self {
+        FixedTimestepLoop {
+            timestep_s: timestep.as_secs_f32(),
+            accumulator_s: 0.0,
+            last_tick: Instant::now(),
+            start_time: Instant::now(),
+        }
+    }
+
+    fn tick(&mut self, mut tick: impl FnMut(TickInformation)) -> f32 {
+        let current_time = Instant::now();
+        self.accumulator_s += current_time.duration_since(self.last_tick).as_secs_f32();
+        self.last_tick = current_time;
+
+        while self.accumulator_s >= self.timestep_s {
+            tick(TickInformation {
+                timestep_s: self.timestep_s,
+                time_s: self.start_time.elapsed().as_secs_f32(),
+            });
+            self.accumulator_s -= self.timestep_s;
+        }
+
+        self.accumulator_s
     }
 }

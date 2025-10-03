@@ -1,10 +1,9 @@
-use glam::IVec3;
+use glam::{IVec3, Vec3};
 
 use crate::{
     math::ray_caster::{self, RaycastHit, RaycastStatus},
     world::{
         blocks::{Block, BlockType, Direction},
-        camera::CameraController,
         World,
     },
 };
@@ -24,7 +23,7 @@ pub struct LookedAtBlockResult {
     pub liquid_block: Option<BlockInfo>,
 }
 
-pub fn find_looked_at_blocks(camera: &CameraController, world: &World) -> LookedAtBlockResult {
+pub fn find_looked_at_blocks(eye: Vec3, direction: Vec3, world: &World) -> LookedAtBlockResult {
     let mut focused_blocks = LookedAtBlockResult {
         solid_block: None,
         liquid_block: None,
@@ -32,8 +31,8 @@ pub fn find_looked_at_blocks(camera: &CameraController, world: &World) -> Looked
 
     // TODO handle blocks inside camera
     ray_caster::cast_ray(
-        camera.view.eye,
-        camera.view.direction,
+        eye,
+        direction,
         FOCUS_DISTANCE,
         |RaycastHit {
              voxel,

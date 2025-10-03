@@ -8,7 +8,7 @@ use wgpu::{
 
 use crate::{
     shaders,
-    world::camera::{CameraController, CameraFrustum},
+    world::camera::{CameraFrustum, Perspective, View},
 };
 
 struct CullingDataBinding {
@@ -177,11 +177,17 @@ impl FrustumCullingComputePass {
         }
     }
 
-    pub fn run(&self, queue: &Queue, encoder: &mut CommandEncoder, camera: &CameraController) {
+    pub fn run(
+        &self,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        view: &View,
+        perspective: &Perspective,
+    ) {
         queue.write_buffer(
             &self.frustum_buffer,
             0,
-            bytemuck::bytes_of(&CameraFrustum::from_camera(camera)),
+            bytemuck::bytes_of(&CameraFrustum::from_camera(view, perspective)),
         );
 
         let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
