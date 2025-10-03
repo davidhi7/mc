@@ -43,7 +43,7 @@ const BASE_FRICTION_GROUND: f32 = 0.91 * 0.6;
 const BASE_FRICTION_AIRBORNE: f32 = 0.91 * 1.0;
 
 /// The velocity along the y axis that initiates a jump.
-const JUMP_ACCEL: f32 = 2.0 * 20.0 * 0.42;
+const JUMP_ACCEL: f32 = 20.0 * 0.42;
 /// Acceleration along the y axis during free fall.
 const GRAVITY: f32 = 20.0 * -0.08;
 // Vertical drag, that is the factor of velocity that is conserved after every tick
@@ -294,23 +294,6 @@ impl PlayerState {
         if self.physics_state.velocity.z.abs() < MIN_VELOCITY_THRESHOLD {
             self.physics_state.velocity.z = 0.0;
         }
-
-        println!("{time_s},{},", self.physics_state.eye.y);
-        println!(
-            "{},,{}",
-            time_s + delta_s * 0.25,
-            self.extrapolate_view(delta_s * 0.25, &check_is_solid).eye.y
-        );
-        println!(
-            "{},,{}",
-            time_s + delta_s * 0.5,
-            self.extrapolate_view(delta_s * 0.5, &check_is_solid).eye.y
-        );
-        println!(
-            "{},,{}",
-            time_s + delta_s * 0.75,
-            self.extrapolate_view(delta_s * 0.75, &check_is_solid).eye.y
-        );
     }
 
     pub fn eye(&self) -> Vec3 {

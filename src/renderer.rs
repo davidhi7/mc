@@ -255,7 +255,7 @@ impl WorldRenderer {
             indirect_draw_buffer: ib,
             frustum_culling_pass,
             block_outline_pipeline,
-            update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(1.0 / 50.0)),
+            update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(1.0 / 20.0)),
         }
     }
 
@@ -282,13 +282,6 @@ impl WorldRenderer {
                     },
                 );
             });
-
-        let view = self.player.extrapolate_view(lag_s, &mut |coordinates| {
-            self.world_loader
-                .world
-                .get_block(coordinates)
-                .is_some_and(|block| block.is_solid())
-        });
 
         self.globals.update(
             &self.queue,
