@@ -1,14 +1,14 @@
 use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferUsages,
     CommandEncoder, ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device,
     PipelineLayoutDescriptor, Queue, ShaderStages,
+    util::{BufferInitDescriptor, DeviceExt},
 };
 
 use crate::{
+    camera::{CameraFrustum, Perspective, View},
     shaders,
-    world::camera::{CameraFrustum, Perspective, View},
 };
 
 struct CullingDataBinding {

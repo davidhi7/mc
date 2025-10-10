@@ -6,14 +6,18 @@ use std::{
 
 use glam::{Vec3, vec3};
 use wgpu::{
-    Color, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue, RenderPass,
-    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp,
-    Surface, SurfaceError, Texture, TextureDescriptor, TextureDimension, TextureFormat,
+    Color, CommandEncoder, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue,
+    RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    StoreOp, Surface, SurfaceError, Texture, TextureDescriptor, TextureDimension, TextureFormat,
     TextureUsages, TextureView, TextureViewDescriptor,
 };
 use winit::dpi::PhysicalSize;
 
 use crate::{
+    camera::{
+        Perspective, block_ray_caster,
+        player::{self, PlayerState},
+    },
     renderer::{
         indirect_buffer_manager::MultiDrawIndirectBuffer,
         pipelines::{
@@ -25,10 +29,6 @@ use crate::{
     window::input::InputState,
     world::{
         World,
-        camera::{
-            Perspective, block_ray_caster,
-            player::{self, PlayerState},
-        },
         chunk::VERTICAL_CHUNK_COUNT,
         world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
     },
@@ -40,7 +40,7 @@ mod pipelines;
 
 pub mod vertex_buffer;
 
-const CHUNK_RENDER_DISTANCE: u32 = 1;
+const CHUNK_RENDER_DISTANCE: u32 = 4;
 
 pub struct Renderer {
     device: Device,
@@ -128,38 +128,8 @@ impl Renderer {
                 label: Some("render encoder"),
             });
 
-        {
-            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("render pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color {
-                            // TODO don't use hardcoded clear color
-                            r: 135.0 / 255.0,
-                            g: 206.0 / 255.0,
-                            b: 235.0 / 255.0,
-                            a: 1.0,
-                        }),
-                        store: StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture_view,
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Clear(1.0),
-                        store: StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-
-            self.world_renderer.render(&mut render_pass);
-        }
+        self.world_renderer
+            .render(&mut encoder, &view, &self.depth_texture_view);
 
         self.queue.submit(iter::once(encoder.finish()));
         surface_texture.present();
@@ -273,24 +243,18 @@ impl WorldRenderer {
         let lag_s = self
             .update_loop
             .tick(|TickInformation { timestep_s, time_s }| {
-                self.player
-                    .update_position(input_state, timestep_s, time_s, |coordinates| {
-                        self.world_loader
-                            .world
-                            .get_block(coordinates)
-                            .is_some_and(|block| block.is_solid())
-                    });
+                self.player.update_position(
+                    input_state,
+                    timestep_s,
+                    time_s,
+                    &self.world_loader.world,
+                );
             });
 
         self.globals.update(
             &self.queue,
             self.player
-                .extrapolate_view_projection(lag_s, &mut |coordinates| {
-                    self.world_loader
-                        .world
-                        .get_block(coordinates)
-                        .is_some_and(|block| block.is_solid())
-                }),
+                .extrapolate_view_projection(lag_s, &self.world_loader.world),
         );
 
         self.world_loader.load_chunks(
@@ -298,17 +262,6 @@ impl WorldRenderer {
             &self.queue,
             &mut self.indirect_draw_buffer,
             self.player.eye(),
-        );
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor { label: None });
-
-        self.frustum_culling_pass.run(
-            &self.queue,
-            &mut encoder,
-            &self.player.view(),
-            &self.player.perspective(),
         );
 
         let focused_block = block_ray_caster::find_looked_at_blocks(
@@ -321,14 +274,53 @@ impl WorldRenderer {
             &self.queue,
             focused_block.solid_block.map(|block| block.coords),
         );
-
-        self.queue.submit(iter::once(encoder.finish()));
     }
 
-    pub fn render<'a: 'b, 'b>(&'a self, render_pass: &mut RenderPass<'b>) {
+    pub fn render(
+        &self,
+        encoder: &mut CommandEncoder,
+        surface_view: &TextureView,
+        depth_texture_view: &TextureView,
+    ) {
+        self.frustum_culling_pass.run(
+            &self.queue,
+            encoder,
+            &self.player.view(),
+            &self.player.perspective(),
+        );
+
+        let mut render_pass: RenderPass<'_> = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("render pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: surface_view,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Clear(Color {
+                        // TODO don't use hardcoded clear color
+                        r: 135.0 / 255.0,
+                        g: 206.0 / 255.0,
+                        b: 235.0 / 255.0,
+                        a: 1.0,
+                    }),
+                    store: StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                view: depth_texture_view,
+                depth_ops: Some(Operations {
+                    load: LoadOp::Clear(1.0),
+                    store: StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+
         if self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) > 0 {
             self.terrain_pipeline.render_terrain(
-                render_pass,
+                &mut render_pass,
                 &self.globals,
                 &self.indirect_draw_buffer.vertex_buffer,
                 &self.indirect_draw_buffer.indirect_buffer,
@@ -344,7 +336,7 @@ impl WorldRenderer {
             > 0
         {
             self.terrain_pipeline.render_water(
-                render_pass,
+                &mut render_pass,
                 &self.globals,
                 &self.indirect_draw_buffer.vertex_buffer,
                 &self.indirect_draw_buffer.indirect_buffer,
@@ -356,8 +348,8 @@ impl WorldRenderer {
         }
 
         self.block_outline_pipeline
-            .render(render_pass, &self.globals);
-        self.ui_pipeline.render(render_pass, &self.globals);
+            .render(&mut render_pass, &self.globals);
+        self.ui_pipeline.render(&mut render_pass, &self.globals);
     }
 }
 

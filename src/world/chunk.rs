@@ -6,7 +6,7 @@ use noise::NoiseFn;
 use crate::{
     renderer::vertex_buffer::{QuadInstance, TransparentQuadInstance},
     world::{
-        blocks::{Block, BlockType, Direction},
+        blocks::{Block, BlockRenderType, Direction},
         coordinates::Coordinates,
     },
 };
@@ -199,28 +199,28 @@ impl Chunk {
         for x in 0..CHUNK_WIDTH_I32 {
             for y in 0..CHUNK_WIDTH_I32 {
                 for z in 0..CHUNK_WIDTH_I32 {
-                    let block_type = self.at(x, y, z).get_block_type();
-                    if let BlockType::INVISIBLE = block_type {
+                    let block_type = self.at(x, y, z).render_type();
+                    if let BlockRenderType::INVISIBLE = block_type {
                         continue;
                     }
 
                     let mut directions = Vec::with_capacity(6);
-                    if Chunk::is_face_visible(block_type, self.at(x - 1, y, z).get_block_type()) {
+                    if Chunk::is_face_visible(block_type, self.at(x - 1, y, z).render_type()) {
                         directions.push(Direction::NegX)
                     }
-                    if Chunk::is_face_visible(block_type, self.at(x + 1, y, z).get_block_type()) {
+                    if Chunk::is_face_visible(block_type, self.at(x + 1, y, z).render_type()) {
                         directions.push(Direction::X)
                     }
-                    if Chunk::is_face_visible(block_type, self.at(x, y - 1, z).get_block_type()) {
+                    if Chunk::is_face_visible(block_type, self.at(x, y - 1, z).render_type()) {
                         directions.push(Direction::NegY)
                     }
-                    if Chunk::is_face_visible(block_type, self.at(x, y + 1, z).get_block_type()) {
+                    if Chunk::is_face_visible(block_type, self.at(x, y + 1, z).render_type()) {
                         directions.push(Direction::Y)
                     }
-                    if Chunk::is_face_visible(block_type, self.at(x, y, z - 1).get_block_type()) {
+                    if Chunk::is_face_visible(block_type, self.at(x, y, z - 1).render_type()) {
                         directions.push(Direction::NegZ)
                     }
-                    if Chunk::is_face_visible(block_type, self.at(x, y, z + 1).get_block_type()) {
+                    if Chunk::is_face_visible(block_type, self.at(x, y, z + 1).render_type()) {
                         directions.push(Direction::Z)
                     }
 
@@ -235,14 +235,14 @@ impl Chunk {
                         let attributes =
                             common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
-                        if let BlockType::OPAQUE = block_type {
+                        if let BlockRenderType::OPAQUE = block_type {
                             let instance = QuadInstance {
                                 attributes,
                                 ao_attributes: self
                                     .get_ao_attributes(Coordinates::new(x, y, z), direction),
                             };
                             solid_instances.push(instance);
-                        } else if let BlockType::TRANSPARENT = block_type {
+                        } else if let BlockRenderType::INVISIBLE = block_type {
                             let instance = TransparentQuadInstance { attributes };
                             transparent_instances.push(instance);
                         }
@@ -254,18 +254,18 @@ impl Chunk {
         (solid_instances, transparent_instances)
     }
 
-    fn is_face_visible(block: BlockType, adjacent_block: BlockType) -> bool {
+    fn is_face_visible(block: BlockRenderType, adjacent_block: BlockRenderType) -> bool {
         // If the block is solid, all sides adjacent to transparent or invisible blocks are visible
         // If the block is transparent, only sides adjacent to transparent blocks are visible
         match block {
-            BlockType::INVISIBLE => false,
-            BlockType::OPAQUE => match adjacent_block {
-                BlockType::OPAQUE => false,
-                BlockType::TRANSPARENT | BlockType::INVISIBLE => true,
+            BlockRenderType::INVISIBLE => false,
+            BlockRenderType::OPAQUE => match adjacent_block {
+                BlockRenderType::OPAQUE => false,
+                BlockRenderType::TRANSPARENT | BlockRenderType::INVISIBLE => true,
             },
-            BlockType::TRANSPARENT => match adjacent_block {
-                BlockType::OPAQUE | BlockType::TRANSPARENT => false,
-                BlockType::INVISIBLE => true,
+            BlockRenderType::TRANSPARENT => match adjacent_block {
+                BlockRenderType::OPAQUE | BlockRenderType::TRANSPARENT => false,
+                BlockRenderType::INVISIBLE => true,
             },
         }
     }
@@ -293,10 +293,12 @@ impl Chunk {
 
             let side_1 = self
                 .at_coords(air_block.go(cross_directions.0, step_0))
-                .is_solid();
+                .render_type()
+                == BlockRenderType::OPAQUE;
             let side_2 = self
                 .at_coords(air_block.go(cross_directions.1, step_1))
-                .is_solid();
+                .render_type()
+                == BlockRenderType::OPAQUE;
 
             let corner = self
                 .at_coords(
@@ -304,7 +306,8 @@ impl Chunk {
                         .go(cross_directions.0, step_0)
                         .go(cross_directions.1, step_1),
                 )
-                .is_solid();
+                .render_type()
+                == BlockRenderType::OPAQUE;
 
             let value = if side_1 && side_2 {
                 3

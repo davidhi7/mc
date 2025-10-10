@@ -2,15 +2,15 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
 use std::iter;
 use std::ops::RangeInclusive;
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::{
     collections::HashMap,
     thread::{self},
 };
 
 use bytemuck::{Pod, Zeroable};
-use glam::{ivec2, ivec3, IVec2, IVec3, Vec3};
+use glam::{IVec2, IVec3, Vec3, ivec2, ivec3};
 use itertools::Itertools;
 use wgpu::CommandEncoderDescriptor;
 use wgpu::{Buffer, Device, Queue};
@@ -24,9 +24,8 @@ use crate::{
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     world::{
-        self,
+        self, World,
         chunk::{ChunkStack, ChunkUVW, ChunkUW, VERTICAL_CHUNK_COUNT},
-        World,
     },
 };
 
@@ -379,7 +378,7 @@ impl WorldLoader {
             });
 
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("Indirect buffer update command encoder"),
+            label: Some("indirect buffer update command encoder"),
         });
 
         for element in new_chunk_buffers_iterator.zip_longest(old_draw_call_handles.into_iter()) {

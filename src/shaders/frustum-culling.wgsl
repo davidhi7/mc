@@ -53,7 +53,7 @@ fn chunk_in_frustum(chunk: vec3i) -> bool {
     //         && is_on_or_behind_plane(frustum.far, vec3f(position))
     //         && is_on_or_behind_plane(frustum.left, vec3f(position))
     //         && is_on_or_behind_plane(frustum.right, vec3f(position))
-    //         && is_on_or_behind_wplane(frustum.top, vec3f(position))
+    //         && is_on_or_behind_plane(frustum.top, vec3f(position))
     //         && is_on_or_behind_plane(frustum.bottom, vec3f(position))
     //     {
     //         return true;

@@ -1,14 +1,21 @@
 use glam::{IVec3, Vec3};
 
-#[derive(Debug, Clone, Copy)]
-pub enum BlockType {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockPhysicsType {
+    SOLID,
+    LIQUID,
+    GASEOUS,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockRenderType {
     OPAQUE,
     TRANSPARENT,
     INVISIBLE,
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Block {
     AIR,
     STONE,
@@ -36,18 +43,19 @@ impl Block {
         }
     }
 
-    pub fn get_block_type(&self) -> BlockType {
+    pub fn physics_type(&self) -> BlockPhysicsType {
         match self {
-            Block::AIR => BlockType::INVISIBLE,
-            Block::WATER => BlockType::TRANSPARENT,
-            _ => BlockType::OPAQUE,
+            Block::AIR => BlockPhysicsType::GASEOUS,
+            Block::WATER => BlockPhysicsType::LIQUID,
+            _ => BlockPhysicsType::SOLID,
         }
     }
 
-    pub fn is_solid(&self) -> bool {
-        match self.get_block_type() {
-            BlockType::OPAQUE => true,
-            _ => false,
+    pub fn render_type(&self) -> BlockRenderType {
+        match self {
+            Block::AIR => BlockRenderType::INVISIBLE,
+            Block::WATER => BlockRenderType::TRANSPARENT,
+            _ => BlockRenderType::OPAQUE,
         }
     }
 }

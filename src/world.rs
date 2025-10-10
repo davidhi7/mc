@@ -1,17 +1,30 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::world::{
-    blocks::Block,
-    chunk::{ChunkStack, ChunkUVW, ChunkUW, CHUNK_WIDTH_I32, VERTICAL_CHUNK_COUNT},
+    blocks::{Block, BlockPhysicsType},
+    chunk::{CHUNK_WIDTH_I32, ChunkStack, ChunkUVW, ChunkUW, VERTICAL_CHUNK_COUNT},
 };
-use glam::{ivec3, IVec3, Vec3};
+use glam::{IVec3, Vec3, ivec3};
 use noise::Simplex;
 
 pub mod blocks;
-pub mod camera;
 pub mod chunk;
 pub mod coordinates;
 pub mod world_loader;
+
+pub trait LookupBlock {
+    fn lookup_block(&self, block: IVec3) -> Option<Block>;
+
+    fn is_solid(&self, block: IVec3) -> bool {
+        self.lookup_block(block)
+            .is_some_and(|block| matches!(block.physics_type(), BlockPhysicsType::SOLID))
+    }
+
+    fn is_liquid(&self, block: IVec3) -> bool {
+        self.lookup_block(block)
+            .is_some_and(|block| matches!(block.physics_type(), BlockPhysicsType::LIQUID))
+    }
+}
 
 pub struct World {
     noise: Simplex,
@@ -37,8 +50,10 @@ impl World {
 
         self.chunk_stacks.insert(uw.to_owned(), chunks);
     }
+}
 
-    pub fn get_block(&self, block: IVec3) -> Option<Block> {
+impl LookupBlock for World {
+    fn lookup_block(&self, block: IVec3) -> Option<Block> {
         let chunk = get_chunk_coordinates_i32(block);
 
         if chunk.v < 0 || chunk.v as usize >= VERTICAL_CHUNK_COUNT {

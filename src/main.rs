@@ -1,3 +1,4 @@
+mod camera;
 mod math;
 mod renderer;
 pub(crate) mod shaders;

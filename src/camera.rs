@@ -6,8 +6,6 @@ use glam::{Mat4, Vec3};
 pub mod block_ray_caster;
 pub mod player;
 
-use crate::math::Plane;
-
 #[derive(Debug, Clone, Copy)]
 pub struct Perspective {
     pub fov_y: f32,
@@ -33,6 +31,13 @@ impl View {
     pub fn get_matrix(&self) -> Mat4 {
         Mat4::look_to_lh(self.eye, self.direction, self.up)
     }
+}
+
+#[derive(Clone, Copy, Debug, Zeroable, Pod)]
+#[repr(C)]
+pub struct Plane {
+    pub normal: Vec3,
+    pub distance: f32,
 }
 
 #[derive(Clone, Copy, Debug, Zeroable, Pod)]

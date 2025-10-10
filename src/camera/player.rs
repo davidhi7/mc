@@ -11,14 +11,15 @@ the velocity is incremented by `SPRINT_JUMP_ACCEL` facing in the current acceler
 */
 use std::f32::consts::{FRAC_1_SQRT_2, PI};
 
-use glam::{IVec3, Mat3, Mat4, Vec3, ivec3, vec3};
+use glam::{Mat3, Mat4, Vec3, ivec3, vec3};
 use lazy_static::lazy_static;
 use winit::keyboard::KeyCode;
 
 use crate::{
+    camera::{Perspective, View},
     math::{Aabb3, Aabb3I},
     window::input::InputState,
-    world::camera::{Perspective, View},
+    world::LookupBlock,
 };
 
 /// TPS that is used for updating game physics.
@@ -135,10 +136,6 @@ impl PlayerState {
             // TODO check yaw and pitch
             yaw: f32::atan2(direction.x, direction.z),
             pitch: f32::atan(direction.y),
-            // movement_state: MovementState::Flying {
-            //     flying_up: false,
-            //     flying_down: false,
-            // },
             movement_state: MovementState::Walking,
             physics_state: PlayerPhysicsState {
                 eye,
@@ -192,7 +189,7 @@ impl PlayerState {
         input_state: &mut InputState,
         _delta_s: f32,
         _time_s: f32,
-        check_is_solid: impl Fn(IVec3) -> bool,
+        block_lookup: &impl LookupBlock,
     ) {
         if input_state.pull_key_double_clicked(KeyCode::Space) {
             match self.movement_state {
@@ -309,7 +306,7 @@ impl PlayerState {
         self.physics_state = resolve_collisions(
             self.physics_state,
             self.physics_state.velocity,
-            &check_is_solid,
+            block_lookup,
         );
         self.physics_state.velocity.x *= base_friction;
         self.physics_state.velocity.z *= base_friction;
@@ -383,13 +380,13 @@ impl PlayerState {
         self.perspective.get_matrix() * self.view().get_matrix()
     }
 
-    pub fn extrapolate_view(&self, lag_s: f32, check_is_solid: &impl Fn(IVec3) -> bool) -> View {
+    pub fn extrapolate_view(&self, lag_s: f32, block_lookup: &impl LookupBlock) -> View {
         let lag_ticks = lag_s / TPS.recip();
         let extrapolated_state = resolve_collisions(
             self.physics_state,
             self.physics_state.velocity * lag_ticks
                 + 0.5 * self.physics_state.acceleration * lag_ticks.powi(2),
-            check_is_solid,
+            block_lookup,
         );
 
         View {
@@ -399,12 +396,8 @@ impl PlayerState {
         }
     }
 
-    pub fn extrapolate_view_projection(
-        &self,
-        lag_s: f32,
-        check_is_solid: &impl Fn(IVec3) -> bool,
-    ) -> Mat4 {
-        let view = self.extrapolate_view(lag_s, check_is_solid);
+    pub fn extrapolate_view_projection(&self, lag_s: f32, block_lookup: &impl LookupBlock) -> Mat4 {
+        let view = self.extrapolate_view(lag_s, block_lookup);
 
         self.perspective.get_matrix() * view.get_matrix()
     }
@@ -429,7 +422,7 @@ struct CollisionResult {
 fn resolve_collisions(
     mut physics_state: PlayerPhysicsState,
     translation: Vec3,
-    check_is_solid: &impl Fn(IVec3) -> bool,
+    block_lookup: &impl LookupBlock,
 ) -> PlayerPhysicsState {
     if translation.abs().max_element() >= 1.0 {
         eprintln!("Too large translation on at least one axis");
@@ -475,7 +468,7 @@ fn resolve_collisions(
         for x in min.x..max.x {
             for z in min.z..max.z {
                 for y in min.y..max.y {
-                    if check_is_solid(ivec3(x, y, z)) {
+                    if block_lookup.is_solid(ivec3(x, y, z)) {
                         // Check if player intersects with the block
                         if !physics_state.aabb.to_ivec_aabb().intersects(Aabb3I {
                             min: ivec3(x, y, z),

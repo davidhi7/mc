@@ -3,8 +3,8 @@ use glam::{IVec3, Vec3};
 use crate::{
     math::ray_caster::{self, RaycastHit, RaycastStatus},
     world::{
-        blocks::{Block, BlockType, Direction},
-        World,
+        LookupBlock,
+        blocks::{Block, BlockPhysicsType, Direction},
     },
 };
 
@@ -23,7 +23,11 @@ pub struct LookedAtBlockResult {
     pub liquid_block: Option<BlockInfo>,
 }
 
-pub fn find_looked_at_blocks(eye: Vec3, direction: Vec3, world: &World) -> LookedAtBlockResult {
+pub fn find_looked_at_blocks(
+    eye: Vec3,
+    direction: Vec3,
+    block_lookup: &impl LookupBlock,
+) -> LookedAtBlockResult {
     let mut focused_blocks = LookedAtBlockResult {
         solid_block: None,
         liquid_block: None,
@@ -39,9 +43,9 @@ pub fn find_looked_at_blocks(eye: Vec3, direction: Vec3, world: &World) -> Looke
              voxel_face: direction,
              ..
          }| {
-            if let Some(block) = world.get_block(voxel) {
-                match block.get_block_type() {
-                    BlockType::OPAQUE => {
+            if let Some(block) = block_lookup.lookup_block(voxel) {
+                match block.physics_type() {
+                    BlockPhysicsType::SOLID => {
                         focused_blocks.solid_block = Some(BlockInfo {
                             coords: voxel,
                             block,
@@ -49,7 +53,7 @@ pub fn find_looked_at_blocks(eye: Vec3, direction: Vec3, world: &World) -> Looke
                         });
                         RaycastStatus::Stop
                     }
-                    BlockType::TRANSPARENT => {
+                    BlockPhysicsType::LIQUID => {
                         if focused_blocks.liquid_block.is_none() {
                             focused_blocks.liquid_block = Some(BlockInfo {
                                 coords: voxel,
@@ -59,7 +63,7 @@ pub fn find_looked_at_blocks(eye: Vec3, direction: Vec3, world: &World) -> Looke
                         }
                         RaycastStatus::Continue
                     }
-                    BlockType::INVISIBLE => RaycastStatus::Continue,
+                    BlockPhysicsType::GASEOUS => RaycastStatus::Continue,
                 }
             } else {
                 RaycastStatus::Continue
