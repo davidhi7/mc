@@ -9,10 +9,7 @@ When initiating a jump, the vertical velocity is set to `JUMP_VELOCITY`.
 Also when sprinting during jumping (sprinting meaning the sprint key is pressed and velocity.xz() has a length greater than one),
 the velocity is incremented by `SPRINT_JUMP_ACCEL` facing in the current acceleration direction once in the current movement direction projected to xz.
 */
-use std::{
-    collections::HashSet,
-    f32::consts::{FRAC_1_SQRT_2, PI},
-};
+use std::f32::consts::{FRAC_1_SQRT_2, PI};
 
 use glam::{IVec3, Mat3, Mat4, Vec3, ivec3, vec3};
 use lazy_static::lazy_static;
@@ -20,6 +17,7 @@ use winit::keyboard::KeyCode;
 
 use crate::{
     math::{Aabb3, Aabb3I},
+    window::input::InputState,
     world::camera::{Perspective, View},
 };
 
@@ -173,7 +171,8 @@ impl PlayerState {
         self.perspective.aspect_ratio = aspect_ratio;
     }
 
-    pub fn update_rotation(&mut self, (dx, dy): (f64, f64)) {
+    pub fn update_rotation(&mut self, input_state: &mut InputState) {
+        let (dx, dy) = input_state.pull_mouse_movement();
         let mut new_yaw = self.yaw - (dx as f32) * CAMERA_SENSITIVITY;
         let new_pitch = (self.pitch - (dy as f32) * CAMERA_SENSITIVITY)
             .clamp(-0.5 + f32::EPSILON, 0.5 - f32::EPSILON);
@@ -190,12 +189,24 @@ impl PlayerState {
 
     pub fn update_position(
         &mut self,
-        pressed_keys: &HashSet<KeyCode>,
+        input_state: &mut InputState,
         _delta_s: f32,
         _time_s: f32,
         check_is_solid: impl Fn(IVec3) -> bool,
     ) {
-        let is_sprinting = pressed_keys.contains(&KeyCode::ShiftLeft);
+        if input_state.pull_key_double_clicked(KeyCode::Space) {
+            match self.movement_state {
+                MovementState::Walking | MovementState::AirBorne => {
+                    self.movement_state = MovementState::Flying {
+                        flying_up: false,
+                        flying_down: false,
+                    }
+                }
+                MovementState::Flying { .. } => self.movement_state = MovementState::AirBorne,
+            }
+        }
+
+        let is_sprinting = input_state.is_key_pressed(KeyCode::ShiftLeft);
 
         let base_acceleration = match self.movement_state {
             MovementState::Walking => *BASE_ACCEL_GROUND,
@@ -213,9 +224,9 @@ impl PlayerState {
         };
 
         // If we are going to move along both axes, use 1/sqrt(2) as coefficient so the maximum diagonal speed can't exceed the maximum straight speed
-        let diagonal_correction = if pressed_keys.contains(&KeyCode::KeyW)
-            ^ pressed_keys.contains(&KeyCode::KeyS)
-            && pressed_keys.contains(&KeyCode::KeyA) ^ pressed_keys.contains(&KeyCode::KeyD)
+        let diagonal_correction = if input_state.is_key_pressed(KeyCode::KeyW)
+            ^ input_state.is_key_pressed(KeyCode::KeyS)
+            && input_state.is_key_pressed(KeyCode::KeyA) ^ input_state.is_key_pressed(KeyCode::KeyD)
         {
             FRAC_1_SQRT_2
         } else {
@@ -225,19 +236,19 @@ impl PlayerState {
         // Acceleration rotated so that +x is forward and +z left. Note that this acceleration doesn't include friction/drag.
         let mut rotated_acceleration = Vec3::ZERO;
 
-        if pressed_keys.contains(&KeyCode::KeyW) {
+        if input_state.is_key_pressed(KeyCode::KeyW) {
             rotated_acceleration.x += diagonal_correction * base_acceleration;
         }
 
-        if pressed_keys.contains(&KeyCode::KeyS) {
+        if input_state.is_key_pressed(KeyCode::KeyS) {
             rotated_acceleration.x -= diagonal_correction * base_acceleration;
         }
 
-        if pressed_keys.contains(&KeyCode::KeyA) {
+        if input_state.is_key_pressed(KeyCode::KeyA) {
             rotated_acceleration.z += diagonal_correction * base_acceleration;
         }
 
-        if pressed_keys.contains(&KeyCode::KeyD) {
+        if input_state.is_key_pressed(KeyCode::KeyD) {
             rotated_acceleration.z -= diagonal_correction * base_acceleration;
         }
 
@@ -250,7 +261,7 @@ impl PlayerState {
         match self.movement_state {
             MovementState::Walking => {
                 // Do a jump if space is pressed, note that jumping is possible even if the player is not on the ground anymore during the current tick
-                if pressed_keys.contains(&KeyCode::Space) {
+                if input_state.is_key_single_clicked(KeyCode::Space) {
                     // sprint jump boost
                     if is_sprinting {
                         world_acceleration +=
@@ -274,8 +285,8 @@ impl PlayerState {
                 ref mut flying_up,
                 ref mut flying_down,
             } => {
-                *flying_up = pressed_keys.contains(&KeyCode::Space);
-                *flying_down = pressed_keys.contains(&KeyCode::ControlLeft);
+                *flying_up = input_state.is_key_single_clicked(KeyCode::Space);
+                *flying_down = input_state.is_key_single_clicked(KeyCode::ControlLeft);
 
                 // Directly set velocity, since acceleration isn't continuous
                 if *flying_up == *flying_down {

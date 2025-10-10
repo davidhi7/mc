@@ -1,6 +1,7 @@
 mod frametime_metrics;
+pub mod input;
 
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use wgpu::{
     CompositeAlphaMode, Device, DeviceDescriptor, Features, Instance, InstanceDescriptor, Limits,
@@ -12,11 +13,13 @@ use winit::{
     dpi::PhysicalSize,
     event::*,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
 
-use crate::{renderer::Renderer, window::frametime_metrics::FrameTimeMetrics};
+use crate::{
+    renderer::Renderer,
+    window::{frametime_metrics::FrameTimeMetrics, input::InputState},
+};
 
 struct AppState {
     window: Arc<Window>,
@@ -26,12 +29,6 @@ struct AppState {
     input_state: InputState,
     frametimes: FrameTimeMetrics,
     renderer: Renderer,
-}
-
-#[derive(Default)]
-pub struct InputState {
-    pub pressed_keys: HashSet<KeyCode>,
-    pub mouse_movement: (f64, f64),
 }
 
 impl AppState {
@@ -102,18 +99,6 @@ impl AppState {
         self.renderer.resize(new_size);
     }
 
-    fn handle_mouse_movement(&mut self, delta: (f64, f64)) {
-        self.input_state.mouse_movement.0 += delta.0;
-        self.input_state.mouse_movement.1 += delta.1;
-    }
-
-    fn handle_key_event(&mut self, key_code: KeyCode, key_state: ElementState) {
-        match key_state {
-            ElementState::Pressed => self.input_state.pressed_keys.insert(key_code),
-            ElementState::Released => self.input_state.pressed_keys.remove(&key_code),
-        };
-    }
-
     fn configure_surface(&self, size: PhysicalSize<u32>) {
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
@@ -132,7 +117,7 @@ impl AppState {
     fn render(&mut self, event_loop: &ActiveEventLoop) {
         let frametime_start = Instant::now();
 
-        self.renderer.update(&self.input_state);
+        self.renderer.update(&mut self.input_state);
         match self.renderer.render(&self.surface, self.surface_format) {
             Ok(_) => {}
             // Reconfigure the surface if it's lost or outdated
@@ -157,7 +142,7 @@ impl AppState {
         }
 
         // Don't handle the same mouse input twice
-        self.input_state.mouse_movement = (0.0, 0.0);
+        // self.input_state.mouse_movement = (0.0, 0.0);
         self.frametimes.push(frametime_start.elapsed());
         self.frametimes.update_sample();
         self.window.set_title(&format!(
@@ -193,7 +178,11 @@ impl ApplicationHandler for App {
         event: DeviceEvent,
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
-            self.state.as_mut().unwrap().handle_mouse_movement(delta);
+            self.state
+                .as_mut()
+                .unwrap()
+                .input_state
+                .increment_mouse_movement(delta);
         }
     }
 
@@ -222,16 +211,7 @@ impl ApplicationHandler for App {
                     .or_else(|_e| state.window.set_cursor_grab(CursorGrabMode::Confined))
                     .unwrap();
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(key_code),
-                        repeat: false,
-                        state: key_state,
-                        ..
-                    },
-                ..
-            } => state.handle_key_event(key_code, key_state),
+            WindowEvent::KeyboardInput { event, .. } => state.input_state.handle_key_event(event),
             _ => (),
         }
     }

@@ -22,7 +22,7 @@ use crate::{
         },
     },
     texture,
-    window::InputState,
+    window::input::InputState,
     world::{
         World,
         camera::{
@@ -107,7 +107,7 @@ impl Renderer {
         self.world_renderer.update_aspect_ratio(new_size);
     }
 
-    pub fn update(&mut self, state: &InputState) {
+    pub fn update(&mut self, state: &mut InputState) {
         self.world_renderer.update(state);
     }
 
@@ -267,23 +267,19 @@ impl WorldRenderer {
             .set_aspect_ratio(new_size.width as f32 / new_size.height as f32);
     }
 
-    pub fn update(&mut self, input_state: &InputState) {
-        self.player.update_rotation(input_state.mouse_movement);
+    pub fn update(&mut self, input_state: &mut InputState) {
+        self.player.update_rotation(input_state);
 
         let lag_s = self
             .update_loop
             .tick(|TickInformation { timestep_s, time_s }| {
-                self.player.update_position(
-                    &input_state.pressed_keys,
-                    timestep_s,
-                    time_s,
-                    |coordinates| {
+                self.player
+                    .update_position(input_state, timestep_s, time_s, |coordinates| {
                         self.world_loader
                             .world
                             .get_block(coordinates)
                             .is_some_and(|block| block.is_solid())
-                    },
-                );
+                    });
             });
 
         self.globals.update(
