@@ -25,7 +25,10 @@ use crate::{
     window::InputState,
     world::{
         World,
-        camera::{Perspective, block_ray_caster, player::PlayerState},
+        camera::{
+            Perspective, block_ray_caster,
+            player::{self, PlayerState},
+        },
         chunk::VERTICAL_CHUNK_COUNT,
         world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
     },
@@ -255,7 +258,7 @@ impl WorldRenderer {
             indirect_draw_buffer: ib,
             frustum_culling_pass,
             block_outline_pipeline,
-            update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(1.0 / 20.0)),
+            update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(player::TPS.recip())),
         }
     }
 

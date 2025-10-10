@@ -1,12 +1,13 @@
 /*
 Loosely based on https://www.mcpk.wiki/wiki/Movement_Formulas.
-All acceleration/velocity values are m/s and m/s^2 instead of m/t and m/t^2 which is used by minecraft 1.8 with t=1/20s.
+All following acceleration/velocity constants are measured in m/tick and m/tick^2, where the duration of a tick is the reciproke of `TPS`
 
-The maximum movement speed in the xz plane is the limit of the sequence `v(t) = v(t-1) * BASE_FRICTION + BASE_ACCEL`, which is `BASE_ACCEL/(1-BASE_FRICTION)`.
-The terminal velocity in free fall is the limit of the sequence `v(t) = (v(t-1) + GRAVITY) * VERTICAL_DRAG`, which is `VERTICAL_DRAG * GRAVITY / (1-VERTICAL_DRAG)`.
+The velocity in the xz plane is controlled by the sequence `v(t) = v(t-1) * friction + acceleration`, the limit and maximum velocity is `acceleration/(1-friction)`.
+The terminal velocity in free fall is the limit of the sequence `v(t) = (v(t-1) + gravity) * vertical_drag`, which is `vertical_drag * gravity / (1-vertical_drag)`.
 
-When initiating a jump, the vertical velocity is set to `JUMP_ACCEL` once.
-Also when sprinting during jumping (sprinting meaning the sprint key is pressed and velocity.xz() has a length greater than one), the velocity is incremented by `SPRINT_JUMP_ACCEL` once in the current movement direction projected to xz.
+When initiating a jump, the vertical velocity is set to `JUMP_VELOCITY`.
+Also when sprinting during jumping (sprinting meaning the sprint key is pressed and velocity.xz() has a length greater than one),
+the velocity is incremented by `SPRINT_JUMP_ACCEL` facing in the current acceleration direction once in the current movement direction projected to xz.
 */
 use std::{
     collections::HashSet,
@@ -14,6 +15,7 @@ use std::{
 };
 
 use glam::{IVec3, Mat3, Mat4, Vec3, ivec3, vec3};
+use lazy_static::lazy_static;
 use winit::keyboard::KeyCode;
 
 use crate::{
@@ -21,36 +23,76 @@ use crate::{
     world::camera::{Perspective, View},
 };
 
-/// Multiplied by mouse dx/dy, then added or subtracted from [`PlayerState::yaw`], [`PlayerState::pitch`]
+/// TPS that is used for updating game physics.
+/// Note that changing the TPS will have slight effects on the precise behaviour of movement.
+/// Most notably, the jump height decreases and converges to 1.0 as the TPS increases. (With a TPS of 20, the jump height is 1.2522 as it is in Minecraft 1.9+)
+pub const TPS: f32 = 40.0;
+
+/// Movement constants taken directly from Minecraft (running at 20TPS)
+mod mc_constants {
+    pub(super) const NEGLIGIBLE_VELOCITY_THRESHOLD: f32 = 0.005;
+
+    pub(super) const BASE_FRICTION_GROUND: f32 = 0.91 * 0.6;
+    pub(super) const BASE_FRICTION_AIRBORNE: f32 = 0.91 * 1.0;
+
+    pub(super) const BASE_ACCEL_GROUND: f32 = 0.1 * 1.0 * 0.98;
+    pub(super) const BASE_ACCEL_AIRBORNE: f32 = 0.02 * 1.0;
+    pub(super) const BASE_ACCEL_FLYING: f32 = 0.049;
+
+    pub(super) const GRAVITY: f32 = -0.08;
+    pub(super) const VERTICAL_DRAG: f32 = 0.98;
+
+    pub(super) const JUMP_VELOCITY: f32 = 0.42;
+    pub(super) const SPRINT_JUMP_ACCEL: f32 = 0.2;
+}
+
+lazy_static! {
+    /// Minimum possible velocity value per axis on the xz plane. If actual velocity is less than this, it is set to zero. m/tick.
+    static ref NEGLIGIBLE_VELOCITY_THRESHOLD: f32 = mc_constants::NEGLIGIBLE_VELOCITY_THRESHOLD * 20.0 / TPS;
+
+    /// "Friction", that is the fraction of the x/z velocity conserved after each tick. Applied when walking/sprinting on the ground.
+    static ref BASE_FRICTION_GROUND: f32 = mc_constants::BASE_FRICTION_GROUND.powf(20f32 / TPS);
+    /// "Friction", that is the fraction of the x/z velocity conserved after each tick. Applied when jumping or falling.
+    static ref BASE_FRICTION_AIRBORNE: f32 = mc_constants::BASE_FRICTION_AIRBORNE.powf(20f32 / TPS);
+    // Vertical "drag", that is the fraction of the y velocity conserved after each tick.
+    static ref VERTICAL_DRAG: f32 = mc_constants::VERTICAL_DRAG.powf(20f32 / TPS);
+
+    /// Acceleration in the xz plane when walking/sprinting on the ground. m/tick^2.
+    static ref BASE_ACCEL_GROUND: f32 = mc_constants::BASE_ACCEL_GROUND * 20f32 / TPS * (1.0 - *BASE_FRICTION_GROUND) / (1.0 - mc_constants::BASE_FRICTION_GROUND);
+    /// Acceleration in the xz plane when jumping or falling. m/tick^2.
+    static ref BASE_ACCEL_AIRBORNE: f32 = mc_constants::BASE_ACCEL_AIRBORNE * 20f32 / TPS * (1.0 - *BASE_FRICTION_AIRBORNE) / (1.0 - mc_constants::BASE_FRICTION_AIRBORNE);
+    /// Acceleration in the xz plane when flying. m/tick^2.
+    static ref BASE_ACCEL_FLYING: f32 = mc_constants::BASE_ACCEL_FLYING * 20f32 / TPS * (1.0 - *BASE_FRICTION_AIRBORNE) / (1.0 - mc_constants::BASE_FRICTION_AIRBORNE);
+
+    /// Acceleration along the y axis during free fall. m/tick^2.
+    static ref GRAVITY: f32 = mc_constants::GRAVITY * 20f32 / TPS * mc_constants::VERTICAL_DRAG / *VERTICAL_DRAG * (1.0 - *VERTICAL_DRAG)
+                / (1.0 - mc_constants::VERTICAL_DRAG);
+
+    /// The velocity along the y axis that initiates a jump. m/tick.
+    static ref JUMP_VELOCITY: f32 = mc_constants::JUMP_VELOCITY * 20f32 / TPS;
+    /// Acceleration in the xz plane in the current acceleration direction when jumping. m/tick^2.
+    static ref SPRINT_JUMP_ACCEL: f32 = mc_constants::SPRINT_JUMP_ACCEL * 20f32 / TPS;
+
+    /// Vertical velocity when flying. m/tick.
+    static ref FLYING_Y_VELOCITY: f32 = 5.0 / TPS;
+}
+
+/// Multiplied by mouse dx/dy, then added or subtracted from [`PlayerState::yaw`], [`PlayerState::pitch`].
 const CAMERA_SENSITIVITY: f32 = 0.002;
 
+/// Hitbox height in metres.
 const HITBOX_HEIGHT: f32 = 1.8;
+/// Hitbox width and depth in metres.
 const HITBOX_WIDTH: f32 = 0.6;
+/// Half hitbox width and depth in metres.
 const HALF_HITBOX_WIDTH: f32 = HITBOX_WIDTH / 2.0;
+/// Hitbox eye height in metres.
 const EYE_HEIGHT: f32 = 1.6;
 
-/// Minimum possible velocity value per axis. If actual velocity is less than this, it is set to zero.
-const MIN_VELOCITY_THRESHOLD: f32 = 20.0 * 0.005;
-
-// Acceleration by direction in the xz plane, measured in m/s^2 but doesn't take drag/friction into account.
-const BASE_ACCEL_GROUND: f32 = 20.0 * 0.1 * 1.0 * 0.98;
-const BASE_ACCEL_AIRBORNE: f32 = 20.0 * 0.02 * 1.0;
-/// Acceleration in the xz plane in the current movement direction when jumping
-const SPRINT_JUMP_ACCEL: f32 = 20.0 * 0.2;
-
-// "Friction", that is the factor of velocity in the xz plane that is conserved after every tick.
-const BASE_FRICTION_GROUND: f32 = 0.91 * 0.6;
-const BASE_FRICTION_AIRBORNE: f32 = 0.91 * 1.0;
-
-/// The velocity along the y axis that initiates a jump.
-const JUMP_ACCEL: f32 = 20.0 * 0.42;
-/// Acceleration along the y axis during free fall.
-const GRAVITY: f32 = 20.0 * -0.08;
-// Vertical drag, that is the factor of velocity that is conserved after every tick
-const VERTICAL_DRAG: f32 = 0.98;
-
-/// Vertical velocity when flying in m/s
-const FLYING_Y_VELOCITY: f32 = 5.0;
+/// Acceleration multiplier when sprinting while walking or airborne.
+const SPRINTING_MULTIPLIER: f32 = 1.3;
+/// Acceleration multiplier when "sprinting" while flying.
+const SPRINTING_MULTIPLIER_FLYING: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy)]
 enum MovementState {
@@ -59,14 +101,17 @@ enum MovementState {
     Flying { flying_up: bool, flying_down: bool },
 }
 
+#[derive(Debug)]
 pub struct PlayerState {
     /// Camera perspective
     perspective: Perspective,
-    /// Horizontal camera orientation when multiplied with pi. Within [0.0, 2.0). 0.0 is facing towards X+ / east; 0.5 is facing towards Z+ / north
+    /// Horizontal camera orientation when multiplied with pi. Within [0.0, 2.0). 0.0 is facing towards X+ / east; 0.5 is facing towards Z+ / north.
     yaw: f32,
-    /// vertical camera orientation when multiplied with pi. Within [-0.5, 0.5]. 0.0 is facing forward; -0.5 is facing downward
+    /// Vertical camera orientation when multiplied with pi. Within [-0.5, 0.5]. 0.0 is facing forward; -0.5 is facing downward.
     pitch: f32,
+    /// Current movement state.
     movement_state: MovementState,
+    /// Current physics related state.
     physics_state: PlayerPhysicsState,
 }
 
@@ -76,10 +121,10 @@ struct PlayerPhysicsState {
     eye: Vec3,
     /// Player hitbox aabb. Used to work around floating point errors during collision detection
     aabb: Aabb3,
-    /// Velocity in m/s
+    /// Velocity in m/tick
     velocity: Vec3,
     /// Expected future acceleration in m/s^2.
-    /// Only used for prediction of the next player position.
+    /// Only used to extrapolate the next player position.
     acceleration: Vec3,
     /// Collision info from last tick. Note that if the player didn't move in the xz plane during the previous tick, all collisions along the x and z axis are false.
     collisions: CollisionResult,
@@ -146,20 +191,25 @@ impl PlayerState {
     pub fn update_position(
         &mut self,
         pressed_keys: &HashSet<KeyCode>,
-        delta_s: f32,
-        time_s: f32,
+        _delta_s: f32,
+        _time_s: f32,
         check_is_solid: impl Fn(IVec3) -> bool,
     ) {
         let is_sprinting = pressed_keys.contains(&KeyCode::ShiftLeft);
 
         let base_acceleration = match self.movement_state {
-            MovementState::Walking => BASE_ACCEL_GROUND,
-            MovementState::Flying { .. } | MovementState::AirBorne => BASE_ACCEL_AIRBORNE,
-        } * if is_sprinting { 1.3 } else { 1.0 };
+            MovementState::Walking => *BASE_ACCEL_GROUND,
+            MovementState::AirBorne => *BASE_ACCEL_AIRBORNE,
+            MovementState::Flying { .. } => *BASE_ACCEL_FLYING,
+        } * match (self.movement_state, is_sprinting) {
+            (_, false) => 1.0,
+            (MovementState::Walking | MovementState::AirBorne, true) => SPRINTING_MULTIPLIER,
+            (MovementState::Flying { .. }, true) => SPRINTING_MULTIPLIER_FLYING,
+        };
 
         let base_friction = match self.movement_state {
-            MovementState::Walking => BASE_FRICTION_GROUND,
-            MovementState::Flying { .. } | MovementState::AirBorne => BASE_FRICTION_AIRBORNE,
+            MovementState::Walking => *BASE_FRICTION_GROUND,
+            MovementState::Flying { .. } | MovementState::AirBorne => *BASE_FRICTION_AIRBORNE,
         };
 
         // If we are going to move along both axes, use 1/sqrt(2) as coefficient so the maximum diagonal speed can't exceed the maximum straight speed
@@ -195,6 +245,7 @@ impl PlayerState {
         // TODO why 2 - yaw?
         let mut world_acceleration =
             Mat3::from_rotation_y((2.0 - self.yaw) * PI) * rotated_acceleration;
+        let mut jump_initiated = false;
 
         match self.movement_state {
             MovementState::Walking => {
@@ -202,24 +253,22 @@ impl PlayerState {
                 if pressed_keys.contains(&KeyCode::Space) {
                     // sprint jump boost
                     if is_sprinting {
-                        // TODO better direction measure than latest velocity direction?
-                        world_acceleration += (self.physics_state.velocity + world_acceleration)
-                            .with_y(0.0)
-                            .normalize_or_zero()
-                            * SPRINT_JUMP_ACCEL;
+                        world_acceleration +=
+                            world_acceleration.with_y(0.0).normalize_or_zero() * *SPRINT_JUMP_ACCEL;
                     }
                     assert!(
                         self.physics_state.velocity.y == 0.0,
                         "Jump started while vertical velocity is not zero"
                     );
-                    world_acceleration.y = JUMP_ACCEL;
+                    world_acceleration.y = *JUMP_VELOCITY;
+                    jump_initiated = true;
                     self.movement_state = MovementState::AirBorne;
                 } else {
-                    world_acceleration.y += GRAVITY;
+                    world_acceleration.y += *GRAVITY;
                 }
             }
             MovementState::AirBorne => {
-                world_acceleration.y += GRAVITY;
+                world_acceleration.y += *GRAVITY;
             }
             MovementState::Flying {
                 ref mut flying_up,
@@ -232,9 +281,9 @@ impl PlayerState {
                 if *flying_up == *flying_down {
                     self.physics_state.velocity.y = 0.0;
                 } else if *flying_up {
-                    self.physics_state.velocity.y = FLYING_Y_VELOCITY;
+                    self.physics_state.velocity.y = *FLYING_Y_VELOCITY;
                 } else {
-                    self.physics_state.velocity.y = -FLYING_Y_VELOCITY;
+                    self.physics_state.velocity.y = -*FLYING_Y_VELOCITY;
                 }
             }
         }
@@ -242,11 +291,13 @@ impl PlayerState {
         let velocity_before_accel = self.physics_state.velocity;
         self.physics_state.velocity += world_acceleration;
         // Drag along y axis is applied before sampling the velocity, drag along x/z is sampled after according to mcpk.wiki
-        self.physics_state.velocity.y *= VERTICAL_DRAG;
+        if !jump_initiated {
+            self.physics_state.velocity.y *= *VERTICAL_DRAG;
+        }
 
         self.physics_state = resolve_collisions(
             self.physics_state,
-            self.physics_state.velocity * delta_s,
+            self.physics_state.velocity,
             &check_is_solid,
         );
         self.physics_state.velocity.x *= base_friction;
@@ -262,18 +313,17 @@ impl PlayerState {
         } = self.physics_state.collisions;
 
         if let MovementState::Walking = self.movement_state
-            && !neg_y_collision
+            && !pos_y_collision
         {
             self.movement_state = MovementState::AirBorne;
         }
         if let MovementState::AirBorne = self.movement_state
-            && neg_y_collision
+            && pos_y_collision
         {
             self.movement_state = MovementState::Walking;
         }
 
-        self.physics_state.acceleration =
-            (self.physics_state.velocity - velocity_before_accel) / delta_s;
+        self.physics_state.acceleration = self.physics_state.velocity - velocity_before_accel;
 
         if neg_x_collision || pos_x_collision {
             self.physics_state.acceleration.x = 0.0;
@@ -285,13 +335,13 @@ impl PlayerState {
             self.physics_state.acceleration.z = 0.0;
         }
 
-        if self.physics_state.velocity.x.abs() < MIN_VELOCITY_THRESHOLD {
+        if self.physics_state.velocity.x.abs() < *NEGLIGIBLE_VELOCITY_THRESHOLD {
             self.physics_state.velocity.x = 0.0;
         }
-        if self.physics_state.velocity.y.abs() < MIN_VELOCITY_THRESHOLD {
+        if self.physics_state.velocity.y.abs() < *NEGLIGIBLE_VELOCITY_THRESHOLD {
             self.physics_state.velocity.y = 0.0;
         }
-        if self.physics_state.velocity.z.abs() < MIN_VELOCITY_THRESHOLD {
+        if self.physics_state.velocity.z.abs() < *NEGLIGIBLE_VELOCITY_THRESHOLD {
             self.physics_state.velocity.z = 0.0;
         }
     }
@@ -323,10 +373,11 @@ impl PlayerState {
     }
 
     pub fn extrapolate_view(&self, lag_s: f32, check_is_solid: &impl Fn(IVec3) -> bool) -> View {
+        let lag_ticks = lag_s / TPS.recip();
         let extrapolated_state = resolve_collisions(
             self.physics_state,
-            self.physics_state.velocity * lag_s
-                + 0.5 * self.physics_state.acceleration * lag_s.powi(2),
+            self.physics_state.velocity * lag_ticks
+                + 0.5 * self.physics_state.acceleration * lag_ticks.powi(2),
             check_is_solid,
         );
 
@@ -350,11 +401,17 @@ impl PlayerState {
 
 #[derive(Debug, Clone, Copy)]
 struct CollisionResult {
+    /// Player collides with block face facing in negative x direction.
     neg_x_collision: bool,
+    /// Player collides with block face facing in positive x direction.
     pos_x_collision: bool,
+    /// Player collides with block face facing in negative y direction.
     neg_y_collision: bool,
+    /// Player collides with block face facing in positive y direction.
     pos_y_collision: bool,
+    /// Player collides with block face facing in negative z direction.
     neg_z_collision: bool,
+    /// Player collides with block face facing in positive z direction.
     pos_z_collision: bool,
 }
 
@@ -374,28 +431,26 @@ fn resolve_collisions(
     let mut neg_z_collision = false;
     let mut pos_z_collision = false;
 
-    let translation_components = if physics_state.collisions.pos_y_collision
-        && physics_state.velocity.z < 0.0
-        || physics_state.collisions.neg_y_collision && physics_state.velocity.z > 0.0
-    {
-        // If the player is walking in +z/-z direction and already collided with a block in the same direction during the last tick, then apply the x translation first.
-        // This way, a player can walk around corners where the corner block is missing.
-        // Considering the following xz projection, the player can walk from block a to b while `#` is a solid block and the space represents air.
-        // # | b
-        // — + —
-        // a |
-        [
-            vec3(translation.x, 0.0, 0.0),
-            vec3(0.0, 0.0, translation.z),
-            vec3(0.0, translation.y, 0.0),
-        ]
-    } else {
-        [
-            vec3(0.0, 0.0, translation.z),
-            vec3(translation.x, 0.0, 0.0),
-            vec3(0.0, translation.y, 0.0),
-        ]
-    };
+    let translation_components =
+        if physics_state.collisions.neg_z_collision || physics_state.collisions.pos_z_collision {
+            // If the player is walking in +z/-z direction and already collided with a block in the same direction during the last tick, then apply the x translation first.
+            // This way, a player can walk around corners where the corner block is missing.
+            // Considering the following xz projection, the player can walk from block a to b while `#` is a solid block and the space represents air.
+            // # | b
+            // — + —
+            // a |
+            [
+                vec3(translation.x, 0.0, 0.0),
+                vec3(0.0, 0.0, translation.z),
+                vec3(0.0, translation.y, 0.0),
+            ]
+        } else {
+            [
+                vec3(0.0, 0.0, translation.z),
+                vec3(translation.x, 0.0, 0.0),
+                vec3(0.0, translation.y, 0.0),
+            ]
+        };
 
     // Move by y first so the player cannot slide around a corner where the floor block is missing
     'axes: for translation in translation_components {
@@ -422,37 +477,37 @@ fn resolve_collisions(
                             physics_state.aabb.min.x = (x + 1) as f32;
                             physics_state.aabb.max.x = (x + 1) as f32 + HITBOX_WIDTH;
                             physics_state.velocity.x = 0.0;
-                            neg_x_collision = true;
+                            pos_x_collision = true;
                         } else if translation.y < 0.0 {
                             physics_state.eye.y = (y + 1) as f32 + EYE_HEIGHT;
                             physics_state.aabb.min.y = (y + 1) as f32;
                             physics_state.aabb.max.y = (y + 1) as f32 + HITBOX_HEIGHT;
                             physics_state.velocity.y = 0.0;
-                            neg_y_collision = true;
+                            pos_y_collision = true;
                         } else if translation.z < 0.0 {
                             physics_state.eye.z = (z + 1) as f32 + HALF_HITBOX_WIDTH;
                             physics_state.aabb.min.z = (z + 1) as f32;
                             physics_state.aabb.max.z = (z + 1) as f32 + HITBOX_WIDTH;
                             physics_state.velocity.z = 0.0;
-                            neg_z_collision = true;
+                            pos_z_collision = true;
                         } else if translation.x > 0.0 {
                             physics_state.eye.x = x as f32 - HALF_HITBOX_WIDTH;
                             physics_state.aabb.min.x = x as f32 - HITBOX_WIDTH;
                             physics_state.aabb.max.x = x as f32;
                             physics_state.velocity.x = 0.0;
-                            pos_x_collision = true;
+                            neg_x_collision = true;
                         } else if translation.y > 0.0 {
                             physics_state.eye.y = y as f32 - (HITBOX_HEIGHT - EYE_HEIGHT);
                             physics_state.aabb.min.y = y as f32 - HITBOX_HEIGHT;
                             physics_state.aabb.max.y = y as f32;
                             physics_state.velocity.y = 0.0;
-                            pos_y_collision = true;
+                            neg_y_collision = true;
                         } else if translation.z > 0.0 {
                             physics_state.eye.z = z as f32 - HALF_HITBOX_WIDTH;
                             physics_state.aabb.min.z = z as f32 - HITBOX_WIDTH;
                             physics_state.aabb.max.z = z as f32;
                             physics_state.velocity.z = 0.0;
-                            pos_z_collision = true;
+                            neg_z_collision = true;
                         }
                         continue 'axes;
                     }
