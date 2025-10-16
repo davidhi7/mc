@@ -1,11 +1,11 @@
 use std::mem;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{swizzles::*, vec2, vec3, Vec2, Vec3, Vec4};
+use glam::{Vec2, Vec3, Vec4, swizzles::*, vec2, vec3};
 use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
     Buffer, BufferAddress, BufferUsages, Device, VertexAttribute, VertexBufferLayout, VertexFormat,
     VertexStepMode,
+    util::{BufferInitDescriptor, DeviceExt},
 };
 
 use crate::world::blocks::Direction;
@@ -123,7 +123,7 @@ pub fn create_vertex_buffer(device: &Device) -> Buffer {
         .iter()
         .map(|vertex| flip_quad_vertex(vertex.to_owned()));
 
-    for direction in Direction::into_iter() {
+    for direction in Direction::iter() {
         quad_variants.extend(
             QUAD_VERTICES
                 .iter()
@@ -154,6 +154,7 @@ fn swizzle_vertex(direction: Direction, vertex: Vertex) -> Vertex {
             // -X
             v.position = vec3(0.0, v.position.x, v.position.y);
             v.tex_coordinates = v.tex_coordinates.yx();
+            v.tex_coordinates.y = (1.0 - v.tex_coordinates.y).abs();
         }
         Direction::X => {
             // +X
@@ -162,6 +163,9 @@ fn swizzle_vertex(direction: Direction, vertex: Vertex) -> Vertex {
         Direction::NegY => {
             // -Y
             v.position = vec3(v.position.y, 0.0, v.position.x);
+            v.tex_coordinates = v.tex_coordinates.yx();
+            v.tex_coordinates.x = (1.0 - v.tex_coordinates.x).abs();
+            v.tex_coordinates.y = (1.0 - v.tex_coordinates.y).abs();
         }
         Direction::Y => {
             // +Y
@@ -174,6 +178,7 @@ fn swizzle_vertex(direction: Direction, vertex: Vertex) -> Vertex {
             // +Z
             v.position = vec3(v.position.y, v.position.x, 1.0);
             v.tex_coordinates = v.tex_coordinates.yx();
+            v.tex_coordinates.y = (1.0 - v.tex_coordinates.y).abs();
         }
     };
     v
@@ -182,12 +187,12 @@ fn swizzle_vertex(direction: Direction, vertex: Vertex) -> Vertex {
 fn flip_quad_vertex(vertex: Vertex) -> Vertex {
     let mut v = vertex.clone();
 
-    // Effectively rotate the line separating thetwo triangles that form a quad
+    // Effectively rotate the line separating the two triangles that form a quad
     // Relevant for AO interpolation in some cases
     v.position.x = (1.0 - v.position.x).abs();
     v.position = v.position.yxz();
 
-    v.tex_coordinates.x = (1.0 - v.tex_coordinates.x).abs();
+    v.tex_coordinates.y = (1.0 - v.tex_coordinates.y).abs();
     v.tex_coordinates = v.tex_coordinates.yx();
 
     v
