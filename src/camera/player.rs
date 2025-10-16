@@ -11,7 +11,7 @@ the velocity is incremented by `SPRINT_JUMP_ACCEL` facing in the current acceler
 */
 use std::f32::consts::{FRAC_1_SQRT_2, PI};
 
-use glam::{Mat3, Mat4, Vec3, ivec3, vec3};
+use glam::{IVec3, Mat3, Mat4, Vec3, ivec3, vec3};
 use lazy_static::lazy_static;
 use winit::keyboard::KeyCode;
 
@@ -148,7 +148,7 @@ impl PlayerState {
                             HALF_HITBOX_WIDTH,
                         );
 
-                    Aabb3 { min, max }
+                    Aabb3::new(min, max)
                 },
                 velocity: Vec3::ZERO,
                 acceleration: Vec3::ZERO,
@@ -462,7 +462,7 @@ fn resolve_collisions(
         physics_state.aabb.min += translation;
         physics_state.aabb.max += translation;
 
-        let Aabb3I { min, max } = physics_state.aabb.to_ivec_aabb();
+        let Aabb3I { min, max, .. } = physics_state.aabb.to_ivec_aabb();
 
         // Use non-inclusive upper bounds because the upper bound is the lower bound for the block aabb
         for x in min.x..max.x {

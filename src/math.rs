@@ -6,16 +6,29 @@ pub mod ray_caster;
 pub struct Aabb2I {
     pub min: IVec2,
     pub max: IVec2,
+    _private: (),
 }
 
+#[allow(dead_code)]
 impl Aabb2I {
     pub fn new(min: IVec2, max: IVec2) -> Self {
         debug_assert!(!min.cmpgt(max).any());
-        Self { min, max }
+        Self {
+            min,
+            max,
+            _private: (),
+        }
     }
 
-    pub fn contains_point(&self, vec: IVec2) -> bool {
-        (self.min.x..=self.max.x).contains(&vec.x) && (self.min.y..=self.max.y).contains(&vec.y)
+    /// Check whether this AABB contains the point. Also returns true if the point is on the edge of the AABB.
+    pub fn contains_point(&self, point: IVec2) -> bool {
+        (self.min.x..=self.max.x).contains(&point.x) && (self.min.y..=self.max.y).contains(&point.y)
+    }
+
+    /// Check whether two AABB's intersect. Sharing a point or edge
+    pub fn intersects(&self, other: Aabb2I) -> bool {
+        (self.min.x < other.max.x && self.max.x > other.min.x)
+            && (self.min.y < other.max.y && self.max.y > other.min.y)
     }
 }
 
@@ -25,18 +38,25 @@ macro_rules! define_aabb_3d {
         pub struct $name {
             pub min: $type,
             pub max: $type,
+            _private: (),
         }
 
+        #[allow(dead_code)]
         impl $name {
             pub fn new(min: $type, max: $type) -> Self {
                 debug_assert!(max.cmpge(min).all());
-                Self { min, max }
+                Self {
+                    min,
+                    max,
+                    _private: (),
+                }
             }
 
-            pub fn contains_point(&self, vec: $type) -> bool {
-                (self.min.x..=self.max.x).contains(&vec.x)
-                    && (self.min.y..=self.max.y).contains(&vec.y)
-                    && (self.min.z..=self.max.z).contains(&vec.z)
+            /// Check whether this AABB contains the point. Also returns true if the point is on the edge of the AABB.
+            pub fn contains_point(&self, point: $type) -> bool {
+                (self.min.x..=self.max.x).contains(&point.x)
+                    && (self.min.y..=self.max.y).contains(&point.y)
+                    && (self.min.z..=self.max.z).contains(&point.z)
             }
 
             /// Check whether two AABB's intersect. Sharing a point, edge or plane doens't count as intersection.
@@ -56,19 +76,14 @@ impl Aabb3 {
     /// Returns the smallest integer-based AABB that fully contains the the given AABB.
     /// This is done by calling `floor` on the min and `ceil` on the max value.
     pub fn to_ivec_aabb(&self) -> Aabb3I {
-        Aabb3I {
-            min: self.min.floor().as_ivec3(),
-            max: self.max.ceil().as_ivec3(),
-        }
+        Aabb3I::new(self.min.floor().as_ivec3(), self.max.ceil().as_ivec3())
     }
 }
 
+#[allow(dead_code)]
 impl Aabb3I {
     pub fn to_vec_aabb(&self) -> Aabb3 {
-        Aabb3 {
-            min: self.min.as_vec3(),
-            max: self.max.as_vec3(),
-        }
+        Aabb3::new(self.min.as_vec3(), self.max.as_vec3())
     }
 }
 
@@ -86,11 +101,13 @@ pub fn area_subtract_overlap_2d(area: Aabb2I, subtracted_area: Aabb2I) -> Vec<Aa
     let Aabb2I {
         min: area_min,
         max: area_max,
+        ..
     } = area;
 
     let Aabb2I {
         min: subtracted_area_min,
         max: subtracted_area_max,
+        ..
     } = subtracted_area;
 
     // Early return if the area is entirely within the subtracted area
@@ -151,11 +168,13 @@ pub fn volume_subtract_overlap_3d(volume: Aabb3I, subtracted_volume: Aabb3I) -> 
     let Aabb3I {
         min: volume_min,
         max: volume_max,
+        ..
     } = volume;
 
     let Aabb3I {
         min: subtracted_volume_min,
         max: subtracted_volume_max,
+        ..
     } = subtracted_volume;
 
     // Early return if the area is entirely within the subtracted area
@@ -229,9 +248,19 @@ pub fn volume_subtract_overlap_3d(volume: Aabb3I, subtracted_volume: Aabb3I) -> 
 
 #[cfg(test)]
 mod tests {
+    use glam::vec3;
+
     use crate::tests::cmp_vec_unordered;
 
     use super::*;
+
+    #[test]
+    fn test_to_ivec_aabb() {
+        assert_eq!(
+            Aabb3::new(vec3(0.0, 0.5, 1.5), vec3(1.0, 0.5, 2.5)).to_ivec_aabb(),
+            Aabb3I::new(ivec3(0, 0, 1), ivec3(1, 1, 3))
+        );
+    }
 
     #[test]
     fn test_equivalent_areas() {

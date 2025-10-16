@@ -231,7 +231,7 @@ impl WorldLoader {
             );
         }
         let buffers = ChunkBuffers { buffers };
-        
+
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("indirect buffer reload chunk command encoder"),
         });
@@ -586,18 +586,18 @@ impl WorldLoader {
     }
 
     fn visible_chunk_range_aabb3(position: ChunkUVW, render_distance: u32) -> Aabb3I {
-        Aabb3I {
-            min: ivec3(
+        Aabb3I::new(
+            ivec3(
                 position.u - render_distance as i32,
                 position.v - render_distance as i32,
                 position.w - render_distance as i32,
             ),
-            max: ivec3(
+            ivec3(
                 position.u + render_distance as i32,
                 position.v + render_distance as i32,
                 position.w + render_distance as i32,
             ),
-        }
+        )
     }
 
     fn iterate_aabb_chunks_2d(aabb: Aabb2I) -> Vec<IVec2> {

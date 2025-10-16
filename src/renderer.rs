@@ -269,16 +269,21 @@ impl WorldRenderer {
             coords,
             block,
             face: Some(direction),
+            ..
         }) = focused_blocks.solid_block
         {
             let left_mouse_pressed = input_state.pull_is_pressed(MouseButton::Left);
             let right_mouse_pressed = input_state.pull_is_pressed(MouseButton::Right);
 
             if left_mouse_pressed || right_mouse_pressed {
-                let (block_coordinates, block) = if left_mouse_pressed {
-                    (coords, Block::AIR)
+                let (coords, block) = if left_mouse_pressed {
+                    (looked_at_block_coords, Block::AIR)
                 } else {
-                    (coords + direction.get_unit_ivec(), Block::GRAVEL)
+                    // right mouse pressed
+                    (
+                        looked_at_block_coords + direction.get_unit_ivec(),
+                        Block::GRAVEL,
+                    )
                 };
 
                 let updated_chunks = self
