@@ -30,7 +30,7 @@ use crate::{
     window::input::InputState,
     world::{
         World,
-        blocks::Block,
+        blocks::{Block, BlockPhysicsType},
         chunk::VERTICAL_CHUNK_COUNT,
         world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
     },
@@ -266,8 +266,7 @@ impl WorldRenderer {
         );
 
         if let Some(BlockInfo {
-            coords,
-            block,
+            coords: looked_at_block_coords,
             face: Some(direction),
             ..
         }) = focused_blocks.solid_block
@@ -286,17 +285,18 @@ impl WorldRenderer {
                     )
                 };
 
-                let updated_chunks = self
-                    .world_loader
-                    .world
-                    .replace_block(block_coordinates, block);
-                for updated_chunk in updated_chunks {
-                    self.world_loader.reload_chunk(
-                        &self.device,
-                        &self.queue,
-                        &mut self.indirect_draw_buffer,
-                        updated_chunk,
-                    );
+                if !self.player.intersects_block(coords)
+                    || block.physics_type() != BlockPhysicsType::SOLID
+                {
+                    let updated_chunks = self.world_loader.world.replace_block(coords, block);
+                    for updated_chunk in updated_chunks {
+                        self.world_loader.reload_chunk(
+                            &self.device,
+                            &self.queue,
+                            &mut self.indirect_draw_buffer,
+                            updated_chunk,
+                        );
+                    }
                 }
             }
         }

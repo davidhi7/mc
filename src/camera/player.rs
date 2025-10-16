@@ -19,7 +19,7 @@ use crate::{
     camera::{Perspective, View},
     math::{Aabb3, Aabb3I},
     window::input::InputState,
-    world::LookupBlock,
+    world::{LookupBlock, blocks::BlockPhysicsType},
 };
 
 /// TPS that is used for updating game physics.
@@ -401,6 +401,11 @@ impl PlayerState {
 
         self.perspective.get_matrix() * view.get_matrix()
     }
+
+    /// Returns true if the block intersects the player AABB and the block is solid
+    pub fn intersects_block(&self, coords: IVec3) -> bool {
+        intersects_block(self.physics_state.aabb.to_ivec_aabb(), coords)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -417,6 +422,10 @@ struct CollisionResult {
     neg_z_collision: bool,
     /// Player collides with block face facing in positive z direction.
     pos_z_collision: bool,
+}
+
+fn intersects_block(aabb: Aabb3I, coords: IVec3) -> bool {
+    aabb.intersects(Aabb3I::new(coords, coords + IVec3::ONE))
 }
 
 fn resolve_collisions(
@@ -470,10 +479,10 @@ fn resolve_collisions(
                 for y in min.y..max.y {
                     if block_lookup.is_solid(ivec3(x, y, z)) {
                         // Check if player intersects with the block
-                        if !physics_state.aabb.to_ivec_aabb().intersects(Aabb3I {
-                            min: ivec3(x, y, z),
-                            max: ivec3(x + 1, y + 1, z + 1),
-                        }) {
+                        if let Some(block) = block_lookup.lookup_block(ivec3(x, y, z))
+                            && block.physics_type() == BlockPhysicsType::SOLID
+                            && !intersects_block(physics_state.aabb.to_ivec_aabb(), ivec3(x, y, z))
+                        {
                             continue;
                         }
                         if translation.x < 0.0 {
