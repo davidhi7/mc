@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
     sync::{
+        Arc, RwLock,
         mpsc::{Receiver, Sender},
-        Arc,
     },
     thread,
     time::Duration,
@@ -10,8 +10,8 @@ use std::{
 
 use noise::Simplex;
 use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
     BufferUsages, Device,
+    util::{BufferInitDescriptor, DeviceExt},
 };
 
 use crate::world::{
@@ -39,14 +39,16 @@ pub fn launch(
             ChunkJob::Mesh { chunk_stack } => chunk_stack,
             ChunkJob::GenerateAndMesh { uw } => {
                 chunk_stack_created = true;
-                Arc::new(Chunk::generate_stack(&noise, uw))
+                Arc::new(RwLock::new(Chunk::generate_stack(&noise, uw)))
             }
         };
+
+        let uw = chunk_stack.read().unwrap().uw;
 
         let chunk_buffers = (0..VERTICAL_CHUNK_COUNT)
             .map(|v| {
                 let (solid_instances, transparent_instances) =
-                    chunk_stack.chunks[v].generate_mesh();
+                    chunk_stack.read().unwrap().chunks[v].generate_mesh();
                 let mut buffers = HashMap::with_capacity(2);
 
                 if solid_instances.len() > 0 {
@@ -58,7 +60,7 @@ pub fn launch(
                                     format!(
                                         "{:?} terrain mesh at {:?}",
                                         TerrainBuckets::SOLID,
-                                        chunk_stack.uw.to_uvw(v as i32)
+                                        uw.to_uvw(v as i32)
                                     )
                                     .as_str(),
                                 ),
@@ -79,7 +81,7 @@ pub fn launch(
                                     format!(
                                         "{:?} terrain mesh at {:?}",
                                         TerrainBuckets::TRANSPARENT,
-                                        chunk_stack.uw.to_uvw(v as i32)
+                                        uw.to_uvw(v as i32)
                                     )
                                     .as_str(),
                                 ),
@@ -96,7 +98,7 @@ pub fn launch(
 
         result_sender
             .send(ChunkJobResult {
-                uw: chunk_stack.uw,
+                uw,
                 chunk_stack: if chunk_stack_created {
                     Some(chunk_stack)
                 } else {

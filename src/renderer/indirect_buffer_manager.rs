@@ -59,10 +59,10 @@ pub struct MultiDrawIndirectBuffer<
 const DRAW_ARGS_SIZE: usize = std::mem::size_of::<DrawIndirectArgs>();
 
 impl<
-        Uniform: Clone + Debug + Hash + Eq + AsBytes,
-        Bucket: Copy + Debug + Hash + Eq + InstanceSize,
-        const BUCKET_COUNT: usize,
-    > MultiDrawIndirectBuffer<Uniform, Bucket, BUCKET_COUNT>
+    Uniform: Clone + Debug + Hash + Eq + AsBytes,
+    Bucket: Copy + Debug + Hash + Eq + InstanceSize,
+    const BUCKET_COUNT: usize,
+> MultiDrawIndirectBuffer<Uniform, Bucket, BUCKET_COUNT>
 {
     pub fn new(
         device: &Device,
@@ -166,7 +166,7 @@ impl<
         }
 
         self.vertex_buffer_allocator
-            .deallocate(&draw_call_data.vertex_buffer_handle);
+            .deallocate(draw_call_data.vertex_buffer_handle);
 
         self.draw_count_per_bucket[self.bucket_id(handle.bucket)] -= 1;
     }
@@ -202,7 +202,7 @@ impl<
             let indirect_buffer_handle = draw_call_data.indirect_buffer_handle;
 
             self.vertex_buffer_allocator
-                .deallocate(&draw_call_data.vertex_buffer_handle);
+                .deallocate(draw_call_data.vertex_buffer_handle);
             drop(draw_call_data);
             self.draw_count_per_bucket[self.bucket_id(handle.bucket)] -= 1;
 
@@ -229,8 +229,8 @@ impl<
         uniform: Uniform,
     ) -> DrawCallHandle<Uniform, Bucket> {
         let vertex_buffer_handle = self.vertex_buffer_allocator.allocate_from_buffer(
-            &mut BufferMemoryTarget::new(&self.vertex_buffer, queue, command_encoder),
             vertex_buffer,
+            &mut BufferMemoryTarget::new(&self.vertex_buffer, queue, command_encoder),
             instance_count as u64 * bucket.instance_size(),
             bucket.instance_size(),
         );

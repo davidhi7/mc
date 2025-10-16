@@ -72,7 +72,7 @@ pub enum Direction {
 }
 
 impl Direction {
-    pub fn into_iter() -> impl Iterator<Item = Direction> {
+    pub fn iter() -> impl Iterator<Item = Direction> {
         [
             Direction::NegX,
             Direction::X,
@@ -84,7 +84,7 @@ impl Direction {
         .into_iter()
     }
 
-    pub fn get_unit_vector(&self) -> Vec3 {
+    pub fn get_unit_vec(&self) -> Vec3 {
         match self {
             Direction::NegX => Vec3::NEG_X,
             Direction::X => Vec3::X,
@@ -95,7 +95,7 @@ impl Direction {
         }
     }
 
-    pub fn get_unit_vector_i32(&self) -> IVec3 {
+    pub fn get_unit_ivec(&self) -> IVec3 {
         match self {
             Direction::NegX => IVec3::NEG_X,
             Direction::X => IVec3::X,

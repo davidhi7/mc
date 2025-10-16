@@ -11,11 +11,12 @@ use wgpu::{
     StoreOp, Surface, SurfaceError, Texture, TextureDescriptor, TextureDimension, TextureFormat,
     TextureUsages, TextureView, TextureViewDescriptor,
 };
-use winit::dpi::PhysicalSize;
+use winit::{dpi::PhysicalSize, event::MouseButton};
 
 use crate::{
     camera::{
-        Perspective, block_ray_caster,
+        Perspective,
+        block_ray_caster::{self, BlockInfo},
         player::{self, PlayerState},
     },
     renderer::{
@@ -29,6 +30,7 @@ use crate::{
     window::input::InputState,
     world::{
         World,
+        blocks::Block,
         chunk::VERTICAL_CHUNK_COUNT,
         world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
     },
@@ -257,22 +259,53 @@ impl WorldRenderer {
                 .extrapolate_view_projection(lag_s, &self.world_loader.world),
         );
 
-        self.world_loader.load_chunks(
-            &self.device,
-            &self.queue,
-            &mut self.indirect_draw_buffer,
-            self.player.eye(),
-        );
-
-        let focused_block = block_ray_caster::find_looked_at_blocks(
+        let focused_blocks = block_ray_caster::find_looked_at_blocks(
             self.player.eye(),
             self.player.direction(),
             &self.world_loader.world,
         );
 
+        if let Some(BlockInfo {
+            coords,
+            block,
+            face: Some(direction),
+        }) = focused_blocks.solid_block
+        {
+            let left_mouse_pressed = input_state.pull_is_pressed(MouseButton::Left);
+            let right_mouse_pressed = input_state.pull_is_pressed(MouseButton::Right);
+
+            if left_mouse_pressed || right_mouse_pressed {
+                let (block_coordinates, block) = if left_mouse_pressed {
+                    (coords, Block::AIR)
+                } else {
+                    (coords + direction.get_unit_ivec(), Block::GRAVEL)
+                };
+
+                let updated_chunks = self
+                    .world_loader
+                    .world
+                    .replace_block(block_coordinates, block);
+                for updated_chunk in updated_chunks {
+                    self.world_loader.reload_chunk(
+                        &self.device,
+                        &self.queue,
+                        &mut self.indirect_draw_buffer,
+                        updated_chunk,
+                    );
+                }
+            }
+        }
+
         self.block_outline_pipeline.set_outlined_block(
             &self.queue,
-            focused_block.solid_block.map(|block| block.coords),
+            focused_blocks.solid_block.map(|block| block.coords),
+        );
+
+        self.world_loader.load_chunks(
+            &self.device,
+            &self.queue,
+            &mut self.indirect_draw_buffer,
+            self.player.eye(),
         );
     }
 

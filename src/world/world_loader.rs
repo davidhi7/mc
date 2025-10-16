@@ -2,8 +2,8 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
 use std::iter;
 use std::ops::RangeInclusive;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, RwLock};
 use std::{
     collections::HashMap,
     thread::{self},
@@ -12,8 +12,9 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec2, IVec3, Vec3, ivec2, ivec3};
 use itertools::Itertools;
-use wgpu::CommandEncoderDescriptor;
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{Buffer, Device, Queue};
+use wgpu::{BufferUsages, CommandEncoderDescriptor};
 
 use crate::math::{self, Aabb2I, Aabb3I};
 use crate::renderer::buffers::AsBytes;
@@ -84,14 +85,18 @@ impl InstanceSize for TerrainBuckets {
 
 #[derive(Clone, Debug)]
 enum ChunkJob {
-    Mesh { chunk_stack: Arc<ChunkStack> },
-    GenerateAndMesh { uw: ChunkUW },
+    Mesh {
+        chunk_stack: Arc<RwLock<ChunkStack>>,
+    },
+    GenerateAndMesh {
+        uw: ChunkUW,
+    },
 }
 
 impl ChunkJob {
     fn get_uw(&self) -> ChunkUW {
         match self {
-            ChunkJob::Mesh { chunk_stack } => chunk_stack.uw,
+            ChunkJob::Mesh { chunk_stack } => chunk_stack.read().unwrap().uw,
             ChunkJob::GenerateAndMesh { uw } => *uw,
         }
     }
@@ -125,7 +130,7 @@ impl Ord for WorkerThreadHandle {
 
 struct ChunkJobResult {
     uw: ChunkUW,
-    chunk_stack: Option<Arc<ChunkStack>>,
+    chunk_stack: Option<Arc<RwLock<ChunkStack>>>,
     chunk_buffers: Vec<ChunkBuffers>,
 }
 
@@ -175,6 +180,95 @@ impl WorldLoader {
         instance
     }
 
+    pub fn reload_chunk(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        indirect_buffer: &mut MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
+        uvw: ChunkUVW,
+    ) {
+        let binding = self.world.get_chunk_stack(uvw.to_uw()).unwrap();
+        let chunk = &binding.read().unwrap().chunks[uvw.v as usize];
+        let (solid_instances, transparent_instances) = chunk.generate_mesh();
+
+        let mut buffers = HashMap::with_capacity(2);
+
+        if solid_instances.len() > 0 {
+            buffers.insert(
+                TerrainBuckets::SOLID,
+                (
+                    device.create_buffer_init(&BufferInitDescriptor {
+                        label: Some(
+                            format!("{:?} terrain mesh at {:?}", TerrainBuckets::SOLID, uvw)
+                                .as_str(),
+                        ),
+                        contents: bytemuck::cast_slice(solid_instances.as_slice()),
+                        usage: BufferUsages::COPY_SRC,
+                    }),
+                    solid_instances.len() as u32,
+                ),
+            );
+        }
+
+        if transparent_instances.len() > 0 {
+            buffers.insert(
+                TerrainBuckets::TRANSPARENT,
+                (
+                    device.create_buffer_init(&BufferInitDescriptor {
+                        label: Some(
+                            format!(
+                                "{:?} terrain mesh at {:?}",
+                                TerrainBuckets::TRANSPARENT,
+                                uvw
+                            )
+                            .as_str(),
+                        ),
+                        contents: bytemuck::cast_slice(transparent_instances.as_slice()),
+                        usage: BufferUsages::COPY_SRC,
+                    }),
+                    transparent_instances.len() as u32,
+                ),
+            );
+        }
+        let buffers = ChunkBuffers { buffers };
+        
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("indirect buffer reload chunk command encoder"),
+        });
+
+        let mut i = 0;
+        while i < self.indirect_draw_calls.len() {
+            let handle = &self.indirect_draw_calls[i];
+            let chunk: ChunkUVW = ChunkUVW::from(handle.uniform).into();
+
+            if chunk == uvw {
+                indirect_buffer.drop_region(
+                    queue,
+                    &mut encoder,
+                    self.indirect_draw_calls.remove(i),
+                );
+            } else {
+                i += 1;
+            }
+        }
+
+        for (bucket, buffer) in buffers.buffers.iter() {
+            self.indirect_draw_calls.push(indirect_buffer.insert_region(
+                queue,
+                &mut encoder,
+                *bucket,
+                &buffer.0,
+                buffer.1,
+                uvw.into(),
+            ));
+        }
+
+        self.buffered_chunks.get_mut(&uvw.to_uw()).unwrap()[uvw.v as usize] = buffers;
+
+        let command_buffer = encoder.finish();
+        queue.submit(iter::once(command_buffer));
+    }
+
     pub fn load_chunks(
         &mut self,
         device: &Device,
@@ -182,7 +276,7 @@ impl WorldLoader {
         indirect_buffer: &mut MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
         position: Vec3,
     ) {
-        let camera_chunk = world::get_chunk_coordinates_f32(position);
+        let camera_chunk = world::get_chunk_coordinates(position.as_ivec3());
 
         if let Some(last_camera_chunk) = self.last_camera_chunk {
             self.handle_results();

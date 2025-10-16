@@ -3,10 +3,11 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use crate::renderer::buffers::{AsBytes, MemoryTarget};
+use crate::renderer::buffers::{AsBytes, WriteBuffer};
 
 pub type RcBlockHandle = Rc<u64>;
 
+/// Allocator for fixed-size blocks of the generic type.
 pub struct BlockAllocator<T: AsBytes> {
     blocks_allocated: Box<[bool]>,
     phantom: PhantomData<T>,
@@ -20,7 +21,7 @@ impl<T: AsBytes> BlockAllocator<T> {
         }
     }
 
-    pub fn allocate_block<U>(&mut self, target: &mut impl MemoryTarget<U>, data: &T, block: u64) {
+    pub fn allocate_block(&mut self, target: &mut impl WriteBuffer, data: &T, block: u64) {
         target.write(block * std::mem::size_of::<T>() as u64, data.get_bytes());
 
         self.blocks_allocated[block as usize] = true;
@@ -62,9 +63,9 @@ impl<T: AsBytes> RcBlockAllocator<T> {
     }
 
     #[must_use]
-    pub fn allocate_first_free_block<U>(
+    pub fn allocate_first_free_block(
         &mut self,
-        target: &mut impl MemoryTarget<U>,
+        target: &mut impl WriteBuffer,
         data: &T,
     ) -> RcBlockHandle {
         let index = self.first_free_block().expect("No free block available");
@@ -85,14 +86,14 @@ mod tests {
 
     impl AsBytes for u8 {
         fn get_bytes(&self) -> &[u8] {
-            bytemuck::bytes_of(self)
+            std::slice::from_ref(self)
         }
     }
 
     #[test]
     fn test_rc() {
         let mut alloc = RcBlockAllocator::new(1);
-        let mut mem: TestMemoryTarget<1> = TestMemoryTarget { memory: [0; 1] };
+        let mut mem = TestMemoryTarget { memory: [0; 1] };
 
         let handle = alloc.allocate_first_free_block(&mut mem, &0);
         let handle_clone = Rc::clone(&handle);

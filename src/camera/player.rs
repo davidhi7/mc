@@ -203,7 +203,7 @@ impl PlayerState {
             }
         }
 
-        let is_sprinting = input_state.is_key_pressed(KeyCode::ShiftLeft);
+        let is_sprinting = input_state.is_pressed(KeyCode::ShiftLeft);
 
         let base_acceleration = match self.movement_state {
             MovementState::Walking => *BASE_ACCEL_GROUND,
@@ -221,9 +221,9 @@ impl PlayerState {
         };
 
         // If we are going to move along both axes, use 1/sqrt(2) as coefficient so the maximum diagonal speed can't exceed the maximum straight speed
-        let diagonal_correction = if input_state.is_key_pressed(KeyCode::KeyW)
-            ^ input_state.is_key_pressed(KeyCode::KeyS)
-            && input_state.is_key_pressed(KeyCode::KeyA) ^ input_state.is_key_pressed(KeyCode::KeyD)
+        let diagonal_correction = if input_state.is_pressed(KeyCode::KeyW)
+            ^ input_state.is_pressed(KeyCode::KeyS)
+            && input_state.is_pressed(KeyCode::KeyA) ^ input_state.is_pressed(KeyCode::KeyD)
         {
             FRAC_1_SQRT_2
         } else {
@@ -233,19 +233,19 @@ impl PlayerState {
         // Acceleration rotated so that +x is forward and +z left. Note that this acceleration doesn't include friction/drag.
         let mut rotated_acceleration = Vec3::ZERO;
 
-        if input_state.is_key_pressed(KeyCode::KeyW) {
+        if input_state.is_pressed(KeyCode::KeyW) {
             rotated_acceleration.x += diagonal_correction * base_acceleration;
         }
 
-        if input_state.is_key_pressed(KeyCode::KeyS) {
+        if input_state.is_pressed(KeyCode::KeyS) {
             rotated_acceleration.x -= diagonal_correction * base_acceleration;
         }
 
-        if input_state.is_key_pressed(KeyCode::KeyA) {
+        if input_state.is_pressed(KeyCode::KeyA) {
             rotated_acceleration.z += diagonal_correction * base_acceleration;
         }
 
-        if input_state.is_key_pressed(KeyCode::KeyD) {
+        if input_state.is_pressed(KeyCode::KeyD) {
             rotated_acceleration.z -= diagonal_correction * base_acceleration;
         }
 
@@ -258,7 +258,7 @@ impl PlayerState {
         match self.movement_state {
             MovementState::Walking => {
                 // Do a jump if space is pressed, note that jumping is possible even if the player is not on the ground anymore during the current tick
-                if input_state.is_key_single_clicked(KeyCode::Space) {
+                if input_state.is_single_clicked(KeyCode::Space) {
                     // sprint jump boost
                     if is_sprinting {
                         world_acceleration +=
@@ -282,8 +282,8 @@ impl PlayerState {
                 ref mut flying_up,
                 ref mut flying_down,
             } => {
-                *flying_up = input_state.is_key_single_clicked(KeyCode::Space);
-                *flying_down = input_state.is_key_single_clicked(KeyCode::ControlLeft);
+                *flying_up = input_state.is_single_clicked(KeyCode::Space);
+                *flying_down = input_state.is_single_clicked(KeyCode::ControlLeft);
 
                 // Directly set velocity, since acceleration isn't continuous
                 if *flying_up == *flying_down {

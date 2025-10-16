@@ -1,11 +1,12 @@
 use wgpu::{
-    util::{DrawIndexedIndirectArgs, DrawIndirectArgs},
     Buffer, CommandEncoder, Queue,
+    util::{DrawIndexedIndirectArgs, DrawIndirectArgs},
 };
 
 pub mod block_allocator;
 pub mod pool_allocator;
 
+/// Return the smallest number greater than or equal to the given `number` that is a multiple of `alignment`.
 pub fn align_up(number: u64, alignment: u64) -> u64 {
     let delta = number % alignment;
     if delta == 0 {
@@ -31,8 +32,11 @@ impl AsBytes for DrawIndexedIndirectArgs {
     }
 }
 
-pub trait MemoryTarget<T> {
+pub trait WriteBuffer {
     fn write(&mut self, offset: u64, data: &[u8]);
+}
+
+pub trait CopyFromBuffer<T> {
     fn copy_from_buffer(
         &mut self,
         source: &T,
@@ -62,11 +66,13 @@ impl<'a> BufferMemoryTarget<'a> {
     }
 }
 
-impl<'a> MemoryTarget<Buffer> for BufferMemoryTarget<'a> {
+impl<'a> WriteBuffer for BufferMemoryTarget<'a> {
     fn write(&mut self, offset: u64, data: &[u8]) {
         self.queue.write_buffer(&self.buffer, offset, data);
     }
+}
 
+impl<'a> CopyFromBuffer<Buffer> for BufferMemoryTarget<'a> {
     fn copy_from_buffer(
         &mut self,
         source: &Buffer,
@@ -80,7 +86,7 @@ impl<'a> MemoryTarget<Buffer> for BufferMemoryTarget<'a> {
             &self.buffer,
             destination_offset,
             copy_size,
-        );
+        )
     }
 }
 
@@ -92,11 +98,13 @@ pub mod tests {
         pub memory: [u8; N],
     }
 
-    impl<const N: usize> MemoryTarget<[u8; N]> for TestMemoryTarget<N> {
+    impl<const N: usize> WriteBuffer for TestMemoryTarget<N> {
         fn write(&mut self, offset: u64, data: &[u8]) {
             self.memory[(offset as usize)..(offset as usize + data.len())].copy_from_slice(data);
         }
+    }
 
+    impl<const N: usize> CopyFromBuffer<[u8; N]> for TestMemoryTarget<N> {
         fn copy_from_buffer(
             &mut self,
             source: &[u8; N],

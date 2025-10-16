@@ -5,10 +5,7 @@ use noise::NoiseFn;
 
 use crate::{
     renderer::vertex_buffer::{QuadInstance, TransparentQuadInstance},
-    world::{
-        blocks::{Block, BlockRenderType, Direction},
-        coordinates::Coordinates,
-    },
+    world::blocks::{Block, BlockRenderType, Direction},
 };
 
 pub const CHUNK_WIDTH_BITS: u32 = 5;
@@ -18,7 +15,7 @@ pub const CHUNK_WIDTH_I32: i32 = CHUNK_WIDTH as i32;
 const CHUNK_WIDTH_P: usize = CHUNK_WIDTH + 2;
 const CHUNK_WIDTH_P_I32: i32 = CHUNK_WIDTH_P as i32;
 
-pub const VERTICAL_CHUNK_COUNT: usize = 8;
+pub const VERTICAL_CHUNK_COUNT: usize = 4;
 
 pub const WORLD_HEIGHT: usize = CHUNK_WIDTH * VERTICAL_CHUNK_COUNT;
 
@@ -94,6 +91,12 @@ pub struct ChunkStack {
     pub chunks: [Chunk; VERTICAL_CHUNK_COUNT],
 }
 
+impl ChunkStack {
+    pub fn validate_chunk_v(v: i32) -> bool {
+        v >= 0 && v < VERTICAL_CHUNK_COUNT as i32
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Chunk {
     data: Box<[Block]>,
@@ -101,7 +104,7 @@ pub struct Chunk {
 
 impl Chunk {
     pub fn generate_stack(noise: &impl NoiseFn<f64, 2>, uw: ChunkUW) -> ChunkStack {
-        const TOTAL_BLOCK_COUNT: usize = (CHUNK_WIDTH_P).pow(3);
+        const TOTAL_BLOCK_COUNT: usize = CHUNK_WIDTH_P.pow(3);
 
         let blocks = vec![Block::AIR; TOTAL_BLOCK_COUNT];
 
@@ -156,16 +159,23 @@ impl Chunk {
         let y = global_y % CHUNK_WIDTH;
         let v = global_y / CHUNK_WIDTH;
 
-        *chunk_stack.chunks[v].at_mut(x, y as i32, z) = block;
+        *chunk_stack.chunks[v].at_mut_with_padding(ivec3(x, y as i32, z)) = block;
 
         if y == 0 && v > 0 {
-            *chunk_stack.chunks[v - 1].at_mut(x, CHUNK_WIDTH_I32, z) = block;
+            *chunk_stack.chunks[v - 1].at_mut_with_padding(ivec3(x, CHUNK_WIDTH_I32, z)) = block;
         } else if y == CHUNK_WIDTH - 1 && v < VERTICAL_CHUNK_COUNT - 1 {
-            *chunk_stack.chunks[v + 1].at_mut(x, -1, z) = block;
+            *chunk_stack.chunks[v + 1].at_mut_with_padding(ivec3(x, -1, z)) = block;
         }
     }
 
-    fn validate_chunk_coordinates(x: i32, y: i32, z: i32) -> bool {
+    fn validate_chunk_coordinates(block: IVec3) -> bool {
+        let IVec3 { x, y, z } = block;
+        let range = 0..CHUNK_WIDTH_I32;
+        range.contains(&x) && range.contains(&y) && range.contains(&z)
+    }
+
+    fn validate_chunk_coordinates_with_padding(block: IVec3) -> bool {
+        let IVec3 { x, y, z } = block;
         let range = -1..=CHUNK_WIDTH_I32;
         range.contains(&x) && range.contains(&y) && range.contains(&z)
     }
@@ -174,21 +184,43 @@ impl Chunk {
         (((x + 1) * CHUNK_WIDTH_P_I32 + y + 1) * CHUNK_WIDTH_P_I32 + z + 1) as usize
     }
 
-    pub fn at(&self, x: i32, y: i32, z: i32) -> &Block {
-        if cfg!(debug_assertions) && !Chunk::validate_chunk_coordinates(x, y, z) {
-            panic!("Invalid chunk coordinates x={} y={} z={} ", x, y, z);
-        }
+    pub fn at(&self, block: IVec3) -> &Block {
+        debug_assert!(
+            Chunk::validate_chunk_coordinates(block),
+            "Invalid chunk coordinates {}",
+            block
+        );
+        let IVec3 { x, y, z } = block;
         &self.data[Chunk::array_index(x, y, z)]
     }
 
-    pub fn at_coords(&self, coords: Coordinates) -> &Block {
-        self.at(coords.x(), coords.y(), coords.z())
+    pub fn at_mut(&mut self, block: IVec3) -> &mut Block {
+        debug_assert!(
+            Chunk::validate_chunk_coordinates(block),
+            "Invalid chunk coordinates {}",
+            block
+        );
+        let IVec3 { x, y, z } = block;
+        &mut self.data[Chunk::array_index(x, y, z)]
     }
 
-    pub fn at_mut(&mut self, x: i32, y: i32, z: i32) -> &mut Block {
-        if cfg!(debug_assertions) && !Chunk::validate_chunk_coordinates(x, y, z) {
-            panic!("Invalid chunk coordinates x={} y={} z={} ", x, y, z);
-        }
+    pub fn at_with_padding(&self, block: IVec3) -> &Block {
+        debug_assert!(
+            Chunk::validate_chunk_coordinates_with_padding(block),
+            "Invalid chunk coordinates {}",
+            block
+        );
+        let IVec3 { x, y, z } = block;
+        &self.data[Chunk::array_index(x, y, z)]
+    }
+
+    pub fn at_mut_with_padding(&mut self, block: IVec3) -> &mut Block {
+        debug_assert!(
+            Chunk::validate_chunk_coordinates_with_padding(block),
+            "Invalid chunk coordinates {}",
+            block
+        );
+        let IVec3 { x, y, z } = block;
         &mut self.data[Chunk::array_index(x, y, z)]
     }
 
@@ -199,53 +231,41 @@ impl Chunk {
         for x in 0..CHUNK_WIDTH_I32 {
             for y in 0..CHUNK_WIDTH_I32 {
                 for z in 0..CHUNK_WIDTH_I32 {
-                    let block_type = self.at(x, y, z).render_type();
-                    if let BlockRenderType::INVISIBLE = block_type {
+                    let coords = ivec3(x, y, z);
+                    let block = self.at_with_padding(coords);
+                    if let BlockRenderType::INVISIBLE = block.render_type() {
                         continue;
                     }
-
-                    let mut directions = Vec::with_capacity(6);
-                    if Chunk::is_face_visible(block_type, self.at(x - 1, y, z).render_type()) {
-                        directions.push(Direction::NegX)
-                    }
-                    if Chunk::is_face_visible(block_type, self.at(x + 1, y, z).render_type()) {
-                        directions.push(Direction::X)
-                    }
-                    if Chunk::is_face_visible(block_type, self.at(x, y - 1, z).render_type()) {
-                        directions.push(Direction::NegY)
-                    }
-                    if Chunk::is_face_visible(block_type, self.at(x, y + 1, z).render_type()) {
-                        directions.push(Direction::Y)
-                    }
-                    if Chunk::is_face_visible(block_type, self.at(x, y, z - 1).render_type()) {
-                        directions.push(Direction::NegZ)
-                    }
-                    if Chunk::is_face_visible(block_type, self.at(x, y, z + 1).render_type()) {
-                        directions.push(Direction::Z)
-                    }
-
-                    let tex_index = self.at(x, y, z).texture_index();
 
                     let common_packed_bits: u32 = x as u32
                         | ((y as u32) << CHUNK_WIDTH_BITS)
                         | ((z as u32) << (CHUNK_WIDTH_BITS * 2))
-                        | ((tex_index as u32) << (CHUNK_WIDTH_BITS * 3));
+                        | ((block.texture_index() as u32) << (CHUNK_WIDTH_BITS * 3));
 
-                    for direction in directions {
+                    for direction in Direction::iter() {
+                        if !Chunk::is_face_visible(
+                            block.render_type(),
+                            self.at_with_padding(coords + direction.get_unit_ivec())
+                                .render_type(),
+                        ) {
+                            continue;
+                        }
+
                         let attributes =
                             common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
-                        if let BlockRenderType::OPAQUE = block_type {
-                            let instance = QuadInstance {
-                                attributes,
-                                ao_attributes: self
-                                    .get_ao_attributes(Coordinates::new(x, y, z), direction),
-                            };
-                            solid_instances.push(instance);
-                        } else if let BlockRenderType::INVISIBLE = block_type {
-                            let instance = TransparentQuadInstance { attributes };
-                            transparent_instances.push(instance);
-                        }
+                        match block.render_type() {
+                            BlockRenderType::OPAQUE => {
+                                solid_instances.push(QuadInstance {
+                                    attributes,
+                                    ao_attributes: self.get_ao_attributes(coords, direction),
+                                });
+                            }
+                            BlockRenderType::TRANSPARENT => {
+                                transparent_instances.push(TransparentQuadInstance { attributes });
+                            }
+                            BlockRenderType::INVISIBLE => unreachable!(),
+                        };
                     }
                 }
             }
@@ -270,7 +290,7 @@ impl Chunk {
         }
     }
 
-    fn get_ao_attributes(&self, block: Coordinates, direction: Direction) -> u32 {
+    fn get_ao_attributes(&self, coords: IVec3, direction: Direction) -> u32 {
         let cross_directions = match direction {
             Direction::NegX => (Direction::Y, Direction::Z),
             Direction::X => (Direction::Z, Direction::Y),
@@ -281,7 +301,7 @@ impl Chunk {
             Direction::NegZ => (Direction::X, Direction::Y),
             Direction::Z => (Direction::Y, Direction::X),
         };
-        let air_block = block.go(direction, 1);
+        let air_block = coords + direction.get_unit_ivec();
 
         let mut factor = 0;
 
@@ -292,19 +312,19 @@ impl Chunk {
             let step_1 = if i & 1 == 1 { 1 } else { -1 };
 
             let side_1 = self
-                .at_coords(air_block.go(cross_directions.0, step_0))
+                .at_with_padding(air_block + step_0 * cross_directions.0.get_unit_ivec())
                 .render_type()
                 == BlockRenderType::OPAQUE;
             let side_2 = self
-                .at_coords(air_block.go(cross_directions.1, step_1))
+                .at_with_padding(air_block + step_1 * cross_directions.1.get_unit_ivec())
                 .render_type()
                 == BlockRenderType::OPAQUE;
 
             let corner = self
-                .at_coords(
+                .at_with_padding(
                     air_block
-                        .go(cross_directions.0, step_0)
-                        .go(cross_directions.1, step_1),
+                        + step_0 * cross_directions.0.get_unit_ivec()
+                        + step_1 * cross_directions.1.get_unit_ivec(),
                 )
                 .render_type()
                 == BlockRenderType::OPAQUE;

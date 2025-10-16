@@ -212,6 +212,7 @@ impl ApplicationHandler for App {
                     .unwrap();
             }
             WindowEvent::KeyboardInput { event, .. } => state.input_state.handle_key_event(event),
+            WindowEvent::MouseInput { state: button_state, button, .. } => state.input_state.handle_mouse_event(button, button_state),
             _ => (),
         }
     }
