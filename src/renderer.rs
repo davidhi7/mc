@@ -20,7 +20,7 @@ use crate::{
         player::{self, PlayerState},
     },
     renderer::{
-        indirect_buffer_manager::MultiDrawIndirectBuffer,
+        indirect_buffer_manager::IndirectBufferManager,
         pipelines::{
             GlobalsBinding, block_outlines::BlockOutlinePipeline,
             frustum_culling::FrustumCullingComputePass, terrain::TerrainPipeline, ui::UiPipeline,
@@ -32,7 +32,7 @@ use crate::{
         World,
         blocks::{Block, BlockPhysicsType},
         chunk::VERTICAL_CHUNK_COUNT,
-        world_loader::{ChunkUniform, TerrainBuckets, WorldLoader},
+        world_loader::{ChunkUniform, TerrainType, WorldLoader},
     },
 };
 
@@ -110,7 +110,15 @@ impl Renderer {
     }
 
     pub fn update(&mut self, state: &mut InputState) {
-        self.world_renderer.update(state);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("update command encoder"),
+            });
+
+        self.world_renderer.update(&mut encoder, state);
+
+        self.queue.submit(iter::once(encoder.finish()));
     }
 
     pub fn render(
@@ -127,7 +135,7 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("render encoder"),
+                label: Some("render command encoder"),
             });
 
         self.world_renderer
@@ -148,7 +156,7 @@ pub struct WorldRenderer {
     ui_pipeline: UiPipeline,
     terrain_pipeline: TerrainPipeline,
     world_loader: WorldLoader,
-    indirect_draw_buffer: MultiDrawIndirectBuffer<ChunkUniform, TerrainBuckets, 2>,
+    indirect_draw_buffer: IndirectBufferManager<ChunkUniform, TerrainType>,
     frustum_culling_pass: FrustumCullingComputePass,
     block_outline_pipeline: BlockOutlinePipeline,
     update_loop: FixedTimestepLoop,
@@ -175,27 +183,39 @@ impl WorldRenderer {
 
         let globals = GlobalsBinding::new(&device, player.view_projection());
 
-        let mut world_loader = WorldLoader::new(world, 8, device.clone(), CHUNK_RENDER_DISTANCE);
+        let mut world_loader = WorldLoader::new(
+            world,
+            player.eye(),
+            8,
+            device.clone(),
+            CHUNK_RENDER_DISTANCE,
+        );
 
         // TODO find better values
         let mut batches_map = HashMap::new();
-        batches_map.insert(TerrainBuckets::SOLID, 3000);
-        batches_map.insert(TerrainBuckets::TRANSPARENT, 1000);
+        batches_map.insert(TerrainType::SOLID, 4000);
+        batches_map.insert(TerrainType::TRANSPARENT, 1000);
 
         let chunks_per_bucket = (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
             * u64::min(
                 CHUNK_RENDER_DISTANCE as u64 * 2 + 1,
                 VERTICAL_CHUNK_COUNT as u64,
             );
-        let mut ib = MultiDrawIndirectBuffer::new(
+        let mut ib = IndirectBufferManager::new(
             &device,
             "",
-            [TerrainBuckets::SOLID, TerrainBuckets::TRANSPARENT],
+            &[TerrainType::SOLID, TerrainType::TRANSPARENT],
             chunks_per_bucket,
             &batches_map,
         );
 
-        world_loader.load_chunks(&device, &queue, &mut ib, player.eye());
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("render encoder"),
+        });
+
+        world_loader.load_chunks(&device, &queue, &mut encoder, &mut ib, player.eye(), None);
+
+        queue.submit(iter::once(encoder.finish()));
 
         let terrain_pipeline = TerrainPipeline::new(
             &device,
@@ -239,7 +259,7 @@ impl WorldRenderer {
             .set_aspect_ratio(new_size.width as f32 / new_size.height as f32);
     }
 
-    pub fn update(&mut self, input_state: &mut InputState) {
+    pub fn update(&mut self, encoder: &mut CommandEncoder, input_state: &mut InputState) {
         self.player.update_rotation(input_state);
 
         let lag_s = self
@@ -259,6 +279,8 @@ impl WorldRenderer {
                 .extrapolate_view_projection(lag_s, &self.world_loader.world),
         );
 
+        let mut updated_chunks = None;
+
         let focused_blocks = block_ray_caster::find_looked_at_blocks(
             self.player.eye(),
             self.player.direction(),
@@ -276,6 +298,7 @@ impl WorldRenderer {
 
             if left_mouse_pressed || right_mouse_pressed {
                 let (coords, block) = if left_mouse_pressed {
+                    // if both pressed, mining blocks has a higher priority
                     (looked_at_block_coords, Block::AIR)
                 } else {
                     // right mouse pressed
@@ -288,29 +311,23 @@ impl WorldRenderer {
                 if !self.player.intersects_block(coords)
                     || block.physics_type() != BlockPhysicsType::SOLID
                 {
-                    let updated_chunks = self.world_loader.world.replace_block(coords, block);
-                    for updated_chunk in updated_chunks {
-                        self.world_loader.reload_chunk(
-                            &self.device,
-                            &self.queue,
-                            &mut self.indirect_draw_buffer,
-                            updated_chunk,
-                        );
-                    }
+                    updated_chunks = Some(self.world_loader.world.replace_block(coords, block));
                 }
             }
         }
 
-        self.block_outline_pipeline.set_outlined_block(
-            &self.queue,
-            focused_blocks.solid_block.map(|block| block.coords),
-        );
-
         self.world_loader.load_chunks(
             &self.device,
             &self.queue,
+            encoder,
             &mut self.indirect_draw_buffer,
             self.player.eye(),
+            updated_chunks,
+        );
+
+        self.block_outline_pipeline.set_outlined_block(
+            &self.queue,
+            focused_blocks.solid_block.map(|block| block.coords),
         );
     }
 
@@ -356,21 +373,21 @@ impl WorldRenderer {
             timestamp_writes: None,
         });
 
-        if self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) > 0 {
+        if self.indirect_draw_buffer.draw_count(TerrainType::SOLID) > 0 {
             self.terrain_pipeline.render_terrain(
                 &mut render_pass,
                 &self.globals,
                 &self.indirect_draw_buffer.vertex_buffer,
                 &self.indirect_draw_buffer.indirect_buffer,
                 self.indirect_draw_buffer
-                    .indirect_buffer_offset_bytes(TerrainBuckets::SOLID, 0),
-                self.indirect_draw_buffer.draw_count(TerrainBuckets::SOLID) as u32,
+                    .indirect_buffer_offset(TerrainType::SOLID),
+                self.indirect_draw_buffer.draw_count(TerrainType::SOLID) as u32,
             );
         }
 
         if self
             .indirect_draw_buffer
-            .draw_count(TerrainBuckets::TRANSPARENT)
+            .draw_count(TerrainType::TRANSPARENT)
             > 0
         {
             self.terrain_pipeline.render_water(
@@ -379,9 +396,9 @@ impl WorldRenderer {
                 &self.indirect_draw_buffer.vertex_buffer,
                 &self.indirect_draw_buffer.indirect_buffer,
                 self.indirect_draw_buffer
-                    .indirect_buffer_offset_bytes(TerrainBuckets::TRANSPARENT, 0),
+                    .indirect_buffer_offset(TerrainType::TRANSPARENT),
                 self.indirect_draw_buffer
-                    .draw_count(TerrainBuckets::TRANSPARENT) as u32,
+                    .draw_count(TerrainType::TRANSPARENT) as u32,
             );
         }
 

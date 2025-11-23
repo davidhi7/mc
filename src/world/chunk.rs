@@ -1,4 +1,7 @@
-use std::array;
+use std::{
+    array,
+    sync::{Arc, RwLock},
+};
 
 use glam::{IVec2, IVec3, ivec2, ivec3};
 use noise::NoiseFn;
@@ -85,7 +88,6 @@ impl From<ChunkUVW> for IVec3 {
     }
 }
 
-#[derive(Clone, Debug)]
 pub struct ChunkStack {
     pub uw: ChunkUW,
     pub chunks: [Chunk; VERTICAL_CHUNK_COUNT],
@@ -97,8 +99,14 @@ impl ChunkStack {
     }
 }
 
+pub struct ArcChunkStack {
+    pub uw: ChunkUW,
+    pub chunks: [Arc<RwLock<Chunk>>; VERTICAL_CHUNK_COUNT],
+}
+
 #[derive(Clone, Debug)]
 pub struct Chunk {
+    uvw: ChunkUVW,
     data: Box<[Block]>,
 }
 
@@ -108,8 +116,9 @@ impl Chunk {
 
         let blocks = vec![Block::AIR; TOTAL_BLOCK_COUNT];
 
-        let chunks: [Chunk; VERTICAL_CHUNK_COUNT] = array::from_fn(|_| Chunk {
+        let chunks: [Chunk; VERTICAL_CHUNK_COUNT] = array::from_fn(|v| Chunk {
             data: blocks.clone().into_boxed_slice(),
+            uvw: uw.to_uvw(v as i32),
         });
 
         let mut chunk_stack = ChunkStack { uw, chunks };
@@ -182,6 +191,10 @@ impl Chunk {
 
     fn array_index(x: i32, y: i32, z: i32) -> usize {
         (((x + 1) * CHUNK_WIDTH_P_I32 + y + 1) * CHUNK_WIDTH_P_I32 + z + 1) as usize
+    }
+
+    pub fn uvw(&self) -> ChunkUVW {
+        self.uvw
     }
 
     pub fn at(&self, block: IVec3) -> &Block {

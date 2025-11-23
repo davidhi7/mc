@@ -1,11 +1,12 @@
 use std::{
-    collections::HashMap,
+    array,
+    collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
 
 use crate::world::{
     blocks::{Block, BlockPhysicsType},
-    chunk::{CHUNK_WIDTH_I32, ChunkStack, ChunkUVW, ChunkUW, VERTICAL_CHUNK_COUNT},
+    chunk::{ArcChunkStack, CHUNK_WIDTH_I32, Chunk, ChunkStack, ChunkUVW, ChunkUW},
 };
 use glam::IVec3;
 use itertools::Itertools;
@@ -31,29 +32,53 @@ pub trait LookupBlock {
 
 pub struct World {
     noise: Simplex,
-    chunk_stacks: HashMap<ChunkUW, Arc<RwLock<ChunkStack>>>,
+    /// Invariant: If this HashMap contains chunks a chunk, it always contains all chunks of the same stack.
+    chunks: HashMap<ChunkUVW, Arc<RwLock<Chunk>>>,
+    chunk_stacks: HashSet<ChunkUW>,
 }
 
 impl World {
     pub fn new(seed: u32) -> Self {
         World {
             noise: Simplex::new(seed),
-            chunk_stacks: HashMap::new(),
+            chunks: HashMap::new(),
+            chunk_stacks: HashSet::new(),
         }
     }
 
-    pub fn get_chunk_stack(&self, uw: ChunkUW) -> Option<Arc<RwLock<ChunkStack>>> {
-        self.chunk_stacks.get(&uw).map(Arc::clone)
+    pub fn get_chunk(&self, uvw: ChunkUVW) -> Option<Arc<RwLock<Chunk>>> {
+        self.chunks.get(&uvw).map(Arc::clone)
     }
 
-    pub fn insert_chunks(&mut self, uw: ChunkUW, chunks: Arc<RwLock<ChunkStack>>) {
-        if self.chunk_stacks.contains_key(&uw) {
-            panic!("Chunks at [u={}, w={}] already generated", uw.u, uw.w);
+    // TODO remove if possible
+    pub fn get_chunk_stack(&self, uw: ChunkUW) -> Option<ArcChunkStack> {
+        if !self.chunk_stacks.contains(&uw) {
+            return None;
         }
 
-        self.chunk_stacks.insert(uw.to_owned(), chunks);
+        Some(ArcChunkStack {
+            uw: uw,
+            chunks: array::from_fn(|v| self.get_chunk(uw.to_uvw(v as i32)).unwrap()),
+        })
     }
 
+    pub fn insert_chunk_stack(&mut self, chunk_stack: ChunkStack) {
+        let uw = chunk_stack.uw;
+
+        if !self.chunk_stacks.insert(uw) {
+            panic!("Chunk stack at {:?} already loaded", uw);
+        }
+        for (v, chunk) in chunk_stack.chunks.into_iter().enumerate() {
+            if self.chunks.contains_key(&uw.to_uvw(v as i32)) {
+                panic!("Attempted to overwrite previously loaded chunk");
+            }
+
+            self.chunks
+                .insert(uw.to_uvw(v as i32), Arc::new(RwLock::new(chunk)));
+        }
+    }
+
+    /// Replace the block at the given coordinates, returning all all chunks that need to be reloaded.
     pub fn replace_block(&mut self, coords: IVec3, block: Block) -> Vec<ChunkUVW> {
         let uvw = get_chunk_coordinates(coords);
         if !ChunkStack::validate_chunk_v(uvw.v) {
@@ -116,25 +141,28 @@ impl World {
     }
 
     fn set_block_with_padding(&mut self, uvw: ChunkUVW, inner_chunk_coords: IVec3, block: Block) {
-        let tmp = self.get_chunk_stack(uvw.to_uw()).unwrap();
-        *tmp.write().unwrap().chunks[uvw.v as usize].at_mut_with_padding(inner_chunk_coords) =
-            block;
+        // todo remove unwrap, might fail when neighboring chunks not generated
+        *self
+            .get_chunk(uvw)
+            .unwrap()
+            .write()
+            .unwrap()
+            .at_mut_with_padding(inner_chunk_coords) = block;
     }
 }
 
 impl LookupBlock for World {
     fn lookup_block(&self, coords: IVec3) -> Option<Block> {
-        let chunk = get_chunk_coordinates(coords);
+        let optional_chunk = self.get_chunk(get_chunk_coordinates(coords));
 
-        if chunk.v < 0 || chunk.v as usize >= VERTICAL_CHUNK_COUNT {
-            return None;
-        }
-
-        let chunk_stack = self.get_chunk_stack(chunk.to_uw())?;
-        let binding = chunk_stack.read().unwrap();
-        let chunk = binding.chunks.get(chunk.v as usize)?;
-
-        Some(chunk.at(get_inner_chunk_coordinates(coords)).to_owned())
+        // todo remove unwrap
+        optional_chunk.map(|chunk| {
+            chunk
+                .read()
+                .unwrap()
+                .at(get_inner_chunk_coordinates(coords))
+                .to_owned()
+        })
     }
 }
 

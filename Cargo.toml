@@ -8,7 +8,7 @@ resolver = "2"
 anyhow = "1.0.86"
 bytemuck = { version = "1.16.1", features = ["derive"] }
 env_logger = "0.11.3"
-glam = { version = "0.28.0", features = ["bytemuck"] }
+glam = { version = "0.30.8", features = ["bytemuck"] }
 image = "0.25.1"
 log = "0.4.21"
 noise = "0.9.0"
@@ -17,6 +17,7 @@ wgpu = "26.0.1"
 winit = "0.30.3"
 itertools = "0.14.0"
 lazy_static = "1.5.0"
+enum-map = "2.7.3"
 
 [dev-dependencies]
 googletest = "0.14.0"
