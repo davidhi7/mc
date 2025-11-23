@@ -1,8 +1,8 @@
 use core::panic;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, channel};
-use std::sync::{Arc, RwLock};
 use std::thread::{self};
 
 use bytemuck::{Pod, Zeroable};
@@ -85,13 +85,13 @@ enum ChunkState {
 }
 
 enum ChunkJob {
-    Mesh { chunk: Arc<RwLock<Chunk>> },
+    Mesh { chunk: Arc<Chunk> },
     GenerateAndMeshStack { uw: ChunkUW },
 }
 
 enum ChunkJobResult {
     Mesh {
-        uvw: ChunkUVW,
+        chunk: Arc<Chunk>,
         buffers: EnumMap<TerrainType, Option<Buffer>>,
     },
     GenerateAndMeshStack {
@@ -189,8 +189,7 @@ impl WorldLoader {
 
         jobs.sort_unstable_by_key(|job| {
             let uw = match job {
-                // TODO optimize
-                ChunkJob::Mesh { chunk } => chunk.read().unwrap().uvw().to_uw(),
+                ChunkJob::Mesh { chunk } => chunk.uvw().to_uw(),
                 ChunkJob::GenerateAndMeshStack { uw } => *uw,
             };
 
@@ -218,6 +217,10 @@ impl WorldLoader {
 
         if let Some(updated_chunks) = updated_chunks {
             for uvw in updated_chunks {
+                if !self.grid.contains(uvw.into()) {
+                    continue;
+                }
+
                 self.reload_chunk(device, &mut update_pass, uvw);
             }
         }
@@ -225,7 +228,7 @@ impl WorldLoader {
         indirect_buffer.submit(queue, command_encoder, update_pass);
     }
 
-    fn update_rolling_grid<'a>(
+    fn update_rolling_grid(
         world: &World,
         ongoing_chunk_meshing: &mut HashSet<ChunkUVW>,
         ongoing_chunk_generation: &mut HashSet<ChunkUW>,
@@ -233,26 +236,24 @@ impl WorldLoader {
     ) -> impl FnMut(IVec3) -> ChunkState {
         |vec| {
             let uvw = ChunkUVW::from(vec);
-            if !(0..VERTICAL_CHUNK_COUNT as i32).contains(&uvw.v) {
+            if !ChunkStack::validate_chunk_v(uvw.v) {
                 return ChunkState::OutOfBounds;
             }
-            match world.get_chunk_stack(uvw.to_uw()) {
-                Some(chunk_stack) => {
+
+            match world.get_chunk(uvw) {
+                Some(chunk) => {
                     if ongoing_chunk_meshing.insert(uvw) {
-                        // println!("mesh chunk {:?}", vec);
-                        job_destination.push(ChunkJob::Mesh {
-                            chunk: chunk_stack.chunks[usize::try_from(uvw.v).unwrap()].clone(),
-                        });
+                        job_destination.push(ChunkJob::Mesh { chunk });
                     }
                 }
                 None => {
                     let uw = ChunkUVW::from(vec).to_uw();
                     if ongoing_chunk_generation.insert(uw) {
-                        // println!("generate stack {:?}", uw);
                         job_destination.push(ChunkJob::GenerateAndMeshStack { uw });
                     }
                 }
-            };
+            }
+
             ChunkState::BufferingInProcess
         }
     }
@@ -286,8 +287,7 @@ impl WorldLoader {
 
         jobs.sort_unstable_by_key(|job| {
             let uw = match job {
-                // TODO optimize
-                ChunkJob::Mesh { chunk } => chunk.read().unwrap().uvw().to_uw(),
+                ChunkJob::Mesh { chunk } => chunk.uvw().to_uw(),
                 ChunkJob::GenerateAndMeshStack { uw } => *uw,
             };
 
@@ -302,10 +302,10 @@ impl WorldLoader {
     ) {
         for job_result in self.worker_recv.try_iter() {
             match job_result {
-                ChunkJobResult::Mesh { uvw, buffers } => {
-                    self.ongoing_chunk_meshing.remove(&uvw);
+                ChunkJobResult::Mesh { chunk, buffers } => {
+                    self.ongoing_chunk_meshing.remove(&chunk.uvw());
 
-                    let Some(state) = self.grid.at_mut(uvw.into()) else {
+                    let Some(state) = self.grid.at_mut(chunk.uvw().into()) else {
                         // Chunk is no longer in render distance
                         continue;
                     };
@@ -324,7 +324,7 @@ impl WorldLoader {
                                 (buffer.size() / terrain_type.instance_size())
                                     .try_into()
                                     .unwrap(),
-                                uvw.into(),
+                                chunk.uvw().into(),
                             ),
                         );
                     }
@@ -398,12 +398,13 @@ impl WorldLoader {
             }
         }
 
-        let binding = self
-            .world
-            .get_chunk(uvw)
-            .expect("Chunk hasn't been generated yet");
-
-        let buffers = worker::create_mesh(device, &binding.read().unwrap());
+        let buffers = worker::create_mesh(
+            device,
+            &self
+                .world
+                .get_chunk(uvw)
+                .expect("Chunk hasn't been generated yet"),
+        );
 
         let mut draw_calls = EnumMap::default();
         for (terrain_type, buffer) in buffers.iter() {

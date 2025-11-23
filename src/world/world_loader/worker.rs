@@ -33,11 +33,8 @@ pub fn launch(
 
         let result = match job {
             ChunkJob::Mesh { chunk } => {
-                let chunk = chunk.read().unwrap();
-                ChunkJobResult::Mesh {
-                    uvw: chunk.uvw(),
-                    buffers: create_mesh(&device, &chunk),
-                }
+                let buffers = create_mesh(&device, &chunk);
+                ChunkJobResult::Mesh { chunk, buffers }
             }
             ChunkJob::GenerateAndMeshStack { uw } => {
                 let chunk_stack = Chunk::generate_stack(&noise, uw);

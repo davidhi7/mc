@@ -99,26 +99,18 @@ impl ChunkStack {
     }
 }
 
-pub struct ArcChunkStack {
-    pub uw: ChunkUW,
-    pub chunks: [Arc<RwLock<Chunk>>; VERTICAL_CHUNK_COUNT],
-}
-
-#[derive(Clone, Debug)]
 pub struct Chunk {
     uvw: ChunkUVW,
-    data: Box<[Block]>,
+    data: RwLock<Box<[Block]>>,
 }
 
 impl Chunk {
     pub fn generate_stack(noise: &impl NoiseFn<f64, 2>, uw: ChunkUW) -> ChunkStack {
         const TOTAL_BLOCK_COUNT: usize = CHUNK_WIDTH_P.pow(3);
 
-        let blocks = vec![Block::AIR; TOTAL_BLOCK_COUNT];
-
         let chunks: [Chunk; VERTICAL_CHUNK_COUNT] = array::from_fn(|v| Chunk {
-            data: blocks.clone().into_boxed_slice(),
             uvw: uw.to_uvw(v as i32),
+            data: RwLock::new(vec![Block::AIR; TOTAL_BLOCK_COUNT].into_boxed_slice()),
         });
 
         let mut chunk_stack = ChunkStack { uw, chunks };
@@ -168,12 +160,12 @@ impl Chunk {
         let y = global_y % CHUNK_WIDTH;
         let v = global_y / CHUNK_WIDTH;
 
-        *chunk_stack.chunks[v].at_mut_with_padding(ivec3(x, y as i32, z)) = block;
+        chunk_stack.chunks[v].set_including_padding(ivec3(x, y as i32, z), block);
 
         if y == 0 && v > 0 {
-            *chunk_stack.chunks[v - 1].at_mut_with_padding(ivec3(x, CHUNK_WIDTH_I32, z)) = block;
+            chunk_stack.chunks[v - 1].set_including_padding(ivec3(x, CHUNK_WIDTH_I32, z), block);
         } else if y == CHUNK_WIDTH - 1 && v < VERTICAL_CHUNK_COUNT - 1 {
-            *chunk_stack.chunks[v + 1].at_mut_with_padding(ivec3(x, -1, z)) = block;
+            chunk_stack.chunks[v + 1].set_including_padding(ivec3(x, -1, z), block);
         }
     }
 
@@ -197,44 +189,47 @@ impl Chunk {
         self.uvw
     }
 
-    pub fn at(&self, block: IVec3) -> &Block {
+    /// Get the block at the given location.
+    pub fn get(&self, location: IVec3) -> Block {
         debug_assert!(
-            Chunk::validate_chunk_coordinates(block),
-            "Invalid chunk coordinates {}",
-            block
+            Chunk::validate_chunk_coordinates(location),
+            "Invalid chunk coordinates {location}",
         );
-        let IVec3 { x, y, z } = block;
-        &self.data[Chunk::array_index(x, y, z)]
+        self.get_including_padding(location)
     }
 
-    pub fn at_mut(&mut self, block: IVec3) -> &mut Block {
+    /// Set the block at the given location, returning the old block.
+    pub fn set(&self, location: IVec3, block: Block) -> Block {
         debug_assert!(
-            Chunk::validate_chunk_coordinates(block),
-            "Invalid chunk coordinates {}",
-            block
+            Chunk::validate_chunk_coordinates(location),
+            "Invalid chunk coordinates {location}",
         );
-        let IVec3 { x, y, z } = block;
-        &mut self.data[Chunk::array_index(x, y, z)]
+        self.set_including_padding(location, block)
     }
 
-    pub fn at_with_padding(&self, block: IVec3) -> &Block {
+    /// Get the block at the given location.
+    /// This function allows to set the blocks copied from adjacent chunks, stored at xy/z/ indexes -1 and CHUNK_WIDTH, respectively.
+    pub fn get_including_padding(&self, location: IVec3) -> Block {
         debug_assert!(
-            Chunk::validate_chunk_coordinates_with_padding(block),
-            "Invalid chunk coordinates {}",
-            block
+            Chunk::validate_chunk_coordinates_with_padding(location),
+            "Invalid chunk coordinates {location}",
         );
-        let IVec3 { x, y, z } = block;
-        &self.data[Chunk::array_index(x, y, z)]
+        let IVec3 { x, y, z } = location;
+        self.data.read().unwrap()[Chunk::array_index(x, y, z)]
     }
 
-    pub fn at_mut_with_padding(&mut self, block: IVec3) -> &mut Block {
+    /// Set the block at the given location, returning the old block.
+    /// This function allows to set the blocks copied from adjacent chunks, stored at xy/z/ indexes -1 and CHUNK_WIDTH, respectively.
+    pub fn set_including_padding(&self, location: IVec3, block: Block) -> Block {
         debug_assert!(
-            Chunk::validate_chunk_coordinates_with_padding(block),
-            "Invalid chunk coordinates {}",
-            block
+            Chunk::validate_chunk_coordinates_with_padding(location),
+            "Invalid chunk coordinates {location}",
         );
-        let IVec3 { x, y, z } = block;
-        &mut self.data[Chunk::array_index(x, y, z)]
+        let IVec3 { x, y, z } = location;
+        std::mem::replace(
+            &mut self.data.write().unwrap()[Chunk::array_index(x, y, z)],
+            block,
+        )
     }
 
     pub fn generate_mesh(&self) -> (Vec<QuadInstance>, Vec<TransparentQuadInstance>) {
@@ -245,7 +240,7 @@ impl Chunk {
             for y in 0..CHUNK_WIDTH_I32 {
                 for z in 0..CHUNK_WIDTH_I32 {
                     let coords = ivec3(x, y, z);
-                    let block = self.at_with_padding(coords);
+                    let block = self.get_including_padding(coords);
                     if let BlockRenderType::INVISIBLE = block.render_type() {
                         continue;
                     }
@@ -258,7 +253,7 @@ impl Chunk {
                     for direction in Direction::iter() {
                         if !Chunk::is_face_visible(
                             block.render_type(),
-                            self.at_with_padding(coords + direction.get_unit_ivec())
+                            self.get_including_padding(coords + direction.get_unit_ivec())
                                 .render_type(),
                         ) {
                             continue;
@@ -325,16 +320,16 @@ impl Chunk {
             let step_1 = if i & 1 == 1 { 1 } else { -1 };
 
             let side_1 = self
-                .at_with_padding(air_block + step_0 * cross_directions.0.get_unit_ivec())
+                .get_including_padding(air_block + step_0 * cross_directions.0.get_unit_ivec())
                 .render_type()
                 == BlockRenderType::OPAQUE;
             let side_2 = self
-                .at_with_padding(air_block + step_1 * cross_directions.1.get_unit_ivec())
+                .get_including_padding(air_block + step_1 * cross_directions.1.get_unit_ivec())
                 .render_type()
                 == BlockRenderType::OPAQUE;
 
             let corner = self
-                .at_with_padding(
+                .get_including_padding(
                     air_block
                         + step_0 * cross_directions.0.get_unit_ivec()
                         + step_1 * cross_directions.1.get_unit_ivec(),

@@ -46,14 +46,14 @@ impl<T> RollingGrid<T> {
     }
 
     /// Returns true if the position is within `self.width / 2` from `self.center`.
-    fn validate_position(&self, position: IVec3) -> bool {
+    pub fn contains(&self, position: IVec3) -> bool {
         usize::try_from((self.center - position).abs().max_element()).unwrap() <= self.width / 2
     }
 
     /// Compute the `self.grid` index from the given vector.
     /// This function panicks if the position is more than `self.width / 2` away from `self.center`.
     fn position_to_index(&self, position: IVec3) -> usize {
-        if !self.validate_position(position) {
+        if !self.contains(position) {
             panic!(
                 "position vector {} not within grid around {} and width {}",
                 position, self.center, self.width
@@ -70,7 +70,7 @@ impl<T> RollingGrid<T> {
     /// Get an immutable reference to the grid contents of the given position.
     /// Returns None if the position is not within the grid around the current center.
     pub fn at(&self, position: IVec3) -> Option<&T> {
-        if !self.validate_position(position) {
+        if !self.contains(position) {
             return None;
         }
         Some(&self.array[self.position_to_index(position)])
@@ -79,7 +79,7 @@ impl<T> RollingGrid<T> {
     /// Get a mutable reference to the grid contents of the given position.
     /// Returns None if the position is not within the grid around the current center.
     pub fn at_mut(&mut self, position: IVec3) -> Option<&mut T> {
-        if !self.validate_position(position) {
+        if !self.contains(position) {
             return None;
         }
         Some(&mut self.array[self.position_to_index(position)])
@@ -88,7 +88,7 @@ impl<T> RollingGrid<T> {
     /// Insert the given value into the grid at the given position, returning the old value.
     /// Returns None and does not store the new value if the position is not within the grid around the current center.
     pub fn replace(&mut self, position: IVec3, new_value: T) -> Option<T> {
-        if !self.validate_position(position) {
+        if !self.contains(position) {
             return None;
         }
         Some(std::mem::replace(self.at_mut(position).unwrap(), new_value))

@@ -1,12 +1,11 @@
 use std::{
-    array,
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
 use crate::world::{
     blocks::{Block, BlockPhysicsType},
-    chunk::{ArcChunkStack, CHUNK_WIDTH_I32, Chunk, ChunkStack, ChunkUVW, ChunkUW},
+    chunk::{CHUNK_WIDTH_I32, Chunk, ChunkStack, ChunkUVW, ChunkUW},
 };
 use glam::IVec3;
 use itertools::Itertools;
@@ -33,7 +32,7 @@ pub trait LookupBlock {
 pub struct World {
     noise: Simplex,
     /// Invariant: If this HashMap contains chunks a chunk, it always contains all chunks of the same stack.
-    chunks: HashMap<ChunkUVW, Arc<RwLock<Chunk>>>,
+    chunks: HashMap<ChunkUVW, Arc<Chunk>>,
     chunk_stacks: HashSet<ChunkUW>,
 }
 
@@ -46,20 +45,8 @@ impl World {
         }
     }
 
-    pub fn get_chunk(&self, uvw: ChunkUVW) -> Option<Arc<RwLock<Chunk>>> {
+    pub fn get_chunk(&self, uvw: ChunkUVW) -> Option<Arc<Chunk>> {
         self.chunks.get(&uvw).map(Arc::clone)
-    }
-
-    // TODO remove if possible
-    pub fn get_chunk_stack(&self, uw: ChunkUW) -> Option<ArcChunkStack> {
-        if !self.chunk_stacks.contains(&uw) {
-            return None;
-        }
-
-        Some(ArcChunkStack {
-            uw: uw,
-            chunks: array::from_fn(|v| self.get_chunk(uw.to_uvw(v as i32)).unwrap()),
-        })
     }
 
     pub fn insert_chunk_stack(&mut self, chunk_stack: ChunkStack) {
@@ -73,12 +60,13 @@ impl World {
                 panic!("Attempted to overwrite previously loaded chunk");
             }
 
-            self.chunks
-                .insert(uw.to_uvw(v as i32), Arc::new(RwLock::new(chunk)));
+            self.chunks.insert(uw.to_uvw(v as i32), Arc::new(chunk));
         }
     }
 
-    /// Replace the block at the given coordinates, returning all all chunks that need to be reloaded.
+    /// Replace the block at the given coordinates.
+    /// The function returns all chunks that need to be reloaded.
+    /// This can be more than one chunk if the replaced block is adjacent to blocks in another chunk and their visibility or AO values change.
     pub fn replace_block(&mut self, coords: IVec3, block: Block) -> Vec<ChunkUVW> {
         let uvw = get_chunk_coordinates(coords);
         if !ChunkStack::validate_chunk_v(uvw.v) {
@@ -132,22 +120,16 @@ impl World {
                 };
             }
 
-            self.set_block_with_padding(uvw, inner_chunk_coords, block);
-
-            updated_chunks.push(uvw);
+            if let Some(chunk) = self.get_chunk(uvw) {
+                let old_block = chunk.set_including_padding(inner_chunk_coords, block);
+                if old_block.render_type() != block.render_type() {
+                    // Only note chunk as updated if its mesh is potentially affected
+                    updated_chunks.push(uvw);
+                }
+            }
         }
 
         updated_chunks
-    }
-
-    fn set_block_with_padding(&mut self, uvw: ChunkUVW, inner_chunk_coords: IVec3, block: Block) {
-        // todo remove unwrap, might fail when neighboring chunks not generated
-        *self
-            .get_chunk(uvw)
-            .unwrap()
-            .write()
-            .unwrap()
-            .at_mut_with_padding(inner_chunk_coords) = block;
     }
 }
 
@@ -155,14 +137,11 @@ impl LookupBlock for World {
     fn lookup_block(&self, coords: IVec3) -> Option<Block> {
         let optional_chunk = self.get_chunk(get_chunk_coordinates(coords));
 
-        // todo remove unwrap
-        optional_chunk.map(|chunk| {
-            chunk
-                .read()
-                .unwrap()
-                .at(get_inner_chunk_coordinates(coords))
-                .to_owned()
-        })
+        let Some(chunk) = optional_chunk else {
+            return None;
+        };
+
+        Some(chunk.get(get_inner_chunk_coordinates(coords)))
     }
 }
 
