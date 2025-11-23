@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, mem::MaybeUninit};
 
-use glam::{IVec3, USizeVec3, ivec3};
+use glam::{IVec2, IVec3, USizeVec3, Vec3Swizzles, ivec2, ivec3};
 use itertools::Itertools;
 
 pub struct RollingGrid<T> {
@@ -15,19 +15,26 @@ impl<T> RollingGrid<T> {
     /// For every cell in the grid, the load function is called.
     pub fn new(width: usize, center: IVec3, mut load: impl FnMut(IVec3) -> T) -> Self {
         assert!(width & 1 == 1, "N must be an uneven number");
-        let mut vec = Vec::with_capacity(width.pow(3));
+        let mut vec: Vec<MaybeUninit<T>> = Vec::with_capacity(width.pow(3));
 
-        for z in Self::iter_1d(width, center.z) {
-            for y in Self::iter_1d(width, center.y) {
-                for x in Self::iter_1d(width, center.x) {
-                    vec.push(load(ivec3(x, y, z)));
-                }
+        for position in Self::iter_3d(width, center) {
+            // SAFETY: Position is contained in the grid.
+            unsafe {
+                vec.as_mut_ptr()
+                    .add(Self::position_to_index_unchecked(width, position))
+                    .write(MaybeUninit::new(load(position)));
             }
         }
 
+        // SAFETY: New length is equal to the capacity and all items were initialized in past loop.
+        let array = unsafe {
+            vec.set_len(vec.capacity());
+            std::mem::transmute::<_, Vec<T>>(vec).into_boxed_slice()
+        };
+
         Self {
             width,
-            array: vec.into_boxed_slice(),
+            array,
             center,
         }
     }
@@ -37,17 +44,30 @@ impl<T> RollingGrid<T> {
         center - n_half..=center + n_half
     }
 
-    fn iter_2d(
-        width: usize,
-        center_0: i32,
-        center_1: i32,
-    ) -> impl Iterator<Item = (i32, i32)> + Clone {
-        Self::iter_1d(width, center_0).cartesian_product(Self::iter_1d(width, center_1))
+    fn iter_2d(width: usize, center: IVec2) -> impl Iterator<Item = IVec2> + Clone {
+        Self::iter_1d(width, center.x)
+            .cartesian_product(Self::iter_1d(width, center.y))
+            .map(|(x, y)| ivec2(x, y))
     }
 
-    /// Returns true if the position is within `self.width / 2` from `self.center`.
+    fn iter_3d(width: usize, center: IVec3) -> impl Iterator<Item = IVec3> + Clone {
+        Self::iter_1d(width, center.x)
+            .cartesian_product(Self::iter_1d(width, center.y))
+            .cartesian_product(Self::iter_1d(width, center.z))
+            .map(|((x, y), z)| ivec3(x, y, z))
+    }
+
+    /// Returns true if the position is within `self.width / 2` from `self.center` on every axis.
     pub fn contains(&self, position: IVec3) -> bool {
         usize::try_from((self.center - position).abs().max_element()).unwrap() <= self.width / 2
+    }
+
+    unsafe fn position_to_index_unchecked(width: usize, position: IVec3) -> usize {
+        let USizeVec3 { x, y, z } = position
+            .rem_euclid(IVec3::splat(width.try_into().unwrap()))
+            .as_usizevec3();
+
+        (x * width + y) * width + z
     }
 
     /// Compute the `self.grid` index from the given vector.
@@ -60,11 +80,12 @@ impl<T> RollingGrid<T> {
             );
         }
 
-        let USizeVec3 { x, y, z } = position
-            .rem_euclid(IVec3::splat(self.width.try_into().unwrap()))
-            .as_usizevec3();
+        // SAFETY: we just checked that the grid contains position
+        unsafe { Self::position_to_index_unchecked(self.width, position) }
+    }
 
-        (x * self.width + y) * self.width + z
+    pub fn center(&self) -> IVec3 {
+        self.center
     }
 
     /// Get an immutable reference to the grid contents of the given position.
@@ -85,7 +106,7 @@ impl<T> RollingGrid<T> {
         Some(&mut self.array[self.position_to_index(position)])
     }
 
-    /// Insert the given value into the grid at the given position, returning the old value.
+    /// Insert the given value into the grid cell at the given position, returning the old value.
     /// Returns None and does not store the new value if the position is not within the grid around the current center.
     pub fn replace(&mut self, position: IVec3, new_value: T) -> Option<T> {
         if !self.contains(position) {
@@ -172,19 +193,19 @@ impl<T> RollingGrid<T> {
         };
 
         for x in x_range {
-            for (y, z) in Self::iter_2d(width, old_position.y, old_position.z) {
+            for IVec2 { x: y, y: z } in Self::iter_2d(width, old_position.yz()) {
                 update_once(ivec3(x, y, z));
             }
         }
 
         for y in y_range {
-            for (x, z) in Self::iter_2d(width, old_position.x, old_position.z) {
+            for IVec2 { x, y: z } in Self::iter_2d(width, old_position.xz()) {
                 update_once(ivec3(x, y, z));
             }
         }
 
         for z in z_range {
-            for (x, y) in Self::iter_2d(width, old_position.x, old_position.y) {
+            for IVec2 { x, y } in Self::iter_2d(width, old_position.xy()) {
                 update_once(ivec3(x, y, z));
             }
         }

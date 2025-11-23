@@ -127,7 +127,7 @@ impl Ord for WorkerThreadHandle {
 
 pub struct WorldLoader {
     pub world: World,
-    worker_pool: Vec<WorkerThreadHandle>,
+    worker_pool: Box<[WorkerThreadHandle]>,
     worker_recv: Receiver<ChunkJobResult>,
     grid: RollingGrid<ChunkState>,
     ongoing_chunk_generation: HashSet<ChunkUW>,
@@ -142,13 +142,30 @@ impl WorldLoader {
         device: Device,
         render_distance: u32,
     ) -> Self {
-        // TODO cleanup duplicated code
-        // TODO sorting does not work?
-        // TODO fix panic due to duplicated chunk stack generation
+        let mut worker_pool = Vec::new();
+        let (worker_send, worker_recv) = mpsc::channel();
+        for _ in 0..thread_count {
+            let (sender, receiver) = channel();
+            thread::spawn({
+                let noise = world.noise.clone();
+                let device = device.clone();
+                let sender = worker_send.clone();
+                move || {
+                    worker::launch(receiver, sender.clone(), device, noise);
+                }
+            });
+
+            worker_pool.push(WorkerThreadHandle {
+                sender,
+                job_count: 0,
+            });
+        }
+        let worker_pool = worker_pool.into_boxed_slice();
+
         let mut jobs = Vec::new();
         let mut ongoing_chunk_generation = HashSet::new();
         let mut ongoing_chunk_meshing = HashSet::new();
-        let grid: RollingGrid<ChunkState> = RollingGrid::new(
+        let grid = RollingGrid::new(
             render_distance as usize * 2 + 1,
             world::get_chunk_coordinates(position.as_ivec3()).into(),
             Self::update_rolling_grid(
@@ -159,46 +176,16 @@ impl WorldLoader {
             ),
         );
 
-        let mut worker_pool = Vec::new();
-        let (result_sender, result_receiver) = mpsc::channel();
-        for _ in 0..thread_count {
-            let (job_sender, job_receiver) = channel();
-            thread::spawn({
-                let noise = world.noise.clone();
-                let device = device.clone();
-                let sender = result_sender.clone();
-                move || {
-                    worker::launch(job_receiver, sender.clone(), device, noise);
-                }
-            });
-
-            worker_pool.push(WorkerThreadHandle {
-                sender: job_sender,
-                job_count: 0,
-            });
-        }
-
         let mut instance = Self {
             world,
             worker_pool,
-            worker_recv: result_receiver,
+            worker_recv,
+            grid,
             ongoing_chunk_generation,
             ongoing_chunk_meshing,
-            grid,
         };
 
-        jobs.sort_unstable_by_key(|job| {
-            let uw = match job {
-                ChunkJob::Mesh { chunk } => chunk.uvw().to_uw(),
-                ChunkJob::GenerateAndMeshStack { uw } => *uw,
-            };
-
-            // TODO does nothing?
-            (IVec2::from(uw) - position.xz().as_ivec2()).length_squared()
-        });
-
-        instance.assign_jobs_to_workers(jobs);
-
+        instance.distribute_jobs(jobs);
         instance
     }
 
@@ -285,94 +272,77 @@ impl WorldLoader {
             },
         );
 
-        jobs.sort_unstable_by_key(|job| {
-            let uw = match job {
-                ChunkJob::Mesh { chunk } => chunk.uvw().to_uw(),
-                ChunkJob::GenerateAndMeshStack { uw } => *uw,
-            };
-
-            (IVec2::from(uw) - new_center.xz().as_ivec2()).length_squared()
-        });
-        self.assign_jobs_to_workers(jobs);
+        self.distribute_jobs(jobs);
     }
 
     fn complete_finished_jobs(
         &mut self,
         update_pass: &mut IndirectBufferUpdatePass<ChunkUniform, TerrainType>,
     ) {
+        fn create_draw_calls(
+            update_pass: &mut IndirectBufferUpdatePass<ChunkUniform, TerrainType>,
+            uvw: ChunkUVW,
+            buffers: &EnumMap<TerrainType, Option<Buffer>>,
+        ) -> EnumMap<TerrainType, Option<DrawCallHandle<ChunkUniform, TerrainType>>> {
+            let mut draw_calls = EnumMap::default();
+
+            for (terrain_type, buffer) in buffers.iter() {
+                let Some(buffer) = buffer else {
+                    continue;
+                };
+
+                let draw_call = update_pass.prepare_insert_region(
+                    terrain_type,
+                    buffer.clone(),
+                    (buffer.size() / terrain_type.instance_size())
+                        .try_into()
+                        .unwrap(),
+                    uvw.into(),
+                );
+
+                draw_calls[terrain_type] = Some(draw_call);
+            }
+
+            draw_calls
+        }
+
         for job_result in self.worker_recv.try_iter() {
             match job_result {
                 ChunkJobResult::Mesh { chunk, buffers } => {
-                    self.ongoing_chunk_meshing.remove(&chunk.uvw());
+                    let uvw = chunk.uvw();
+                    self.ongoing_chunk_meshing.remove(&uvw);
 
-                    let Some(state) = self.grid.at_mut(chunk.uvw().into()) else {
+                    let Some(state) = self.grid.at_mut(uvw.into()) else {
                         // Chunk is no longer in render distance
                         continue;
                     };
 
-                    let mut draw_calls = EnumMap::default();
-
-                    for (terrain_type, buffer) in buffers.iter() {
-                        let Some(buffer) = buffer else {
-                            continue;
-                        };
-
-                        draw_calls[terrain_type] = Some(
-                            update_pass.prepare_insert_region(
-                                terrain_type,
-                                buffer.clone(),
-                                (buffer.size() / terrain_type.instance_size())
-                                    .try_into()
-                                    .unwrap(),
-                                chunk.uvw().into(),
-                            ),
-                        );
-                    }
-
                     *state = ChunkState::BufferedAndDrawn(DrawnChunkState {
+                        draw_calls: create_draw_calls(update_pass, uvw, &buffers),
                         buffers,
-                        draw_calls,
-                    })
+                    });
                 }
                 ChunkJobResult::GenerateAndMeshStack {
                     chunk_stack,
                     buffers,
                 } => {
                     let uw = chunk_stack.uw;
+                    self.ongoing_chunk_generation.remove(&uw);
 
                     self.world.insert_chunk_stack(chunk_stack);
-                    self.ongoing_chunk_generation.remove(&uw);
 
                     for (v, buffers) in buffers.into_iter().enumerate() {
                         let uvw = uw.to_uvw(v as i32);
-                        // TODO dedup
+
                         let Some(state) = self.grid.at_mut(uvw.into()) else {
                             // Chunk is no longer in render distance
                             continue;
                         };
 
-                        let mut draw_calls = EnumMap::default();
-                        for (terrain_type, buffer) in buffers.iter() {
-                            let Some(buffer) = buffer else {
-                                continue;
-                            };
-
-                            draw_calls[terrain_type] = Some(
-                                update_pass.prepare_insert_region(
-                                    terrain_type,
-                                    buffer.clone(),
-                                    (buffer.size() / terrain_type.instance_size())
-                                        .try_into()
-                                        .unwrap(),
-                                    uvw.into(),
-                                ),
-                            );
-                        }
-
                         *state = ChunkState::BufferedAndDrawn(DrawnChunkState {
+                            draw_calls: create_draw_calls(update_pass, uvw, &buffers),
                             buffers,
-                            draw_calls,
-                        })
+                        });
                     }
                 }
             }
@@ -435,10 +405,20 @@ impl WorldLoader {
             });
     }
 
-    fn assign_jobs_to_workers(&mut self, jobs: Vec<ChunkJob>) {
+    fn distribute_jobs(&mut self, mut jobs: Vec<ChunkJob>) {
         if jobs.is_empty() {
             return;
         }
+
+        // Sort by distance between job chunk uw and center chunk uw
+        jobs.sort_unstable_by_key(|job| {
+            let uw = match job {
+                ChunkJob::Mesh { chunk } => chunk.uvw().to_uw(),
+                ChunkJob::GenerateAndMeshStack { uw } => *uw,
+            };
+
+            (IVec2::from(uw) - self.grid.center().xz()).length_squared()
+        });
 
         // Priority queue (min-heap) to manage workers by their job count
         let mut worker_heap: BinaryHeap<Reverse<&mut _>> =
@@ -449,8 +429,6 @@ impl WorldLoader {
             let Reverse(worker) = worker_heap.pop().unwrap();
 
             // Assign the job to this worker
-            // todo
-            // self.tasked_chunk_stacks.insert(job.get_uw());
             worker
                 .sender
                 .send(job)
