@@ -168,7 +168,7 @@ impl WorldLoader {
         let grid = RollingGrid::new(
             render_distance as usize * 2 + 1,
             world::get_chunk_coordinates(position.as_ivec3()).into(),
-            Self::update_rolling_grid(
+            update_rolling_grid(
                 &world,
                 &mut ongoing_chunk_meshing,
                 &mut ongoing_chunk_generation,
@@ -189,17 +189,21 @@ impl WorldLoader {
         instance
     }
 
+    /// Load and unload all chunks that moved into and outside the render distance, respectively.
+    /// Additionally, explicitly provided chunks from e.g. block updates are reloaded.
     pub fn load_chunks(
         &mut self,
         device: &Device,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
         indirect_buffer: &mut IndirectBufferManager<ChunkUniform, TerrainType>,
-        new_center: Vec3,
+        new_position: Vec3,
         updated_chunks: Option<Vec<ChunkUVW>>,
     ) {
         let mut update_pass = IndirectBufferUpdatePass::new();
-        self.update_grid(new_center, &mut update_pass);
+
+        let player_chunk = world::get_chunk_coordinates(new_position.as_ivec3());
+        self.update_grid(player_chunk, &mut update_pass);
         self.complete_finished_jobs(&mut update_pass);
 
         if let Some(updated_chunks) = updated_chunks {
@@ -215,45 +219,16 @@ impl WorldLoader {
         indirect_buffer.submit(queue, command_encoder, update_pass);
     }
 
-    fn update_rolling_grid(
-        world: &World,
-        ongoing_chunk_meshing: &mut HashSet<ChunkUVW>,
-        ongoing_chunk_generation: &mut HashSet<ChunkUW>,
-        job_destination: &mut Vec<ChunkJob>,
-    ) -> impl FnMut(IVec3) -> ChunkState {
-        |vec| {
-            let uvw = ChunkUVW::from(vec);
-            if !ChunkStack::validate_chunk_v(uvw.v) {
-                return ChunkState::OutOfBounds;
-            }
-
-            match world.get_chunk(uvw) {
-                Some(chunk) => {
-                    if ongoing_chunk_meshing.insert(uvw) {
-                        job_destination.push(ChunkJob::Mesh { chunk });
-                    }
-                }
-                None => {
-                    let uw = ChunkUVW::from(vec).to_uw();
-                    if ongoing_chunk_generation.insert(uw) {
-                        job_destination.push(ChunkJob::GenerateAndMeshStack { uw });
-                    }
-                }
-            }
-
-            ChunkState::BufferingInProcess
-        }
-    }
-
+    /// Relocate the grid, dispatch jobs for chunks that moved into the render distance and drop old chunks.
     fn update_grid(
         &mut self,
-        new_center: Vec3,
+        new_center: ChunkUVW,
         update_pass: &mut IndirectBufferUpdatePass<ChunkUniform, TerrainType>,
     ) {
         let mut jobs = Vec::new();
         self.grid.reposition(
-            world::get_chunk_coordinates(new_center.as_ivec3()).into(),
-            Self::update_rolling_grid(
+            new_center.into(),
+            update_rolling_grid(
                 &self.world,
                 &mut self.ongoing_chunk_meshing,
                 &mut self.ongoing_chunk_generation,
@@ -275,6 +250,9 @@ impl WorldLoader {
         self.distribute_jobs(jobs);
     }
 
+    /// Handle all results from finished jobs.
+    /// 1. Inserts newly generated chunk stacks
+    /// 2. Create draw calls for chunks within the render distance.
     fn complete_finished_jobs(
         &mut self,
         update_pass: &mut IndirectBufferUpdatePass<ChunkUniform, TerrainType>,
@@ -349,6 +327,7 @@ impl WorldLoader {
         }
     }
 
+    /// Recreate mesh and update draw calls for the chunk at the given coordinates.
     fn reload_chunk(
         &mut self,
         device: &Device,
@@ -405,6 +384,8 @@ impl WorldLoader {
             });
     }
 
+    /// Distribute jobs to threads in the thread pool.
+    /// The jobs are ordered by the horizontal distance to the chunk the player is in.
     fn distribute_jobs(&mut self, mut jobs: Vec<ChunkJob>) {
         if jobs.is_empty() {
             return;
@@ -438,5 +419,36 @@ impl WorldLoader {
             // Push the worker back into the heap with updated job count
             worker_heap.push(Reverse(worker));
         }
+    }
+}
+
+/// Create closure that manages jobs and bookkeeping during grid creation and reposition.
+fn update_rolling_grid(
+    world: &World,
+    ongoing_chunk_meshing: &mut HashSet<ChunkUVW>,
+    ongoing_chunk_generation: &mut HashSet<ChunkUW>,
+    job_destination: &mut Vec<ChunkJob>,
+) -> impl FnMut(IVec3) -> ChunkState {
+    |vec| {
+        let uvw = ChunkUVW::from(vec);
+        if !ChunkStack::validate_chunk_v(uvw.v) {
+            return ChunkState::OutOfBounds;
+        }
+
+        match world.get_chunk(uvw) {
+            Some(chunk) => {
+                if ongoing_chunk_meshing.insert(uvw) {
+                    job_destination.push(ChunkJob::Mesh { chunk });
+                }
+            }
+            None => {
+                let uw = ChunkUVW::from(vec).to_uw();
+                if ongoing_chunk_generation.insert(uw) {
+                    job_destination.push(ChunkJob::GenerateAndMeshStack { uw });
+                }
+            }
+        }
+
+        ChunkState::BufferingInProcess
     }
 }
