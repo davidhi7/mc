@@ -15,26 +15,20 @@ impl<T> RollingGrid<T> {
     /// For every cell in the grid, the load function is called.
     pub fn new(width: usize, center: IVec3, mut load: impl FnMut(IVec3) -> T) -> Self {
         assert!(width & 1 == 1, "N must be an uneven number");
-        let mut vec: Vec<MaybeUninit<T>> = Vec::with_capacity(width.pow(3));
+        let mut array: Box<[MaybeUninit<T>]> = Box::new_uninit_slice(width.pow(3));
 
         for position in Self::iter_3d(width, center) {
             // SAFETY: Position is contained in the grid.
             unsafe {
-                vec.as_mut_ptr()
-                    .add(Self::position_to_index_unchecked(width, position))
-                    .write(MaybeUninit::new(load(position)));
+                array[Self::position_to_index_unchecked(width, position)] =
+                    MaybeUninit::new(load(position));
             }
         }
 
-        // SAFETY: New length is equal to the capacity and all items were initialized in past loop.
-        let array = unsafe {
-            vec.set_len(vec.capacity());
-            std::mem::transmute::<_, Vec<T>>(vec).into_boxed_slice()
-        };
-
         Self {
             width,
-            array,
+            // SAFETY: All items were initialized in the loop.
+            array: unsafe { array.assume_init() },
             center,
         }
     }
@@ -167,25 +161,16 @@ impl<T> RollingGrid<T> {
         let mut update_once = |old_cell: IVec3| {
             if updated_points.insert(old_cell) {
                 // compute the global coordinates of the new cell from those of the old cell
-                let mut new_cell = old_cell;
-                while (new_cell.x - new_center.x).abs() > half_width {
-                    new_cell.x += dx.signum() * width_i32;
-                }
-                while (new_cell.y - new_center.y).abs() > half_width {
-                    new_cell.y += dy.signum() * width_i32;
-                }
-                while (new_cell.z - new_center.z).abs() > half_width {
-                    new_cell.z += dz.signum() * width_i32;
-                }
+                // unvectorized version:
+                // let mut new_cell = old_cell;
+                // while (new_cell.x - new_center.x).abs() > half_width {
+                //     new_cell.x += dx.signum() * width_i32;
+                // }
+                // ...
 
-                // TODO vectorized version fixen
-                // let diff_to_point = old_cell - new_center;
-                // let steps =
-                //     (diff_to_point.abs() - IVec3::splat(half_width)) / width_i32 + IVec3::splat(1);
-                // let mask = diff_to_point.abs().cmpgt(IVec3::splat(half_width));
-
-                // let new_cell =
-                //     old_cell + IVec3::select(mask, diff.signum() * steps * width_i32, IVec3::ZERO);
+                // absolute shifts by width for each dimension to move from the old to the new cell
+                let shifts = ((new_center - old_cell).abs() + IVec3::splat(half_width)) / width_i32;
+                let new_cell = old_cell + diff.signum() * shifts * width_i32;
 
                 let old_value = std::mem::replace(self.at_mut(old_cell).unwrap(), load(new_cell));
                 unload(old_cell, old_value);

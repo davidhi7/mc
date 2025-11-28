@@ -1,7 +1,4 @@
-use std::{
-    array,
-    sync::{Arc, RwLock},
-};
+use std::{array, sync::RwLock};
 
 use glam::{IVec2, IVec3, ivec2, ivec3};
 use noise::NoiseFn;
