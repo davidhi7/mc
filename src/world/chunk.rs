@@ -36,7 +36,7 @@ pub struct ChunkUVW {
 }
 
 impl ChunkUW {
-    pub fn to_uvw(&self, v: i32) -> ChunkUVW {
+    pub fn to_uvw(self, v: i32) -> ChunkUVW {
         ChunkUVW {
             u: self.u,
             v,
@@ -61,7 +61,7 @@ impl From<ChunkUW> for IVec2 {
 }
 
 impl ChunkUVW {
-    pub fn to_uw(&self) -> ChunkUW {
+    pub fn to_uw(self) -> ChunkUW {
         ChunkUW {
             u: self.u,
             w: self.w,
@@ -107,7 +107,7 @@ impl Chunk {
 
         let chunks: [Chunk; VERTICAL_CHUNK_COUNT] = array::from_fn(|v| Chunk {
             uvw: uw.to_uvw(v as i32),
-            data: RwLock::new(vec![Block::AIR; TOTAL_BLOCK_COUNT].into_boxed_slice()),
+            data: RwLock::new(vec![Block::Air; TOTAL_BLOCK_COUNT].into_boxed_slice()),
         });
 
         let mut chunk_stack = ChunkStack { uw, chunks };
@@ -128,12 +128,12 @@ impl Chunk {
                 let height = height.round() as usize + MIN_HEIGHT;
 
                 let mut block_array = Vec::new();
-                block_array.push((0..height, Block::STONE));
+                block_array.push((0..height, Block::Stone));
                 if height < SEA_LEVEL {
-                    block_array.push((height..height + 1, Block::SAND));
-                    block_array.push((height + 1..SEA_LEVEL, Block::WATER));
+                    block_array.push((height..height + 1, Block::Sand));
+                    block_array.push((height + 1..SEA_LEVEL, Block::Water));
                 } else {
-                    block_array.push((height..height + 1, Block::GRASS));
+                    block_array.push((height..height + 1, Block::Grass));
                 }
 
                 for (range, block) in block_array {
@@ -196,6 +196,7 @@ impl Chunk {
     }
 
     /// Set the block at the given location, returning the old block.
+    #[expect(dead_code)]
     pub fn set(&self, location: IVec3, block: Block) -> Block {
         debug_assert!(
             Chunk::validate_chunk_coordinates(location),
@@ -238,7 +239,7 @@ impl Chunk {
                 for z in 0..CHUNK_WIDTH_I32 {
                     let coords = ivec3(x, y, z);
                     let block = self.get_including_padding(coords);
-                    if let BlockRenderType::INVISIBLE = block.render_type() {
+                    if let BlockRenderType::Invisible = block.render_type() {
                         continue;
                     }
 
@@ -260,16 +261,16 @@ impl Chunk {
                             common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
                         match block.render_type() {
-                            BlockRenderType::OPAQUE => {
+                            BlockRenderType::Opaque => {
                                 solid_instances.push(QuadInstance {
                                     attributes,
                                     ao_attributes: self.get_ao_attributes(coords, direction),
                                 });
                             }
-                            BlockRenderType::TRANSPARENT => {
+                            BlockRenderType::Transparent => {
                                 transparent_instances.push(TransparentQuadInstance { attributes });
                             }
-                            BlockRenderType::INVISIBLE => unreachable!(),
+                            BlockRenderType::Invisible => unreachable!(),
                         };
                     }
                 }
@@ -283,14 +284,14 @@ impl Chunk {
         // If the block is solid, all sides adjacent to transparent or invisible blocks are visible
         // If the block is transparent, only sides adjacent to transparent blocks are visible
         match block {
-            BlockRenderType::INVISIBLE => false,
-            BlockRenderType::OPAQUE => match adjacent_block {
-                BlockRenderType::OPAQUE => false,
-                BlockRenderType::TRANSPARENT | BlockRenderType::INVISIBLE => true,
+            BlockRenderType::Invisible => false,
+            BlockRenderType::Opaque => match adjacent_block {
+                BlockRenderType::Opaque => false,
+                BlockRenderType::Transparent | BlockRenderType::Invisible => true,
             },
-            BlockRenderType::TRANSPARENT => match adjacent_block {
-                BlockRenderType::OPAQUE | BlockRenderType::TRANSPARENT => false,
-                BlockRenderType::INVISIBLE => true,
+            BlockRenderType::Transparent => match adjacent_block {
+                BlockRenderType::Opaque | BlockRenderType::Transparent => false,
+                BlockRenderType::Invisible => true,
             },
         }
     }
@@ -319,11 +320,11 @@ impl Chunk {
             let side_1 = self
                 .get_including_padding(air_block + step_0 * cross_directions.0.get_unit_ivec())
                 .render_type()
-                == BlockRenderType::OPAQUE;
+                == BlockRenderType::Opaque;
             let side_2 = self
                 .get_including_padding(air_block + step_1 * cross_directions.1.get_unit_ivec())
                 .render_type()
-                == BlockRenderType::OPAQUE;
+                == BlockRenderType::Opaque;
 
             let corner = self
                 .get_including_padding(
@@ -332,7 +333,7 @@ impl Chunk {
                         + step_1 * cross_directions.1.get_unit_ivec(),
                 )
                 .render_type()
-                == BlockRenderType::OPAQUE;
+                == BlockRenderType::Opaque;
 
             let value = if side_1 && side_2 {
                 3

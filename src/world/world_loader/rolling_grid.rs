@@ -84,6 +84,7 @@ impl<T> RollingGrid<T> {
 
     /// Get an immutable reference to the grid contents of the given position.
     /// Returns None if the position is not within the grid around the current center.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn at(&self, position: IVec3) -> Option<&T> {
         if !self.contains(position) {
             return None;

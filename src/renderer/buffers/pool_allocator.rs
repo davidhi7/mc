@@ -34,7 +34,7 @@ impl PoolAllocator {
             .iter()
             .enumerate()
             .filter_map(|(index, segment)| {
-                let aligned_offset = buffers::align_up(segment.offset, alignment as u64);
+                let aligned_offset = buffers::align_up(segment.offset, alignment);
                 // number of bytes added to the segment offset for correct data alignment
                 let alignment_bytes = aligned_offset - segment.offset;
 
@@ -90,8 +90,7 @@ impl PoolAllocator {
             .free_segments
             .iter()
             .enumerate()
-            .filter(|&(_, segment)| segment.size + segment.offset == new_free_segment.offset)
-            .next()
+            .find(|&(_, segment)| segment.size + segment.offset == new_free_segment.offset)
         {
             new_free_segment.offset -= segment_before.size;
             new_free_segment.size += segment_before.size;
@@ -99,14 +98,10 @@ impl PoolAllocator {
         }
 
         // Find segment immediately after the deallocated segment, merge if present
-        if let Some((index_after, segment_after)) = self
-            .free_segments
-            .iter()
-            .enumerate()
-            .filter(|&(_, segment)| {
+        if let Some((index_after, segment_after)) =
+            self.free_segments.iter().enumerate().find(|&(_, segment)| {
                 segment.offset == new_free_segment.size + new_free_segment.offset
             })
-            .next()
         {
             new_free_segment.size += segment_after.size;
             self.free_segments.swap_remove(index_after);

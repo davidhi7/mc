@@ -75,14 +75,14 @@ define_aabb_3d!(IVec3, Aabb3I);
 impl Aabb3 {
     /// Returns the smallest integer-based AABB that fully contains the the given AABB.
     /// This is done by calling `floor` on the min and `ceil` on the max value.
-    pub fn to_ivec_aabb(&self) -> Aabb3I {
+    pub fn to_ivec_aabb(self) -> Aabb3I {
         Aabb3I::new(self.min.floor().as_ivec3(), self.max.ceil().as_ivec3())
     }
 }
 
 #[allow(dead_code)]
 impl Aabb3I {
-    pub fn to_vec_aabb(&self) -> Aabb3 {
+    pub fn to_vec_aabb(self) -> Aabb3 {
         Aabb3::new(self.min.as_vec3(), self.max.as_vec3())
     }
 }

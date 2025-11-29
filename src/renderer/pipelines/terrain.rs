@@ -123,7 +123,7 @@ impl TerrainBinding {
                 },
                 BindGroupEntry {
                     binding: 1,
-                    resource: BindingResource::Sampler(&sampler),
+                    resource: BindingResource::Sampler(sampler),
                 },
             ],
         });

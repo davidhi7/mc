@@ -1,4 +1,4 @@
-use glam::{ivec3, IVec3, Vec3};
+use glam::{IVec3, Vec3, ivec3};
 
 use crate::world::blocks::Direction;
 
@@ -9,8 +9,6 @@ pub struct RaycastHit {
     /// Direction of the intersected voxel face. None, if origin is inside this voxel
     /// Example: If ray is directed in negative x direction and hits a voxel, direction is always Direction::X.
     pub voxel_face: Option<Direction>,
-    /// Value of t, so that the intersection is at origin + t * direction
-    pub t: f32,
 }
 
 pub enum RaycastStatus {
@@ -88,7 +86,6 @@ pub fn cast_ray(
         if let RaycastStatus::Stop = callback(RaycastHit {
             voxel: ivec3(x, y, z),
             voxel_face: Some(direction),
-            t: min_t_max,
         }) {
             break;
         }

@@ -68,7 +68,7 @@ impl<'a> BufferMemoryTarget<'a> {
 
 impl<'a> WriteBuffer for BufferMemoryTarget<'a> {
     fn write(&mut self, offset: u64, data: &[u8]) {
-        self.queue.write_buffer(&self.buffer, offset, data);
+        self.queue.write_buffer(self.buffer, offset, data);
     }
 }
 
@@ -83,7 +83,7 @@ impl<'a> CopyFromBuffer<Buffer> for BufferMemoryTarget<'a> {
         self.command_encoder.copy_buffer_to_buffer(
             source,
             source_offset,
-            &self.buffer,
+            self.buffer,
             destination_offset,
             copy_size,
         )

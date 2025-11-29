@@ -60,20 +60,21 @@ impl AsBytes for ChunkUniform {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Enum)]
 pub enum TerrainType {
-    SOLID,
-    TRANSPARENT,
+    Solid,
+    Transparent,
 }
 
 impl InstanceSize for TerrainType {
     fn instance_size(self) -> u64 {
         match self {
-            TerrainType::SOLID => QuadInstance::desc().array_stride,
-            TerrainType::TRANSPARENT => TransparentQuadInstance::desc().array_stride,
+            TerrainType::Solid => QuadInstance::desc().array_stride,
+            TerrainType::Transparent => TransparentQuadInstance::desc().array_stride,
         }
     }
 }
 
 struct DrawnChunkState {
+    #[expect(dead_code)]
     buffers: EnumMap<TerrainType, Option<Buffer>>,
     draw_calls: EnumMap<TerrainType, Option<DrawCallHandle<ChunkUniform, TerrainType>>>,
 }
@@ -89,6 +90,7 @@ enum ChunkJob {
     GenerateAndMeshStack { uw: ChunkUW },
 }
 
+// TODO optimize
 enum ChunkJobResult {
     Mesh {
         chunk: Arc<Chunk>,
@@ -96,7 +98,7 @@ enum ChunkJobResult {
     },
     GenerateAndMeshStack {
         chunk_stack: ChunkStack,
-        buffers: [EnumMap<TerrainType, Option<Buffer>>; VERTICAL_CHUNK_COUNT],
+        buffers: Box<[EnumMap<TerrainType, Option<Buffer>>; VERTICAL_CHUNK_COUNT]>,
     },
 }
 
@@ -115,7 +117,7 @@ impl Eq for WorkerThreadHandle {}
 
 impl PartialOrd for WorkerThreadHandle {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.job_count.cmp(&other.job_count))
+        Some(self.cmp(other))
     }
 }
 
@@ -147,7 +149,7 @@ impl WorldLoader {
         for _ in 0..thread_count {
             let (sender, receiver) = channel();
             thread::spawn({
-                let noise = world.noise.clone();
+                let noise = world.noise;
                 let device = device.clone();
                 let sender = worker_send.clone();
                 move || {
@@ -239,7 +241,7 @@ impl WorldLoader {
                     return;
                 };
 
-                for (_, draw_call) in state.draw_calls {
+                for (_, draw_call) in state.draw_calls.into_iter() {
                     if let Some(draw_call) = draw_call {
                         update_pass.prepare_drop_region(draw_call);
                     }
@@ -422,7 +424,7 @@ impl WorldLoader {
     }
 }
 
-/// Create closure that manages jobs and bookkeeping during grid creation and reposition.
+/// Return closure that manages jobs and bookkeeping during grid creation and reposition.
 fn update_rolling_grid(
     world: &World,
     ongoing_chunk_meshing: &mut HashSet<ChunkUVW>,

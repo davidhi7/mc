@@ -13,7 +13,7 @@ pub fn cmp_vec_unordered<T: Clone + Debug + Eq>(left: &Vec<T>, right: &Vec<T>) -
         second.swap_remove(index);
     }
 
-    if second.len() == 0 {
+    if second.is_empty() {
         Ok(())
     } else {
         eprintln!(

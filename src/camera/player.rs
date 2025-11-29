@@ -480,7 +480,7 @@ fn resolve_collisions(
                     if block_lookup.is_solid(ivec3(x, y, z)) {
                         // Check if player intersects with the block
                         if let Some(block) = block_lookup.lookup_block(ivec3(x, y, z))
-                            && block.physics_type() == BlockPhysicsType::SOLID
+                            && block.physics_type() == BlockPhysicsType::Solid
                             && !intersects_block(physics_state.aabb.to_ivec_aabb(), ivec3(x, y, z))
                         {
                             continue;

@@ -13,7 +13,7 @@ const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Button {
     Mouse(MouseButton),
-    Keyboard(KeyCode)
+    Keyboard(KeyCode),
 }
 
 impl From<MouseButton> for Button {
@@ -72,11 +72,17 @@ impl InputState {
             return;
         }
 
-        self.keys.entry(Button::Keyboard(key_code)).or_default().handle_state_change(state);
+        self.keys
+            .entry(Button::Keyboard(key_code))
+            .or_default()
+            .handle_state_change(state);
     }
 
     pub fn handle_mouse_event(&mut self, button: MouseButton, state: ElementState) {
-        self.keys.entry(Button::Mouse(button)).or_default().handle_state_change(state);
+        self.keys
+            .entry(Button::Mouse(button))
+            .or_default()
+            .handle_state_change(state);
     }
 
     pub fn increment_mouse_movement(&mut self, mouse_movement: (f64, f64)) {
@@ -90,14 +96,12 @@ impl InputState {
 
     /// Returns whether the button is currently pressed.
     pub fn is_pressed(&self, key: impl Into<Button>) -> bool {
-        self.keys
-            .get(&key.into())
-            .is_some_and(|info| info.pressed)
+        self.keys.get(&key.into()).is_some_and(|info| info.pressed)
     }
 
     /// Returns whether the button is currently pressed. Also mark button as no longer pressed.
     pub fn pull_is_pressed(&mut self, key: impl Into<Button>) -> bool {
-        return match self.keys.get_mut(&key.into()) {
+        match self.keys.get_mut(&key.into()) {
             Some(key_info) => {
                 if key_info.pressed {
                     key_info.pressed = false;
@@ -108,12 +112,12 @@ impl InputState {
                 }
             }
             None => false,
-        };
+        }
     }
-    
+
     /// Returns whether the button has been double clicked. Also reset double clicked state.
     pub fn pull_key_double_clicked(&mut self, key: impl Into<Button>) -> bool {
-        return match self.keys.get_mut(&key.into()) {
+        match self.keys.get_mut(&key.into()) {
             Some(key_info) => {
                 if key_info.double_clicked {
                     key_info.double_clicked = false;
@@ -123,7 +127,7 @@ impl InputState {
                 }
             }
             None => false,
-        };
+        }
     }
 
     /// Returns true if the button is currently pressed but hasn't been double clicked.

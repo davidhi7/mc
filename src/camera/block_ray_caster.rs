@@ -13,6 +13,7 @@ const FOCUS_DISTANCE: f32 = 10.0;
 #[derive(Clone, Copy, Debug)]
 pub struct BlockInfo {
     pub coords: IVec3,
+    #[expect(dead_code)]
     pub block: Block,
     pub face: Option<Direction>,
 }
@@ -45,7 +46,7 @@ pub fn find_looked_at_blocks(
          }| {
             if let Some(block) = block_lookup.lookup_block(voxel) {
                 match block.physics_type() {
-                    BlockPhysicsType::SOLID => {
+                    BlockPhysicsType::Solid => {
                         focused_blocks.solid_block = Some(BlockInfo {
                             coords: voxel,
                             block,
@@ -53,7 +54,7 @@ pub fn find_looked_at_blocks(
                         });
                         RaycastStatus::Stop
                     }
-                    BlockPhysicsType::LIQUID => {
+                    BlockPhysicsType::Liquid => {
                         if focused_blocks.liquid_block.is_none() {
                             focused_blocks.liquid_block = Some(BlockInfo {
                                 coords: voxel,
@@ -63,7 +64,7 @@ pub fn find_looked_at_blocks(
                         }
                         RaycastStatus::Continue
                     }
-                    BlockPhysicsType::GASEOUS => RaycastStatus::Continue,
+                    BlockPhysicsType::Gaseous => RaycastStatus::Continue,
                 }
             } else {
                 RaycastStatus::Continue

@@ -51,6 +51,7 @@ impl<T: AsBytes> RcBlockAllocator<T> {
     pub fn new(block_count: u64) -> Self {
         Self {
             block_allocator: BlockAllocator::new(block_count),
+            #[allow(clippy::rc_clone_in_vec_init)]
             blocks: vec![Weak::new(); block_count as usize].into_boxed_slice(),
         }
     }

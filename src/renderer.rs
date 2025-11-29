@@ -193,8 +193,8 @@ impl WorldRenderer {
 
         // TODO find better values
         let mut batches_map = HashMap::new();
-        batches_map.insert(TerrainType::SOLID, 4000);
-        batches_map.insert(TerrainType::TRANSPARENT, 1000);
+        batches_map.insert(TerrainType::Solid, 4000);
+        batches_map.insert(TerrainType::Transparent, 1000);
 
         let chunks_per_bucket = (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
             * u64::min(
@@ -204,7 +204,7 @@ impl WorldRenderer {
         let mut ib = IndirectBufferManager::new(
             &device,
             "",
-            &[TerrainType::SOLID, TerrainType::TRANSPARENT],
+            &[TerrainType::Solid, TerrainType::Transparent],
             chunks_per_bucket,
             &batches_map,
         );
@@ -299,17 +299,17 @@ impl WorldRenderer {
             if left_mouse_pressed || right_mouse_pressed {
                 let (coords, block) = if left_mouse_pressed {
                     // if both pressed, mining blocks has a higher priority
-                    (looked_at_block_coords, Block::AIR)
+                    (looked_at_block_coords, Block::Air)
                 } else {
                     // right mouse pressed
                     (
                         looked_at_block_coords + direction.get_unit_ivec(),
-                        Block::GRAVEL,
+                        Block::Gravel,
                     )
                 };
 
                 if !self.player.intersects_block(coords)
-                    || block.physics_type() != BlockPhysicsType::SOLID
+                    || block.physics_type() != BlockPhysicsType::Solid
                 {
                     updated_chunks = Some(self.world_loader.world.replace_block(coords, block));
                 }
@@ -373,21 +373,21 @@ impl WorldRenderer {
             timestamp_writes: None,
         });
 
-        if self.indirect_draw_buffer.draw_count(TerrainType::SOLID) > 0 {
+        if self.indirect_draw_buffer.draw_count(TerrainType::Solid) > 0 {
             self.terrain_pipeline.render_terrain(
                 &mut render_pass,
                 &self.globals,
                 &self.indirect_draw_buffer.vertex_buffer,
                 &self.indirect_draw_buffer.indirect_buffer,
                 self.indirect_draw_buffer
-                    .indirect_buffer_offset(TerrainType::SOLID),
-                self.indirect_draw_buffer.draw_count(TerrainType::SOLID) as u32,
+                    .indirect_buffer_offset(TerrainType::Solid),
+                self.indirect_draw_buffer.draw_count(TerrainType::Solid) as u32,
             );
         }
 
         if self
             .indirect_draw_buffer
-            .draw_count(TerrainType::TRANSPARENT)
+            .draw_count(TerrainType::Transparent)
             > 0
         {
             self.terrain_pipeline.render_water(
@@ -396,9 +396,9 @@ impl WorldRenderer {
                 &self.indirect_draw_buffer.vertex_buffer,
                 &self.indirect_draw_buffer.indirect_buffer,
                 self.indirect_draw_buffer
-                    .indirect_buffer_offset(TerrainType::TRANSPARENT),
+                    .indirect_buffer_offset(TerrainType::Transparent),
                 self.indirect_draw_buffer
-                    .draw_count(TerrainType::TRANSPARENT) as u32,
+                    .draw_count(TerrainType::Transparent) as u32,
             );
         }
 

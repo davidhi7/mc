@@ -38,7 +38,9 @@ pub fn launch(
             }
             ChunkJob::GenerateAndMeshStack { uw } => {
                 let chunk_stack = Chunk::generate_stack(&noise, uw);
-                let buffers = array::from_fn(|v| create_mesh(&device, &chunk_stack.chunks[v]));
+                let buffers = Box::new(array::from_fn(|v| {
+                    create_mesh(&device, &chunk_stack.chunks[v])
+                }));
 
                 ChunkJobResult::GenerateAndMeshStack {
                     chunk_stack,
@@ -56,32 +58,32 @@ pub fn create_mesh(device: &Device, chunk: &Chunk) -> EnumMap<TerrainType, Optio
     let (solid_instances, transparent_instances) = chunk.generate_mesh();
     let mut buffers = EnumMap::default();
 
-    if solid_instances.len() > 0 {
+    if !solid_instances.is_empty() {
         let buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some(&format!(
                 "{:?} terrain mesh at {:?}",
-                TerrainType::SOLID,
+                TerrainType::Solid,
                 chunk.uvw()
             )),
             contents: bytemuck::cast_slice(solid_instances.as_slice()),
             usage: BufferUsages::COPY_SRC,
         });
 
-        buffers[TerrainType::SOLID] = Some(buffer);
+        buffers[TerrainType::Solid] = Some(buffer);
     }
 
-    if transparent_instances.len() > 0 {
+    if !transparent_instances.is_empty() {
         let buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some(&format!(
                 "{:?} terrain mesh at {:?}",
-                TerrainType::TRANSPARENT,
+                TerrainType::Transparent,
                 chunk.uvw()
             )),
             contents: bytemuck::cast_slice(transparent_instances.as_slice()),
             usage: BufferUsages::COPY_SRC,
         });
 
-        buffers[TerrainType::TRANSPARENT] = Some(buffer);
+        buffers[TerrainType::Transparent] = Some(buffer);
     }
 
     buffers

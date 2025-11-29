@@ -148,7 +148,7 @@ pub fn create_vertex_buffer(device: &Device) -> Buffer {
 }
 
 fn swizzle_vertex(direction: Direction, vertex: Vertex) -> Vertex {
-    let mut v = vertex.clone();
+    let mut v = vertex;
     match direction {
         Direction::NegX => {
             // -X
@@ -185,7 +185,7 @@ fn swizzle_vertex(direction: Direction, vertex: Vertex) -> Vertex {
 }
 
 fn flip_quad_vertex(vertex: Vertex) -> Vertex {
-    let mut v = vertex.clone();
+    let mut v = vertex;
 
     // Effectively rotate the line separating the two triangles that form a quad
     // Relevant for AO interpolation in some cases

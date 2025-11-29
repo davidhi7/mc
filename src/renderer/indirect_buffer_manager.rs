@@ -80,17 +80,17 @@ where
     ) -> Self {
         let mut vertex_buffer_size_bytes = 0;
         for bucket in buckets {
-            vertex_buffer_size_bytes += chunks_per_bucket as u64
+            vertex_buffer_size_bytes += chunks_per_bucket
                 * bucket.instance_size()
                 * *max_batch_size_map
-                    .get(&bucket)
+                    .get(bucket)
                     .expect("Bucket not valid key in max_batch_size_map");
         }
 
         // Indirect buffer contains one slot for every batch and bucket combination
         let indirect_buffer = device.create_buffer(&BufferDescriptor {
             label: Some(&("indirect buffer ".to_owned() + label)),
-            size: chunks_per_bucket * DRAW_ARGS_SIZE as u64 * Bucket::LENGTH as u64,
+            size: chunks_per_bucket * DRAW_ARGS_SIZE * Bucket::LENGTH as u64,
             usage: BufferUsages::INDIRECT | BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -256,12 +256,10 @@ where
         {
             entry.1.uniform_buffer_handle.clone()
         } else {
-            let handle = self.uniform_buffer_allocator.allocate_first_free_block(
+            self.uniform_buffer_allocator.allocate_first_free_block(
                 &mut BufferMemoryTarget::new(&self.uniform_buffer, queue, command_encoder),
                 &uniform,
-            );
-
-            handle
+            )
         };
 
         self.indirect_buffer_allocator.allocate_block(

@@ -20,12 +20,13 @@ pub trait LookupBlock {
 
     fn is_solid(&self, block: IVec3) -> bool {
         self.lookup_block(block)
-            .is_some_and(|block| matches!(block.physics_type(), BlockPhysicsType::SOLID))
+            .is_some_and(|block| matches!(block.physics_type(), BlockPhysicsType::Solid))
     }
 
+    #[expect(dead_code)]
     fn is_liquid(&self, block: IVec3) -> bool {
         self.lookup_block(block)
-            .is_some_and(|block| matches!(block.physics_type(), BlockPhysicsType::LIQUID))
+            .is_some_and(|block| matches!(block.physics_type(), BlockPhysicsType::Liquid))
     }
 }
 
@@ -135,11 +136,7 @@ impl World {
 
 impl LookupBlock for World {
     fn lookup_block(&self, coords: IVec3) -> Option<Block> {
-        let optional_chunk = self.get_chunk(get_chunk_coordinates(coords));
-
-        let Some(chunk) = optional_chunk else {
-            return None;
-        };
+        let chunk = self.get_chunk(get_chunk_coordinates(coords))?;
 
         Some(chunk.get(get_inner_chunk_coordinates(coords)))
     }

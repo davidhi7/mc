@@ -2,60 +2,60 @@ use glam::{IVec3, Vec3};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockPhysicsType {
-    SOLID,
-    LIQUID,
-    GASEOUS,
+    Solid,
+    Liquid,
+    Gaseous,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockRenderType {
-    OPAQUE,
-    TRANSPARENT,
-    INVISIBLE,
+    Opaque,
+    Transparent,
+    Invisible,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Block {
-    AIR,
-    STONE,
-    GRASS,
-    DIRT,
-    SAND,
-    GRAVEL,
-    ANDESITE,
-    SNOW,
-    WATER,
+    Air,
+    Stone,
+    Grass,
+    Dirt,
+    Sand,
+    Gravel,
+    Andesite,
+    Snow,
+    Water,
 }
 
 impl Block {
     pub fn texture_index(&self) -> u8 {
         match self {
-            Block::AIR => panic!("{:?} doesn't feature a texture", self),
-            Block::STONE => 0,
-            Block::GRASS => 1,
-            Block::DIRT => 2,
-            Block::SAND => 3,
-            Block::GRAVEL => 4,
-            Block::ANDESITE => 5,
-            Block::SNOW => 6,
-            Block::WATER => 6,
+            Block::Air => panic!("{:?} doesn't feature a texture", self),
+            Block::Stone => 0,
+            Block::Grass => 1,
+            Block::Dirt => 2,
+            Block::Sand => 3,
+            Block::Gravel => 4,
+            Block::Andesite => 5,
+            Block::Snow => 6,
+            Block::Water => 6,
         }
     }
 
     pub fn physics_type(&self) -> BlockPhysicsType {
         match self {
-            Block::AIR => BlockPhysicsType::GASEOUS,
-            Block::WATER => BlockPhysicsType::LIQUID,
-            _ => BlockPhysicsType::SOLID,
+            Block::Air => BlockPhysicsType::Gaseous,
+            Block::Water => BlockPhysicsType::Liquid,
+            _ => BlockPhysicsType::Solid,
         }
     }
 
     pub fn render_type(&self) -> BlockRenderType {
         match self {
-            Block::AIR => BlockRenderType::INVISIBLE,
-            Block::WATER => BlockRenderType::TRANSPARENT,
-            _ => BlockRenderType::OPAQUE,
+            Block::Air => BlockRenderType::Invisible,
+            Block::Water => BlockRenderType::Transparent,
+            _ => BlockRenderType::Opaque,
         }
     }
 }
@@ -84,6 +84,7 @@ impl Direction {
         .into_iter()
     }
 
+    #[expect(dead_code)]
     pub fn get_unit_vec(&self) -> Vec3 {
         match self {
             Direction::NegX => Vec3::NEG_X,
