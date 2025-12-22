@@ -1,4 +1,4 @@
-use crate::renderer::buffers::{self, CopyFromBuffer};
+use crate::renderer::buffers::{self, AllocationError, CopyFromBuffer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentHandle {
@@ -6,8 +6,15 @@ pub struct SegmentHandle {
     pub size: u64,
 }
 
+impl SegmentHandle {
+    fn end(&self) -> u64 {
+        self.offset + self.size
+    }
+}
+
 /// Pool/arena allocator that allocates variable-sized objects and manages free segments.
 pub struct PoolAllocator {
+    size: u64,
     occupied_segments: Vec<SegmentHandle>,
     free_segments: Vec<SegmentHandle>,
 }
@@ -15,21 +22,20 @@ pub struct PoolAllocator {
 impl PoolAllocator {
     pub fn new(size: u64) -> Self {
         Self {
+            size,
             occupied_segments: Vec::new(),
             free_segments: vec![SegmentHandle { offset: 0, size }],
         }
     }
 
-    pub fn allocate_from_buffer<T>(
+    pub fn reserve_segment(
         &mut self,
-        source: &T,
-        target: &mut impl CopyFromBuffer<T>,
-        copy_size: u64,
+        size: u64,
         alignment: u64,
-    ) -> SegmentHandle {
+    ) -> Result<SegmentHandle, AllocationError> {
         // Find the smallest segment that is sufficiently large to store the contents of the `source` buffer plus optional alignment bytes.
         // `alignment_bytes` is the number of bytes added to the segment offset for correct data alignment
-        let (index, free_segment, alignment_bytes) = self
+        let Some((index, free_segment, alignment_bytes)) = self
             .free_segments
             .iter()
             .enumerate()
@@ -38,28 +44,28 @@ impl PoolAllocator {
                 // number of bytes added to the segment offset for correct data alignment
                 let alignment_bytes = aligned_offset - segment.offset;
 
-                if segment.size - alignment_bytes >= copy_size {
+                if segment.size - alignment_bytes >= size {
                     Some((index, segment, alignment_bytes))
                 } else {
                     None
                 }
             })
             .min_by_key(|(_, segment, _)| segment.size)
-            .expect("No empty segment of sufficient size found");
-
-        target.copy_from_buffer(source, 0, free_segment.offset + alignment_bytes, copy_size);
+        else {
+            return Err(AllocationError::NoFreeSegmentAvailable);
+        };
 
         let new_occupied_segment = SegmentHandle {
             offset: free_segment.offset + alignment_bytes,
-            size: copy_size,
+            size,
         };
         self.occupied_segments.push(new_occupied_segment);
 
         // Create free segment after the new occupied segment, if the original free segment was not fully used
-        if alignment_bytes + copy_size < free_segment.size {
+        if alignment_bytes + size < free_segment.size {
             self.free_segments.push(SegmentHandle {
-                offset: free_segment.offset + alignment_bytes + copy_size,
-                size: free_segment.size - alignment_bytes - copy_size,
+                offset: free_segment.offset + alignment_bytes + size,
+                size: free_segment.size - alignment_bytes - size,
             });
         }
 
@@ -71,15 +77,25 @@ impl PoolAllocator {
             self.free_segments[index].size = alignment_bytes;
         }
 
-        new_occupied_segment
+        Ok(new_occupied_segment)
     }
 
-    pub fn deallocate(&mut self, handle: SegmentHandle) {
+    /// Copy from source to target. `segment.size` bytes are copied, beginning from 0 at the source, and `segment.offset` for the target.
+    pub fn insert_into_segment<T>(
+        &mut self,
+        source: &T,
+        target: &mut impl CopyFromBuffer<T>,
+        segment: SegmentHandle,
+    ) {
+        target.copy_from_buffer(source, 0, segment.offset, segment.size);
+    }
+
+    pub fn deallocate(&mut self, handle: SegmentHandle) -> Result<(), AllocationError> {
         let index = self
             .occupied_segments
             .iter()
             .position(|segment| *segment == handle)
-            .expect("Invalid handle provided");
+            .ok_or(AllocationError::InvalidHandle)?;
 
         self.occupied_segments.swap_remove(index);
 
@@ -90,7 +106,7 @@ impl PoolAllocator {
             .free_segments
             .iter()
             .enumerate()
-            .find(|&(_, segment)| segment.size + segment.offset == new_free_segment.offset)
+            .find(|&(_, segment)| segment.end() == new_free_segment.offset)
         {
             new_free_segment.offset -= segment_before.size;
             new_free_segment.size += segment_before.size;
@@ -98,16 +114,40 @@ impl PoolAllocator {
         }
 
         // Find segment immediately after the deallocated segment, merge if present
-        if let Some((index_after, segment_after)) =
-            self.free_segments.iter().enumerate().find(|&(_, segment)| {
-                segment.offset == new_free_segment.size + new_free_segment.offset
-            })
+        if let Some((index_after, segment_after)) = self
+            .free_segments
+            .iter()
+            .enumerate()
+            .find(|&(_, segment)| segment.offset == new_free_segment.end())
         {
             new_free_segment.size += segment_after.size;
             self.free_segments.swap_remove(index_after);
         }
 
         self.free_segments.push(new_free_segment);
+
+        Ok(())
+    }
+
+    pub fn grow(&mut self, new_size: u64) {
+        if let Some(free_segment) = self
+            .free_segments
+            .iter_mut()
+            .find(|segment| segment.end() == self.size)
+        {
+            free_segment.size += new_size - self.size;
+        } else {
+            self.free_segments.push(SegmentHandle {
+                offset: self.size,
+                size: new_size - self.size,
+            });
+        }
+
+        self.size = new_size;
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -123,33 +163,44 @@ mod tests {
     }
 
     #[test]
-    fn test_allocate_from_buffer() {
+    fn test_allocate_from_buffer() -> Result<(), anyhow::Error> {
         let (mut mem, mut pool) = init();
 
-        let handle = pool.allocate_from_buffer(&[0xFF; 16], &mut mem, 16, 1);
-
+        let handle = pool.reserve_segment(16, 1)?;
+        pool.insert_into_segment(&[0xFF; 16], &mut mem, handle);
         assert_eq!(mem.memory, [0xFF; 16]);
+        pool.deallocate(handle)?;
 
-        pool.deallocate(handle);
-        pool.allocate_from_buffer(&[0x00; 16], &mut mem, 1, 1);
+        let handle = pool.reserve_segment(1, 1)?;
+        pool.insert_into_segment(&[0x00; 16], &mut mem, handle);
         assert_eq!(mem.memory[0], 0x00);
         // Data previously deallocated isn't cleared, just marked as empty
         assert_eq!(mem.memory[1..16], [0xFF; 15]);
+
+        Ok(())
     }
 
     #[test]
-    fn test_reallocation() {
+    fn test_reallocation() -> Result<(), anyhow::Error> {
         let (mut mem, mut pool) = init();
 
-        pool.allocate_from_buffer(&[0x01; 16], &mut mem, 4, 1);
-        let handle_2 = pool.allocate_from_buffer(&[0x02; 16], &mut mem, 4, 1);
-        let handle_3 = pool.allocate_from_buffer(&[0x03; 16], &mut mem, 4, 1);
-        pool.allocate_from_buffer(&[0x04; 16], &mut mem, 4, 1);
+        let (h1, h2, h3, h4) = (
+            pool.reserve_segment(4, 1)?,
+            pool.reserve_segment(4, 1)?,
+            pool.reserve_segment(4, 1)?,
+            pool.reserve_segment(4, 1)?,
+        );
 
-        pool.deallocate(handle_2);
-        pool.deallocate(handle_3);
+        pool.insert_into_segment(&[0x01; 16], &mut mem, h1);
+        pool.insert_into_segment(&[0x02; 16], &mut mem, h2);
+        pool.insert_into_segment(&[0x03; 16], &mut mem, h3);
+        pool.insert_into_segment(&[0x04; 16], &mut mem, h4);
 
-        pool.allocate_from_buffer(&[0xFF; 16], &mut mem, 8, 1);
+        pool.deallocate(h2)?;
+        pool.deallocate(h3)?;
+
+        let handle = pool.reserve_segment(8, 1)?;
+        pool.insert_into_segment(&[0xFF; 16], &mut mem, handle);
         assert_eq!(
             mem.memory,
             [
@@ -160,14 +211,17 @@ mod tests {
             .concat()
             .as_slice()
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_alignment() {
+    fn test_alignment() -> Result<(), anyhow::Error> {
         let (mut mem, mut pool) = init();
 
-        pool.allocate_from_buffer(&[0xEE; 16], &mut mem, 1, 1);
-        pool.allocate_from_buffer(&[0xFF; 16], &mut mem, 8, 4);
+        let (h1, h2) = (pool.reserve_segment(1, 1)?, pool.reserve_segment(8, 4)?);
+        pool.insert_into_segment(&[0xEE; 16], &mut mem, h1);
+        pool.insert_into_segment(&[0xFF; 16], &mut mem, h2);
 
         assert_eq!(
             mem.memory,
@@ -180,14 +234,17 @@ mod tests {
             .concat()
             .as_slice()
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_state() -> Result<(), ()> {
+    fn test_state() -> Result<(), anyhow::Error> {
         let (mut mem, mut pool) = init();
 
-        pool.allocate_from_buffer(&[0xEE; 16], &mut mem, 1, 1);
-        pool.allocate_from_buffer(&[0xFF; 16], &mut mem, 8, 4);
+        let (h1, h2) = (pool.reserve_segment(1, 1)?, pool.reserve_segment(8, 4)?);
+        pool.insert_into_segment(&[0xEE; 16], &mut mem, h1);
+        pool.insert_into_segment(&[0xFF; 16], &mut mem, h2);
 
         cmp_vec_unordered(
             &pool.occupied_segments,
@@ -195,7 +252,8 @@ mod tests {
                 SegmentHandle { offset: 0, size: 1 },
                 SegmentHandle { offset: 4, size: 8 },
             ],
-        )?;
+        )
+        .expect("Occupied segments incorrect");
 
         cmp_vec_unordered(
             &pool.free_segments,
@@ -206,24 +264,27 @@ mod tests {
                     size: 4,
                 },
             ],
-        )?;
+        )
+        .expect("Free segments incorrect");
 
         Ok(())
     }
 
     #[test]
-    fn test_deallocate() -> Result<(), ()> {
+    fn test_deallocate() -> Result<(), anyhow::Error> {
         let (mut mem, mut pool) = init();
 
-        let handle_1 = pool.allocate_from_buffer(&[0xEE; 16], &mut mem, 1, 1);
-        let handle_2 = pool.allocate_from_buffer(&[0xFF; 16], &mut mem, 8, 4);
+        let (h1, h2) = (pool.reserve_segment(1, 1)?, pool.reserve_segment(8, 4)?);
+        pool.insert_into_segment(&[0xEE; 16], &mut mem, h1);
+        pool.insert_into_segment(&[0xFF; 16], &mut mem, h2);
 
-        pool.deallocate(handle_1);
+        pool.deallocate(h1)?;
 
         cmp_vec_unordered(
             &pool.occupied_segments,
             &vec![SegmentHandle { offset: 4, size: 8 }],
-        )?;
+        )
+        .expect("Occupied segments incorrect");
 
         cmp_vec_unordered(
             &pool.free_segments,
@@ -234,9 +295,10 @@ mod tests {
                     size: 4,
                 },
             ],
-        )?;
+        )
+        .expect("Free segments incorrect");
 
-        pool.deallocate(handle_2);
+        pool.deallocate(h2)?;
 
         assert_eq!(pool.occupied_segments.len(), 0);
 
@@ -246,28 +308,23 @@ mod tests {
                 offset: 0,
                 size: 16,
             }],
-        )?;
+        )
+        .expect("Free segments incorrect");
 
         Ok(())
     }
 
     #[test]
-    fn test_panic() {
-        let (mut mem, mut pool) = init();
-        assert!(
-            std::panic::catch_unwind(move || {
-                pool.allocate_from_buffer(&[0xFF; 16], &mut mem, 17, 1);
-            })
-            .is_err()
+    fn test_reserve_segment_complete() -> Result<(), anyhow::Error> {
+        let (_, mut pool) = init();
+        pool.reserve_segment(17, 1)
+            .expect_err("Should not be able to create segment larger than the buffer");
+
+        pool.reserve_segment(1, 1)?;
+        pool.reserve_segment(16, 1).expect_err(
+            "Should not be able to create segment larger than the remaining free buffer space",
         );
 
-        let (mut mem, mut pool) = init();
-        pool.allocate_from_buffer(&[0xFF; 16], &mut mem, 1, 1);
-        assert!(
-            std::panic::catch_unwind(move || {
-                pool.allocate_from_buffer(&[0xFF; 16], &mut mem, 16, 1);
-            })
-            .is_err()
-        );
+        Ok(())
     }
 }

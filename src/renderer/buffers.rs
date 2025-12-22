@@ -1,7 +1,6 @@
-use wgpu::{
-    Buffer, CommandEncoder, Queue,
-    util::{DrawIndexedIndirectArgs, DrawIndirectArgs},
-};
+use bytemuck::Pod;
+use thiserror::Error;
+use wgpu::{Buffer, CommandEncoder, Queue};
 
 pub mod block_allocator;
 pub mod pool_allocator;
@@ -20,15 +19,9 @@ pub trait AsBytes {
     fn get_bytes(&self) -> &[u8];
 }
 
-impl AsBytes for DrawIndirectArgs {
+impl<T: Pod> AsBytes for T {
     fn get_bytes(&self) -> &[u8] {
-        self.as_bytes()
-    }
-}
-
-impl AsBytes for DrawIndexedIndirectArgs {
-    fn get_bytes(&self) -> &[u8] {
-        self.as_bytes()
+        bytemuck::bytes_of(self)
     }
 }
 
@@ -50,6 +43,8 @@ pub struct BufferMemoryTarget<'a> {
     buffer: &'a Buffer,
     queue: &'a Queue,
     command_encoder: &'a mut CommandEncoder,
+    global_offset: u64,
+    limit: Option<u64>,
 }
 
 impl<'a> BufferMemoryTarget<'a> {
@@ -62,13 +57,32 @@ impl<'a> BufferMemoryTarget<'a> {
             buffer,
             queue,
             command_encoder,
+            global_offset: 0,
+            limit: None,
         }
+    }
+
+    pub fn with_global_offset(mut self, offset: u64) -> Self {
+        self.global_offset = offset;
+        self
+    }
+
+    pub fn with_limit(mut self, limit: u64) -> Self {
+        self.limit = Some(limit);
+        self
     }
 }
 
 impl<'a> WriteBuffer for BufferMemoryTarget<'a> {
+    /// Write the data completely into the buffer, starting at `offset` added to `global_offset`, if set.
     fn write(&mut self, offset: u64, data: &[u8]) {
-        self.queue.write_buffer(self.buffer, offset, data);
+        if let Some(limit) = self.limit
+            && offset >= limit
+        {
+            panic!("Buffer write at greater limit than permitted");
+        }
+        self.queue
+            .write_buffer(self.buffer, self.global_offset + offset, data);
     }
 }
 
@@ -88,6 +102,21 @@ impl<'a> CopyFromBuffer<Buffer> for BufferMemoryTarget<'a> {
             copy_size,
         )
     }
+}
+
+#[derive(Debug, Error)]
+pub enum AllocationError {
+    #[error("No free segment of sufficient size available")]
+    NoFreeSegmentAvailable,
+
+    #[error("Tried to allocate to already used memory")]
+    MemoryNotFree,
+
+    #[error("Invalid allocation handle provided")]
+    InvalidHandle,
+
+    #[error("Attempted to free unallocated memory")]
+    IllegalFree,
 }
 
 #[cfg(test)]

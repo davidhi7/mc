@@ -1,11 +1,12 @@
-use std::{
-    marker::PhantomData,
-    rc::{Rc, Weak},
-};
+use std::marker::PhantomData;
 
-use crate::renderer::buffers::{AsBytes, WriteBuffer};
+use crate::renderer::buffers::{AllocationError, AsBytes, WriteBuffer};
 
-pub type RcBlockHandle = Rc<u64>;
+#[derive(Clone, Copy, Debug)]
+pub struct BlockHandle<T>(pub u64, pub PhantomData<T>);
+
+#[derive(Clone, Copy, Debug)]
+pub struct CountedBlockHandle<T>(pub u64, PhantomData<T>);
 
 /// Allocator for fixed-size blocks of the generic type.
 pub struct BlockAllocator<T: AsBytes> {
@@ -21,61 +22,125 @@ impl<T: AsBytes> BlockAllocator<T> {
         }
     }
 
-    pub fn allocate_block(&mut self, target: &mut impl WriteBuffer, data: &T, block: u64) {
-        target.write(block * std::mem::size_of::<T>() as u64, data.get_bytes());
+    /// Write to block, returns error if the block is already allocated.
+    pub fn allocate_block(
+        &mut self,
+        target: &mut impl WriteBuffer,
+        block: BlockHandle<T>,
+        data: &T,
+    ) -> Result<(), AllocationError> {
+        let marker = self
+            .blocks_allocated
+            .get_mut(block.0 as usize)
+            .ok_or(AllocationError::InvalidHandle)
+            .and_then(|value| {
+                if !*value {
+                    Ok(value)
+                } else {
+                    Err(AllocationError::MemoryNotFree)
+                }
+            })?;
 
-        self.blocks_allocated[block as usize] = true;
+        *marker = true;
+
+        self.overwrite_block(target, block, data)
     }
 
-    #[allow(dead_code)]
-    pub fn deallocate_block(&mut self, block: u64) {
-        self.blocks_allocated[block as usize] = false;
+    /// Write to block, does not check whether block is allocated.
+    pub fn overwrite_block(
+        &mut self,
+        target: &mut impl WriteBuffer,
+        block: BlockHandle<T>,
+        data: &T,
+    ) -> Result<(), AllocationError> {
+        if self.blocks_allocated.len() <= block.0 as usize {
+            return Err(AllocationError::InvalidHandle);
+        }
+        target.write(block.0 * std::mem::size_of::<T>() as u64, data.get_bytes());
+        Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn first_free_block(&self, offset: u64) -> Option<u64> {
-        self.blocks_allocated
-            .iter()
-            .skip(offset as usize)
-            .position(|allocated| !allocated)
-            .map(|index| index as u64)
-    }
-}
+    /// Deallocate block. Returns error if block is not currently allocated.
+    pub fn deallocate_block(&mut self, block: BlockHandle<T>) -> Result<(), AllocationError> {
+        let previously_allocated = std::mem::replace(
+            self.blocks_allocated
+                .get_mut(block.0 as usize)
+                .ok_or(AllocationError::InvalidHandle)?,
+            false,
+        );
 
-pub struct RcBlockAllocator<T: AsBytes> {
-    block_allocator: BlockAllocator<T>,
-    blocks: Box<[Weak<u64>]>,
-}
-
-impl<T: AsBytes> RcBlockAllocator<T> {
-    pub fn new(block_count: u64) -> Self {
-        Self {
-            block_allocator: BlockAllocator::new(block_count),
-            #[allow(clippy::rc_clone_in_vec_init)]
-            blocks: vec![Weak::new(); block_count as usize].into_boxed_slice(),
+        if !previously_allocated {
+            Err(AllocationError::IllegalFree)
+        } else {
+            Ok(())
         }
     }
 
-    fn first_free_block(&self) -> Option<u64> {
-        self.blocks
+    pub fn first_free_block(&self) -> Result<BlockHandle<T>, AllocationError> {
+        let index = self
+            .blocks_allocated
             .iter()
-            .position(|block| block.upgrade().is_none())
-            .map(|index| index as u64)
+            .position(|allocated| !allocated)
+            .ok_or(AllocationError::NoFreeSegmentAvailable)?;
+        Ok(BlockHandle(index as u64, PhantomData))
+    }
+}
+
+pub struct CountedBlockAllocator<T: AsBytes> {
+    // Each integer counts the current usage of each block. A zero marks a free block.
+    blocks: Box<[u32]>,
+    phantom: PhantomData<T>,
+}
+
+impl<T: AsBytes> CountedBlockAllocator<T> {
+    pub fn new(block_count: u64) -> Self {
+        Self {
+            blocks: vec![0; block_count as usize].into_boxed_slice(),
+            phantom: PhantomData,
+        }
     }
 
-    #[must_use]
+    fn first_free_block(&self) -> Option<usize> {
+        self.blocks.iter().position(|block| *block == 0)
+    }
+
     pub fn allocate_first_free_block(
         &mut self,
         target: &mut impl WriteBuffer,
         data: &T,
-    ) -> RcBlockHandle {
-        let index = self.first_free_block().expect("No free block available");
-        let handle = Rc::new(index);
-        self.blocks[index as usize] = Rc::downgrade(&handle);
+    ) -> Result<CountedBlockHandle<T>, AllocationError> {
+        let index = self
+            .first_free_block()
+            .ok_or(AllocationError::NoFreeSegmentAvailable)?;
 
-        self.block_allocator.allocate_block(target, data, index);
+        self.blocks[index] = 1;
+        target.write((index * std::mem::size_of::<T>()) as u64, data.get_bytes());
 
-        handle
+        Ok(CountedBlockHandle(index as u64, PhantomData))
+    }
+
+    pub fn increment_counter(
+        &mut self,
+        handle: CountedBlockHandle<T>,
+    ) -> Result<(), AllocationError> {
+        if self.blocks[handle.0 as usize] == 0 {
+            return Err(AllocationError::InvalidHandle);
+        }
+
+        self.blocks[handle.0 as usize] += 1;
+        Ok(())
+    }
+
+    pub fn decrement_counter(
+        &mut self,
+        handle: CountedBlockHandle<T>,
+    ) -> Result<(), AllocationError> {
+        if self.blocks[handle.0 as usize] == 0 {
+            return Err(AllocationError::InvalidHandle);
+        }
+
+        self.blocks[handle.0 as usize] -= 1;
+        Ok(())
     }
 }
 
@@ -85,24 +150,24 @@ mod tests {
 
     use super::*;
 
-    impl AsBytes for u8 {
-        fn get_bytes(&self) -> &[u8] {
-            std::slice::from_ref(self)
-        }
-    }
-
     #[test]
-    fn test_rc() {
-        let mut alloc = RcBlockAllocator::new(1);
-        let mut mem = TestMemoryTarget { memory: [0; 1] };
+    fn test_rc() -> Result<(), anyhow::Error> {
+        let mut alloc = CountedBlockAllocator::new(1);
+        let mut mem = TestMemoryTarget { memory: [0; 4] };
 
-        let handle = alloc.allocate_first_free_block(&mut mem, &0);
-        let handle_clone = Rc::clone(&handle);
+        let handle = alloc.allocate_first_free_block(&mut mem, &0)?;
 
-        assert!(alloc.blocks[0].upgrade().is_some_and(|value| *value == 0));
-        drop(handle);
-        assert!(alloc.blocks[0].upgrade().is_some_and(|value| *value == 0));
-        drop(handle_clone);
-        assert!(alloc.blocks[0].upgrade().is_none());
+        assert_eq!(alloc.blocks[0], 1);
+        alloc.increment_counter(handle)?;
+        assert_eq!(alloc.blocks[0], 2);
+        alloc.decrement_counter(handle)?;
+        assert_eq!(alloc.blocks[0], 1);
+        alloc.decrement_counter(handle)?;
+        assert_eq!(alloc.blocks[0], 0);
+        alloc
+            .decrement_counter(handle)
+            .expect_err("Should fail because handle is no longer pointing to valid allocation");
+
+        Ok(())
     }
 }

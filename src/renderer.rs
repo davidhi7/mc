@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     iter,
     time::{Duration, Instant},
 };
@@ -32,7 +31,7 @@ use crate::{
         World,
         blocks::{Block, BlockPhysicsType},
         chunk::VERTICAL_CHUNK_COUNT,
-        world_loader::{ChunkUniform, TerrainType, WorldLoader},
+        world_loader::{TerrainType, WorldLoader},
     },
 };
 
@@ -156,7 +155,7 @@ pub struct WorldRenderer {
     ui_pipeline: UiPipeline,
     terrain_pipeline: TerrainPipeline,
     world_loader: WorldLoader,
-    indirect_draw_buffer: IndirectBufferManager<ChunkUniform, TerrainType>,
+    indirect_draw_buffer: IndirectBufferManager<TerrainType>,
     frustum_culling_pass: FrustumCullingComputePass,
     block_outline_pipeline: BlockOutlinePipeline,
     update_loop: FixedTimestepLoop,
@@ -191,23 +190,12 @@ impl WorldRenderer {
             CHUNK_RENDER_DISTANCE,
         );
 
-        // TODO find better values
-        let mut batches_map = HashMap::new();
-        batches_map.insert(TerrainType::Solid, 4000);
-        batches_map.insert(TerrainType::Transparent, 1000);
-
         let chunks_per_bucket = (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
             * u64::min(
                 CHUNK_RENDER_DISTANCE as u64 * 2 + 1,
                 VERTICAL_CHUNK_COUNT as u64,
             );
-        let mut ib = IndirectBufferManager::new(
-            &device,
-            "",
-            &[TerrainType::Solid, TerrainType::Transparent],
-            chunks_per_bucket,
-            &batches_map,
-        );
+        let mut ib = IndirectBufferManager::new(&device, "".into(), chunks_per_bucket);
 
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("render encoder"),
@@ -221,7 +209,7 @@ impl WorldRenderer {
             &device,
             &globals,
             &vertex_buffer::create_vertex_buffer(&device),
-            &ib.uniform_buffer,
+            ib.uniform_buffer(),
             texture::load_textures(&device, &queue).unwrap(),
             &texture::create_sampler(&device),
             surface_format,
@@ -231,8 +219,8 @@ impl WorldRenderer {
 
         let frustum_culling_pass = FrustumCullingComputePass::new(
             &device,
-            &ib.uniform_buffer,
-            &ib.indirect_buffer,
+            ib.uniform_buffer(),
+            ib.indirect_buffer(),
             chunks_per_bucket as u32,
             2 * chunks_per_bucket as u32,
         );
@@ -377,8 +365,8 @@ impl WorldRenderer {
             self.terrain_pipeline.render_terrain(
                 &mut render_pass,
                 &self.globals,
-                &self.indirect_draw_buffer.vertex_buffer,
-                &self.indirect_draw_buffer.indirect_buffer,
+                self.indirect_draw_buffer.vertex_buffer(),
+                self.indirect_draw_buffer.indirect_buffer(),
                 self.indirect_draw_buffer
                     .indirect_buffer_offset(TerrainType::Solid),
                 self.indirect_draw_buffer.draw_count(TerrainType::Solid) as u32,
@@ -393,8 +381,8 @@ impl WorldRenderer {
             self.terrain_pipeline.render_water(
                 &mut render_pass,
                 &self.globals,
-                &self.indirect_draw_buffer.vertex_buffer,
-                &self.indirect_draw_buffer.indirect_buffer,
+                self.indirect_draw_buffer.vertex_buffer(),
+                self.indirect_draw_buffer.indirect_buffer(),
                 self.indirect_draw_buffer
                     .indirect_buffer_offset(TerrainType::Transparent),
                 self.indirect_draw_buffer
