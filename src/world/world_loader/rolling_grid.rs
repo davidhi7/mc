@@ -198,6 +198,12 @@ impl<T> RollingGrid<T> {
 
         self.center = new_center;
     }
+
+    pub fn reset(&mut self, mut load: impl FnMut(IVec3) -> T) {
+        for position in Self::iter_3d(self.width, self.center) {
+            self.array[self.position_to_index(position)] = load(position);
+        }
+    }
 }
 
 #[cfg(test)]

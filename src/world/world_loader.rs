@@ -1,6 +1,7 @@
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, channel};
 use std::thread::{self};
 
@@ -56,13 +57,31 @@ enum ChunkState {
     OutOfBounds,
 }
 
-enum ChunkJob {
+struct JobCounter(u64);
+
+impl JobCounter {
+    fn new() -> Self {
+        JobCounter(0)
+    }
+
+    fn next(&mut self) -> u64 {
+        let old = self.0;
+        self.0 += 1;
+        old
+    }
+}
+
+enum ChunkJobType {
     Mesh { chunk: Arc<Chunk> },
     GenerateAndMeshStack { uw: ChunkUW },
 }
 
-// TODO optimize
-enum ChunkJobResult {
+struct ChunkJob {
+    id: u64,
+    job: ChunkJobType,
+}
+
+enum ChunkJobResultType {
     Mesh {
         chunk: Arc<Chunk>,
         buffers: EnumMap<TerrainType, Option<Buffer>>,
@@ -71,6 +90,11 @@ enum ChunkJobResult {
         chunk_stack: ChunkStack,
         buffers: Box<[EnumMap<TerrainType, Option<Buffer>>; VERTICAL_CHUNK_COUNT]>,
     },
+}
+
+struct ChunkJobResult {
+    id: u64,
+    result: ChunkJobResultType,
 }
 
 struct WorkerThreadHandle {
@@ -87,19 +111,21 @@ impl PartialEq for WorkerThreadHandle {
 impl Eq for WorkerThreadHandle {}
 
 impl PartialOrd for WorkerThreadHandle {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for WorkerThreadHandle {
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.job_count.cmp(&other.job_count)
     }
 }
 
 pub struct WorldLoader {
     pub world: World,
+    job_counter: JobCounter,
+    job_id_cutoff: Arc<AtomicU64>,
     worker_pool: Box<[WorkerThreadHandle]>,
     worker_recv: Receiver<ChunkJobResult>,
     grid: RollingGrid<ChunkState>,
@@ -115,6 +141,9 @@ impl WorldLoader {
         device: Device,
         render_distance: u32,
     ) -> Self {
+        let mut job_counter = JobCounter::new();
+        let job_id_cutoff = Arc::new(AtomicU64::new(job_counter.next()));
+
         let mut worker_pool = Vec::new();
         let (worker_send, worker_recv) = mpsc::channel();
         for _ in 0..thread_count {
@@ -123,8 +152,9 @@ impl WorldLoader {
                 let noise = world.noise;
                 let device = device.clone();
                 let sender = worker_send.clone();
+                let job_cutoff_id = Arc::clone(&job_id_cutoff);
                 move || {
-                    worker::launch(receiver, sender.clone(), device, noise);
+                    worker::launch(receiver, sender.clone(), job_cutoff_id, device, noise);
                 }
             });
 
@@ -146,11 +176,14 @@ impl WorldLoader {
                 &mut ongoing_chunk_meshing,
                 &mut ongoing_chunk_generation,
                 &mut jobs,
+                &mut job_counter,
             ),
         );
 
         let mut instance = Self {
             world,
+            job_counter,
+            job_id_cutoff,
             worker_pool,
             worker_recv,
             grid,
@@ -206,6 +239,7 @@ impl WorldLoader {
                 &mut self.ongoing_chunk_meshing,
                 &mut self.ongoing_chunk_generation,
                 &mut jobs,
+                &mut self.job_counter,
             ),
             |_, state| {
                 let ChunkState::BufferedAndDrawn(state) = state else {
@@ -254,9 +288,12 @@ impl WorldLoader {
             draw_calls
         }
 
-        for job_result in self.worker_recv.try_iter() {
-            match job_result {
-                ChunkJobResult::Mesh { chunk, buffers } => {
+        for ChunkJobResult { id, result } in self.worker_recv.try_iter() {
+            if id <= self.job_id_cutoff.load(Ordering::Relaxed) {
+                continue;
+            }
+            match result {
+                ChunkJobResultType::Mesh { chunk, buffers } => {
                     let uvw = chunk.uvw();
                     self.ongoing_chunk_meshing.remove(&uvw);
 
@@ -270,7 +307,7 @@ impl WorldLoader {
                         buffers,
                     });
                 }
-                ChunkJobResult::GenerateAndMeshStack {
+                ChunkJobResultType::GenerateAndMeshStack {
                     chunk_stack,
                     buffers,
                 } => {
@@ -376,9 +413,9 @@ impl WorldLoader {
 
         // Sort by distance between job chunk uw and center chunk uw
         jobs.sort_unstable_by_key(|job| {
-            let uw = match job {
-                ChunkJob::Mesh { chunk } => chunk.uvw().to_uw(),
-                ChunkJob::GenerateAndMeshStack { uw } => *uw,
+            let uw = match &job.job {
+                ChunkJobType::Mesh { chunk } => chunk.uvw().to_uw(),
+                ChunkJobType::GenerateAndMeshStack { uw } => *uw,
             };
 
             (IVec2::from(uw) - self.grid.center().xz()).length_squared()
@@ -403,6 +440,28 @@ impl WorldLoader {
             worker_heap.push(Reverse(worker));
         }
     }
+
+    pub fn reload_world(&mut self, indirect_buffer: &mut IndirectBufferManager<TerrainType>) {
+        self.world.clear();
+        indirect_buffer.clear();
+
+        self.job_id_cutoff.store(
+            self.job_counter.next(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.ongoing_chunk_generation.clear();
+        self.ongoing_chunk_meshing.clear();
+
+        let mut jobs = Vec::new();
+        self.grid.reset(update_rolling_grid(
+            &self.world,
+            &mut self.ongoing_chunk_meshing,
+            &mut self.ongoing_chunk_generation,
+            &mut jobs,
+            &mut self.job_counter,
+        ));
+        self.distribute_jobs(jobs);
+    }
 }
 
 /// Return closure that manages jobs and bookkeeping during grid creation and reposition.
@@ -411,6 +470,7 @@ fn update_rolling_grid(
     ongoing_chunk_meshing: &mut HashSet<ChunkUVW>,
     ongoing_chunk_generation: &mut HashSet<ChunkUW>,
     job_destination: &mut Vec<ChunkJob>,
+    job_counter: &mut JobCounter,
 ) -> impl FnMut(IVec3) -> ChunkState {
     |vec| {
         let uvw = ChunkUVW::from(vec);
@@ -421,13 +481,19 @@ fn update_rolling_grid(
         match world.get_chunk(uvw) {
             Some(chunk) => {
                 if ongoing_chunk_meshing.insert(uvw) {
-                    job_destination.push(ChunkJob::Mesh { chunk });
+                    job_destination.push(ChunkJob {
+                        id: job_counter.next(),
+                        job: ChunkJobType::Mesh { chunk },
+                    });
                 }
             }
             None => {
                 let uw = ChunkUVW::from(vec).to_uw();
                 if ongoing_chunk_generation.insert(uw) {
-                    job_destination.push(ChunkJob::GenerateAndMeshStack { uw });
+                    job_destination.push(ChunkJob {
+                        id: job_counter.next(),
+                        job: ChunkJobType::GenerateAndMeshStack { uw },
+                    });
                 }
             }
         }

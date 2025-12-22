@@ -132,6 +132,11 @@ impl World {
 
         updated_chunks
     }
+
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.chunk_stacks.clear();
+    }
 }
 
 impl LookupBlock for World {

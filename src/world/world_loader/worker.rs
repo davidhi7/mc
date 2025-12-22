@@ -1,6 +1,10 @@
 use std::{
     array,
-    sync::mpsc::{Receiver, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, Sender},
+    },
     thread,
 };
 
@@ -13,17 +17,18 @@ use wgpu::{
 
 use crate::world::{
     chunk::Chunk,
-    world_loader::{ChunkJob, ChunkJobResult, TerrainType},
+    world_loader::{ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, TerrainType},
 };
 
 pub fn launch(
     recv: Receiver<ChunkJob>,
     send: Sender<ChunkJobResult>,
+    job_cutoff_id: Arc<AtomicU64>,
     device: Device,
     noise: Simplex,
 ) {
     loop {
-        let job = match recv.recv() {
+        let ChunkJob { id, job } = match recv.recv() {
             Ok(job) => job,
             Err(err) => {
                 eprintln!("{:?}: {:?}", thread::current().id(), err);
@@ -31,25 +36,29 @@ pub fn launch(
             }
         };
 
+        if id <= job_cutoff_id.load(Ordering::Relaxed) {
+            continue;
+        }
+
         let result = match job {
-            ChunkJob::Mesh { chunk } => {
+            ChunkJobType::Mesh { chunk } => {
                 let buffers = create_mesh(&device, &chunk);
-                ChunkJobResult::Mesh { chunk, buffers }
+                ChunkJobResultType::Mesh { chunk, buffers }
             }
-            ChunkJob::GenerateAndMeshStack { uw } => {
+            ChunkJobType::GenerateAndMeshStack { uw } => {
                 let chunk_stack = Chunk::generate_stack(&noise, uw);
                 let buffers = Box::new(array::from_fn(|v| {
                     create_mesh(&device, &chunk_stack.chunks[v])
                 }));
 
-                ChunkJobResult::GenerateAndMeshStack {
+                ChunkJobResultType::GenerateAndMeshStack {
                     chunk_stack,
                     buffers,
                 }
             }
         };
 
-        send.send(result)
+        send.send(ChunkJobResult { id, result })
             .expect("Couldn't send result to main thread");
     }
 }

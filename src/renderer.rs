@@ -10,7 +10,7 @@ use wgpu::{
     StoreOp, Surface, SurfaceError, Texture, TextureDescriptor, TextureDimension, TextureFormat,
     TextureUsages, TextureView, TextureViewDescriptor,
 };
-use winit::{dpi::PhysicalSize, event::MouseButton};
+use winit::{dpi::PhysicalSize, event::MouseButton, keyboard::KeyCode};
 
 use crate::{
     camera::{
@@ -304,14 +304,19 @@ impl WorldRenderer {
             }
         }
 
-        self.world_loader.load_chunks(
-            &self.device,
-            &self.queue,
-            encoder,
-            &mut self.indirect_draw_buffer,
-            self.player.eye(),
-            updated_chunks,
-        );
+        if input_state.pull_is_pressed(KeyCode::KeyR) {
+            self.world_loader
+                .reload_world(&mut self.indirect_draw_buffer);
+        } else {
+            self.world_loader.load_chunks(
+                &self.device,
+                &self.queue,
+                encoder,
+                &mut self.indirect_draw_buffer,
+                self.player.eye(),
+                updated_chunks,
+            );
+        }
 
         self.block_outline_pipeline.set_outlined_block(
             &self.queue,

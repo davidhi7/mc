@@ -179,6 +179,13 @@ impl<Bucket: DrawCallBucket> IndirectBufferAllocator<Bucket> {
         allocator.draw_count -= 1;
     }
 
+    fn clear(&mut self) {
+        for allocator in self.allocators.values_mut() {
+            allocator.draw_count = 0;
+            allocator.allocator.clear();
+        }
+    }
+
     /// Count of active draw calls
     fn draw_count(&self, bucket: Bucket) -> u64 {
         self.allocators[bucket].draw_count
@@ -263,6 +270,14 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         }
     }
 
+    /// Insert region.
+    ///
+    /// This involves:
+    /// - Allocating the vertex buffer contents
+    /// - Allocating the uniform if not already existing
+    /// - Allocating the indirect draw call
+    ///
+    /// If the draw call is followed by other draw calls of the same bucket, the last draw call is moved into the now free slot to guarantee a continuous sequence of active draw calls.
     fn insert_region(
         &mut self,
         queue: &Queue,
@@ -324,8 +339,8 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
     ///
     /// This involves:
     /// - Deallocating the vertex buffer contents
-    /// - Deallocate the uniform buffer contents if they are not used for another region
-    /// - Deallocate the indirect draw call.
+    /// - Deallocating the uniform buffer contents if they are not used for another region
+    /// - Deallocating the indirect draw call
     ///
     /// If the draw call is followed by other draw calls of the same bucket, the last draw call is moved into the now free slot to guarantee a continuous sequence of active draw calls.
     fn drop_region(
@@ -344,10 +359,6 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
 
         self.decrement_uniform(handle.uniform)
             .expect("Invalid uniform buffer handle associated to dropped draw call");
-
-        // self.uniform_buffer_allocator
-        //     .decrement_counter(draw_call_data.uniform_buffer_handle)
-        //     .expect("Invalid uniform buffer handle associated to dropped draw call");
 
         // If the draw call doesn't own the last indirect/uniform buffer slot, fill the slot with another active draw call of the same bucket
         if draw_call_data.indirect_buffer_handle.handle.0
@@ -500,6 +511,14 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
             dropped_draws: Vec::new(),
             updated_draws: Vec::new(),
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.draw_calls.clear();
+        self.uniforms.clear();
+        self.indirect_buffer_allocator.clear();
+        self.vertex_buffer_allocator.clear();
+        self.uniform_buffer_allocator.clear();
     }
 
     fn submit(

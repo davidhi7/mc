@@ -84,6 +84,10 @@ impl<T: AsBytes> BlockAllocator<T> {
             .ok_or(AllocationError::NoFreeSegmentAvailable)?;
         Ok(BlockHandle(index as u64, PhantomData))
     }
+
+    pub fn clear(&mut self) {
+        self.blocks_allocated = vec![false; self.blocks_allocated.len()].into_boxed_slice();
+    }
 }
 
 pub struct CountedBlockAllocator<T: AsBytes> {
@@ -146,6 +150,10 @@ impl<T: AsBytes> CountedBlockAllocator<T> {
         *count -= 1;
 
         Ok(if *count > 0 { Some(*count) } else { None })
+    }
+
+    pub fn clear(&mut self) {
+        self.blocks = vec![0; self.blocks.len()].into_boxed_slice();
     }
 }
 

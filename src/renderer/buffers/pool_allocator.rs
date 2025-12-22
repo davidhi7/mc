@@ -146,6 +146,18 @@ impl PoolAllocator {
         self.size = new_size;
     }
 
+    pub fn clear(&mut self) {
+        self.occupied_segments.clear();
+        self.free_segments.clear();
+        self.free_segments.insert(
+            0,
+            SegmentHandle {
+                offset: 0,
+                size: self.size,
+            },
+        );
+    }
+
     pub fn size(&self) -> u64 {
         self.size
     }
