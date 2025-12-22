@@ -119,28 +119,33 @@ impl<T: AsBytes> CountedBlockAllocator<T> {
         Ok(CountedBlockHandle(index as u64, PhantomData))
     }
 
+    /// Increment the counter, returning the new counter value or Err, if the handle is invalid.
     pub fn increment_counter(
         &mut self,
         handle: CountedBlockHandle<T>,
-    ) -> Result<(), AllocationError> {
+    ) -> Result<u32, AllocationError> {
         if self.blocks[handle.0 as usize] == 0 {
             return Err(AllocationError::InvalidHandle);
         }
 
-        self.blocks[handle.0 as usize] += 1;
-        Ok(())
+        let count = &mut self.blocks[handle.0 as usize];
+        *count += 1;
+        Ok(*count)
     }
 
+    /// Decrement the counter, returing the new counter value or None if the block is freed due to the counter reaching 0. Returns Err if the handle is invalid.
     pub fn decrement_counter(
         &mut self,
         handle: CountedBlockHandle<T>,
-    ) -> Result<(), AllocationError> {
+    ) -> Result<Option<u32>, AllocationError> {
         if self.blocks[handle.0 as usize] == 0 {
             return Err(AllocationError::InvalidHandle);
         }
 
-        self.blocks[handle.0 as usize] -= 1;
-        Ok(())
+        let count = &mut self.blocks[handle.0 as usize];
+        *count -= 1;
+
+        Ok(if *count > 0 { Some(*count) } else { None })
     }
 }
 

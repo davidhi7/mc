@@ -26,7 +26,14 @@ use crate::world::chunk::ChunkUVW;
 // EnumArray<T> is implemented if T derives Enum
 #[expect(private_bounds)]
 pub trait DrawCallBucket:
-    Copy + Debug + Hash + Eq + Ord + EnumArray<u64> + EnumArray<IndirectBufferConfig>
+    Copy
+    + Debug
+    + Hash
+    + Eq
+    + Ord
+    + EnumArray<u64>
+    + EnumArray<IndirectBufferConfig>
+    + EnumArray<HashMap<ChunkUniform, DrawCallData<Self>>>
 {
     /// Size of a single instance, in bytes.
     fn instance_size(self) -> u64;
@@ -62,6 +69,7 @@ pub struct DrawCallData<Bucket: DrawCallBucket> {
     indirect_buffer_handle: IndirectBufferHandle<Bucket>,
     vertex_buffer_handle: SegmentHandle,
     uniform_buffer_handle: CountedBlockHandle<ChunkUniform>,
+    instance_count: u32,
 }
 
 /// Data for a prepared but not yet written draw call.
@@ -171,18 +179,22 @@ impl<Bucket: DrawCallBucket> IndirectBufferAllocator<Bucket> {
         allocator.draw_count -= 1;
     }
 
+    /// Count of active draw calls
     fn draw_count(&self, bucket: Bucket) -> u64 {
         self.allocators[bucket].draw_count
     }
 
+    /// Size of indirect buffer segment for one bucket type, in bytes.
     fn block_segment_size(&self) -> u64 {
         self.chunks_per_bucket * std::mem::size_of::<DrawIndirectArgs>() as u64
     }
 
+    /// Offset measured in draw calls.
     fn offset_draw_calls(&self, bucket: Bucket) -> u64 {
         self.chunks_per_bucket * bucket.into_usize() as u64
     }
 
+    /// Offset measured in bytes.
     fn offset(&self, bucket: Bucket) -> u64 {
         self.offset_draw_calls(bucket) * std::mem::size_of::<DrawIndirectArgs>() as u64
     }
@@ -206,7 +218,8 @@ pub struct IndirectBufferManager<Bucket: DrawCallBucket> {
     indirect_buffer_allocator: IndirectBufferAllocator<Bucket>,
     vertex_buffer_allocator: PoolAllocator,
     uniform_buffer_allocator: CountedBlockAllocator<ChunkUniform>,
-    draw_calls: HashMap<DrawCallHandle<Bucket>, DrawCallData<Bucket>>,
+    draw_calls: EnumMap<Bucket, HashMap<ChunkUniform, DrawCallData<Bucket>>>,
+    uniforms: HashMap<ChunkUniform, CountedBlockHandle<ChunkUniform>>,
 }
 
 impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
@@ -245,7 +258,8 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
             ),
             vertex_buffer_allocator: PoolAllocator::new(vertex_buffer_size),
             uniform_buffer_allocator: CountedBlockAllocator::new(chunks_per_bucket),
-            draw_calls: HashMap::new(),
+            draw_calls: EnumMap::default(),
+            uniforms: HashMap::default(),
         }
     }
 
@@ -271,6 +285,7 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
             bucket,
             insertion_task.vertex_buffer_segment,
             uniform_buffer_handle,
+            instance_count,
         );
 
         let indirect_buffer_handle = match existing_buffer_handle {
@@ -292,12 +307,13 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
                 }),
         };
 
-        self.draw_calls.insert(
-            DrawCallHandle { bucket, uniform },
+        self.draw_calls[bucket].insert(
+            uniform,
             DrawCallData {
                 indirect_buffer_handle,
                 vertex_buffer_handle: insertion_task.vertex_buffer_segment,
                 uniform_buffer_handle,
+                instance_count,
             },
         );
 
@@ -318,18 +334,20 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         command_encoder: &mut CommandEncoder,
         handle: DrawCallHandle<Bucket>,
     ) {
-        let draw_call_data = self
-            .draw_calls
-            .remove(&handle)
+        let draw_call_data = self.draw_calls[handle.bucket]
+            .remove(&handle.uniform)
             .expect("Attempted to drop invalid draw call");
 
         self.vertex_buffer_allocator
             .deallocate(draw_call_data.vertex_buffer_handle)
             .expect("Invalid vertex buffer handle associated to dropped draw call");
 
-        self.uniform_buffer_allocator
-            .decrement_counter(draw_call_data.uniform_buffer_handle)
+        self.decrement_uniform(handle.uniform)
             .expect("Invalid uniform buffer handle associated to dropped draw call");
+
+        // self.uniform_buffer_allocator
+        //     .decrement_counter(draw_call_data.uniform_buffer_handle)
+        //     .expect("Invalid uniform buffer handle associated to dropped draw call");
 
         // If the draw call doesn't own the last indirect/uniform buffer slot, fill the slot with another active draw call of the same bucket
         if draw_call_data.indirect_buffer_handle.handle.0
@@ -337,10 +355,8 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         {
             // Perform swap-and-remove
             // Find draw call in the same bucket with highest indirect buffer slot
-            let (_, last_draw_call_data) = self
-                .draw_calls
+            let (_, last_draw_call_data) = self.draw_calls[handle.bucket]
                 .iter_mut()
-                .filter(|(key, _)| key.bucket == handle.bucket)
                 .max_by_key(|(_, data)| data.indirect_buffer_handle.handle.0)
                 .expect("There should be at least one active draw call remaining");
 
@@ -353,7 +369,8 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
                     &Self::construct_draw_indirect_args(
                         handle.bucket,
                         last_draw_call_data.vertex_buffer_handle,
-                        draw_call_data.uniform_buffer_handle,
+                        last_draw_call_data.uniform_buffer_handle,
+                        last_draw_call_data.instance_count,
                     ),
                 )
                 .expect("Existing indirect buffer handle should still be valid");
@@ -407,20 +424,33 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
     ) -> Result<CountedBlockHandle<ChunkUniform>, AllocationError> {
-        if let Some((_, draw_call)) = self
-            .draw_calls
-            .iter()
-            .find(|(handle, _)| handle.uniform == uniform)
-        {
-            let handle = draw_call.uniform_buffer_handle;
+        if let Some(&handle) = self.uniforms.get(&uniform) {
             self.uniform_buffer_allocator.increment_counter(handle)?;
             Ok(handle)
         } else {
-            self.uniform_buffer_allocator.allocate_first_free_block(
+            let handle = self.uniform_buffer_allocator.allocate_first_free_block(
                 &mut BufferMemoryTarget::new(&self.uniform_buffer, queue, command_encoder),
                 &uniform,
-            )
+            )?;
+            self.uniforms.insert(uniform, handle);
+            Ok(handle)
         }
+    }
+
+    fn decrement_uniform(&mut self, uniform: ChunkUniform) -> Result<(), AllocationError> {
+        let handle = self
+            .uniforms
+            .get(&uniform)
+            .expect("Uniform not currently stored in buffer");
+        if self
+            .uniform_buffer_allocator
+            .decrement_counter(*handle)?
+            .is_none()
+        {
+            self.uniforms.remove(&uniform);
+        }
+
+        Ok(())
     }
 
     fn replace_region_vertex_data(
@@ -436,9 +466,8 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         let insertion_task =
             self.reserve_from_vertex_buffer(draw_call.bucket, vertex_buffer, instance_count);
 
-        let draw_call_data = self
-            .draw_calls
-            .get_mut(&draw_call)
+        let draw_call_data = self.draw_calls[draw_call.bucket]
+            .get_mut(&draw_call.uniform)
             .expect("Invalid draw call provided for replace");
 
         self.vertex_buffer_allocator
@@ -452,8 +481,9 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
                 &draw_call_data.indirect_buffer_handle,
                 &Self::construct_draw_indirect_args(
                     draw_call.bucket,
-                    draw_call_data.vertex_buffer_handle,
+                    insertion_task.vertex_buffer_segment,
                     draw_call_data.uniform_buffer_handle,
+                    instance_count,
                 ),
             )
             .expect("Invalid indirect buffer handle provided");
@@ -512,9 +542,8 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
             match entry {
                 itertools::EitherOrBoth::Both(new_drawcall, old_handle) => {
                     if new_drawcall.bucket == old_handle.bucket {
-                        let draw_call_data = self
-                            .draw_calls
-                            .remove(&old_handle)
+                        let draw_call_data = self.draw_calls[old_handle.bucket]
+                            .remove(&old_handle.uniform)
                             .expect("Invalid or inactive draw call handle provided for drop");
 
                         let DrawCallData {
@@ -599,10 +628,12 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         &self.indirect_buffer_allocator.buffer
     }
 
+    /// Offset measured in bytes.
     pub fn indirect_buffer_offset(&self, bucket: Bucket) -> u64 {
         self.indirect_buffer_allocator.offset(bucket)
     }
 
+    /// Count of active draw calls
     pub fn draw_count(&self, bucket: Bucket) -> u64 {
         self.indirect_buffer_allocator.draw_count(bucket)
     }
@@ -611,10 +642,11 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         bucket: Bucket,
         vertex_buffer_segment: SegmentHandle,
         uniform_buffer_handle: CountedBlockHandle<T>,
+        instance_count: u32,
     ) -> DrawIndirectArgs {
         DrawIndirectArgs {
             vertex_count: QUAD_VERTEX_COUNT,
-            instance_count: (vertex_buffer_segment.size / bucket.instance_size()) as u32,
+            instance_count,
             first_vertex: QUAD_VERTEX_COUNT * uniform_buffer_handle.0 as u32,
             first_instance: (vertex_buffer_segment.offset / bucket.instance_size()) as u32,
         }
@@ -641,13 +673,9 @@ impl<'a, Bucket: DrawCallBucket> IndirectBufferUpdatePass<'a, Bucket> {
     ) -> DrawCallHandle<Bucket> {
         let uniform = uniform.into();
         let handle = DrawCallHandle { uniform, bucket };
-        if self.owner.draw_calls.contains_key(&handle) {
+        if self.owner.draw_calls[handle.bucket].contains_key(&handle.uniform) {
             panic!("Region prepared for insertion conflicts with an already existing region");
         }
-
-        // if bucket.into_usize() != 1 {
-        //     return handle;
-        // }
 
         self.new_draws.push(DrawCallCreationArgs {
             bucket,
@@ -661,10 +689,7 @@ impl<'a, Bucket: DrawCallBucket> IndirectBufferUpdatePass<'a, Bucket> {
 
     /// Prepare to drop a region.
     pub fn prepare_drop_region(&mut self, handle: DrawCallHandle<Bucket>) {
-        // if handle.bucket.into_usize() != 1 {
-        //     return;
-        // }
-        if !self.owner.draw_calls.contains_key(&handle) {
+        if !self.owner.draw_calls[handle.bucket].contains_key(&handle.uniform) {
             panic!("Invalid draw call prepared for drop");
         };
         self.dropped_draws.push(handle);
@@ -679,10 +704,7 @@ impl<'a, Bucket: DrawCallBucket> IndirectBufferUpdatePass<'a, Bucket> {
         vertex_buffer: Buffer,
         instance_count: u32,
     ) {
-        // if handle.bucket.into_usize() != 1 {
-        //     return;
-        // }
-        if !self.owner.draw_calls.contains_key(&handle) {
+        if !self.owner.draw_calls[handle.bucket].contains_key(&handle.uniform) {
             panic!("Invalid draw call prepared for replace");
         };
         self.updated_draws.push(DrawCallUpdateArgs {
