@@ -9,10 +9,10 @@ use crate::world::{
 };
 use glam::IVec3;
 use itertools::Itertools;
-use noise::Simplex;
 
 pub mod blocks;
 pub mod chunk;
+pub mod world_gen;
 pub mod world_loader;
 
 pub trait LookupBlock {
@@ -31,16 +31,14 @@ pub trait LookupBlock {
 }
 
 pub struct World {
-    noise: Simplex,
     /// Invariant: If this HashMap contains chunks a chunk, it always contains all chunks of the same stack.
     chunks: HashMap<ChunkUVW, Arc<Chunk>>,
     chunk_stacks: HashSet<ChunkUW>,
 }
 
 impl World {
-    pub fn new(seed: u32) -> Self {
+    pub fn new() -> Self {
         World {
-            noise: Simplex::new(seed),
             chunks: HashMap::new(),
             chunk_stacks: HashSet::new(),
         }

@@ -1,5 +1,6 @@
 use glam::{IVec2, IVec3, Vec3};
 
+pub mod nd_array;
 pub mod ray_caster;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

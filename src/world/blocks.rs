@@ -1,5 +1,7 @@
 use glam::{IVec3, Vec3};
 
+use crate::texture::Texture;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockPhysicsType {
     Solid,
@@ -10,7 +12,11 @@ pub enum BlockPhysicsType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockRenderType {
     Opaque,
-    Transparent,
+    Transparent {
+        /// If multiple identical blocks are adjacent to each other, this sets whether faces adjacent to the same block are culled.
+        /// Faces are never culled when adjacent to a different transparent or any invisible block.
+        interior_face_culling: bool,
+    },
     Invisible,
 }
 
@@ -26,21 +32,40 @@ pub enum Block {
     Andesite,
     Snow,
     Water,
+    LogOak,
+    LeavesOak,
+    LogSpruce,
+    LeavesSpruce,
 }
 
 impl Block {
-    pub fn texture_index(&self) -> u8 {
-        match self {
+    pub fn texture_index(&self, face: Direction) -> u8 {
+        let texture = match self {
             Block::Air => panic!("{:?} doesn't feature a texture", self),
-            Block::Stone => 0,
-            Block::Grass => 1,
-            Block::Dirt => 2,
-            Block::Sand => 3,
-            Block::Gravel => 4,
-            Block::Andesite => 5,
-            Block::Snow => 6,
-            Block::Water => 6,
-        }
+            Block::Stone => Texture::Stone,
+            Block::Grass => match face {
+                Direction::Y => Texture::GrassBlockTop,
+                Direction::NegY => Texture::Dirt,
+                _ => Texture::GrassBlockTop,
+            },
+            Block::Dirt => Texture::Dirt,
+            Block::Sand => Texture::Sand,
+            Block::Gravel => Texture::Gravel,
+            Block::Andesite => Texture::Andesite,
+            Block::Snow => Texture::Snow,
+            Block::Water => Texture::Water,
+            Block::LogOak => match face {
+                Direction::NegY | Direction::Y => Texture::LogOakTopBottom,
+                _ => Texture::LogOakSide,
+            },
+            Block::LogSpruce => match face {
+                Direction::NegY | Direction::Y => Texture::LogSpruceTopBottom,
+                _ => Texture::LogSpruceSide,
+            },
+            Block::LeavesOak => Texture::LeavesOak,
+            Block::LeavesSpruce => Texture::LeavesSpruce,
+        };
+        texture as u8
     }
 
     pub fn physics_type(&self) -> BlockPhysicsType {
@@ -54,7 +79,12 @@ impl Block {
     pub fn render_type(&self) -> BlockRenderType {
         match self {
             Block::Air => BlockRenderType::Invisible,
-            Block::Water => BlockRenderType::Transparent,
+            Block::Water => BlockRenderType::Transparent {
+                interior_face_culling: true,
+            },
+            Block::LeavesOak | Block::LeavesSpruce => BlockRenderType::Transparent {
+                interior_face_culling: false,
+            },
             _ => BlockRenderType::Opaque,
         }
     }

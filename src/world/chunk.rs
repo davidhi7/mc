@@ -1,7 +1,6 @@
-use std::{array, sync::RwLock};
+use std::{panic, sync::RwLock};
 
 use glam::{IVec2, IVec3, ivec2, ivec3};
-use noise::NoiseFn;
 
 use crate::{
     renderer::vertex_buffer::{QuadInstance, TransparentQuadInstance},
@@ -12,15 +11,12 @@ pub const CHUNK_WIDTH_BITS: u32 = 5;
 pub const CHUNK_WIDTH: usize = 2_usize.pow(CHUNK_WIDTH_BITS);
 pub const CHUNK_WIDTH_I32: i32 = CHUNK_WIDTH as i32;
 
-const CHUNK_WIDTH_P: usize = CHUNK_WIDTH + 2;
-const CHUNK_WIDTH_P_I32: i32 = CHUNK_WIDTH_P as i32;
+pub const CHUNK_WIDTH_P: usize = CHUNK_WIDTH + 2;
+pub const CHUNK_WIDTH_P_I32: i32 = CHUNK_WIDTH_P as i32;
 
 pub const VERTICAL_CHUNK_COUNT: usize = 4;
 
 pub const WORLD_HEIGHT: usize = CHUNK_WIDTH * VERTICAL_CHUNK_COUNT;
-
-const MIN_HEIGHT: usize = 8;
-const SEA_LEVEL: usize = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkUW {
@@ -94,6 +90,34 @@ impl ChunkStack {
     pub fn validate_chunk_v(v: i32) -> bool {
         v >= 0 && v < VERTICAL_CHUNK_COUNT as i32
     }
+
+    pub fn insert(&mut self, pos: IVec3, block: Block) {
+        let y = pos.y % CHUNK_WIDTH_I32;
+        let v = pos.y as usize / CHUNK_WIDTH;
+
+        if !Self::validate_chunk_v(v as i32) {
+            panic!("Invalid vertical chunk component");
+        }
+
+        self.chunks[v].set_including_padding(pos.with_y(y), block);
+
+        if y == 0 && v > 0 {
+            self.chunks[v - 1].set_including_padding(pos.with_y(CHUNK_WIDTH_I32), block);
+        } else if y == CHUNK_WIDTH_I32 - 1 && v < VERTICAL_CHUNK_COUNT - 1 {
+            self.chunks[v + 1].set_including_padding(pos.with_y(-1), block);
+        }
+    }
+
+    pub fn get(&self, pos: IVec3) -> Block {
+        let y = pos.y % CHUNK_WIDTH_I32;
+        let v = pos.y as usize / CHUNK_WIDTH;
+
+        if !Self::validate_chunk_v(v as i32) {
+            panic!("Invalid vertical chunk component");
+        }
+
+        self.chunks[v].get_including_padding(pos.with_y(y))
+    }
 }
 
 pub struct Chunk {
@@ -102,67 +126,10 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn generate_stack(noise: &impl NoiseFn<f64, 2>, uw: ChunkUW) -> ChunkStack {
-        const TOTAL_BLOCK_COUNT: usize = CHUNK_WIDTH_P.pow(3);
-
-        let chunks: [Chunk; VERTICAL_CHUNK_COUNT] = array::from_fn(|v| Chunk {
-            uvw: uw.to_uvw(v as i32),
-            data: RwLock::new(vec![Block::Air; TOTAL_BLOCK_COUNT].into_boxed_slice()),
-        });
-
-        let mut chunk_stack = ChunkStack { uw, chunks };
-
-        for x in (-1)..CHUNK_WIDTH_I32 + 1 {
-            for z in (-1)..CHUNK_WIDTH_I32 + 1 {
-                let nx = uw.u as f64 + (x as f64 / CHUNK_WIDTH as f64) - 0.5;
-                let nz = uw.w as f64 + (z as f64 / CHUNK_WIDTH as f64) - 0.5;
-
-                let mut height = noise.get([0.3 * nx, 0.3 * nz])
-                    + 0.5 * noise.get([nx, nz])
-                    + 0.25 * noise.get([3.0 * nx, 3.0 * nz]);
-                height /= 1.75 * 2.0;
-                height += 0.5;
-                height = height.powf(2.5 * (2.0 + noise.get([nx / 10.0, nx / 10.0])));
-                height *= (WORLD_HEIGHT - MIN_HEIGHT - 1) as f64;
-                // Always have a height >= MIN_HEIGHT
-                let height = height.round() as usize + MIN_HEIGHT;
-
-                let mut block_array = Vec::new();
-                block_array.push((0..height, Block::Stone));
-                if height < SEA_LEVEL {
-                    block_array.push((height..height + 1, Block::Sand));
-                    block_array.push((height + 1..SEA_LEVEL, Block::Water));
-                } else {
-                    block_array.push((height..height + 1, Block::Grass));
-                }
-
-                for (range, block) in block_array {
-                    for y in range {
-                        Chunk::insert_into_chunk_stack(&mut chunk_stack, x, y, z, block);
-                    }
-                }
-            }
-        }
-
-        chunk_stack
-    }
-
-    fn insert_into_chunk_stack(
-        chunk_stack: &mut ChunkStack,
-        x: i32,
-        global_y: usize,
-        z: i32,
-        block: Block,
-    ) {
-        let y = global_y % CHUNK_WIDTH;
-        let v = global_y / CHUNK_WIDTH;
-
-        chunk_stack.chunks[v].set_including_padding(ivec3(x, y as i32, z), block);
-
-        if y == 0 && v > 0 {
-            chunk_stack.chunks[v - 1].set_including_padding(ivec3(x, CHUNK_WIDTH_I32, z), block);
-        } else if y == CHUNK_WIDTH - 1 && v < VERTICAL_CHUNK_COUNT - 1 {
-            chunk_stack.chunks[v + 1].set_including_padding(ivec3(x, -1, z), block);
+    pub fn empty(uvw: ChunkUVW) -> Self {
+        Chunk {
+            uvw,
+            data: RwLock::new(vec![Block::Air; CHUNK_WIDTH_P.pow(3)].into_boxed_slice()),
         }
     }
 
@@ -245,32 +212,31 @@ impl Chunk {
 
                     let common_packed_bits: u32 = x as u32
                         | ((y as u32) << CHUNK_WIDTH_BITS)
-                        | ((z as u32) << (CHUNK_WIDTH_BITS * 2))
-                        | ((block.texture_index() as u32) << (CHUNK_WIDTH_BITS * 3));
+                        | ((z as u32) << (CHUNK_WIDTH_BITS * 2));
 
                     for direction in Direction::iter() {
                         if !Chunk::is_face_visible(
-                            block.render_type(),
-                            self.get_including_padding(coords + direction.get_unit_ivec())
-                                .render_type(),
+                            block,
+                            self.get_including_padding(coords + direction.get_unit_ivec()),
                         ) {
                             continue;
                         }
 
-                        let attributes =
-                            common_packed_bits | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
+                        let attributes = common_packed_bits
+                            | ((block.texture_index(direction) as u32) << (CHUNK_WIDTH_BITS * 3))
+                            | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
-                        match block.render_type() {
-                            BlockRenderType::Opaque => {
+                        match block {
+                            Block::Water => {
+                                transparent_instances.push(TransparentQuadInstance { attributes });
+                            }
+                            Block::Air => unreachable!(),
+                            _ => {
                                 solid_instances.push(QuadInstance {
                                     attributes,
                                     ao_attributes: self.get_ao_attributes(coords, direction),
                                 });
                             }
-                            BlockRenderType::Transparent => {
-                                transparent_instances.push(TransparentQuadInstance { attributes });
-                            }
-                            BlockRenderType::Invisible => unreachable!(),
                         };
                     }
                 }
@@ -280,17 +246,30 @@ impl Chunk {
         (solid_instances, transparent_instances)
     }
 
-    fn is_face_visible(block: BlockRenderType, adjacent_block: BlockRenderType) -> bool {
+    /// Returns true if `block`'s face that is adjacent to `adjacent_block`'s face is visible.
+    fn is_face_visible(block: Block, adjacent_block: Block) -> bool {
         // If the block is solid, all sides adjacent to transparent or invisible blocks are visible
         // If the block is transparent, only sides adjacent to transparent blocks are visible
-        match block {
+        match block.render_type() {
+            // If block is invisible, its faces are by definition never visible
             BlockRenderType::Invisible => false,
-            BlockRenderType::Opaque => match adjacent_block {
+            // If block is opaque: it is visible only if the adjacent block is not solid
+            BlockRenderType::Opaque => match adjacent_block.render_type() {
                 BlockRenderType::Opaque => false,
-                BlockRenderType::Transparent | BlockRenderType::Invisible => true,
+                BlockRenderType::Transparent { .. } | BlockRenderType::Invisible => true,
             },
-            BlockRenderType::Transparent => match adjacent_block {
-                BlockRenderType::Opaque | BlockRenderType::Transparent => false,
+            // If block is transparent ...
+            BlockRenderType::Transparent {
+                interior_face_culling,
+            } => match adjacent_block.render_type() {
+                // and adjacent block is solid, don't render
+                BlockRenderType::Opaque => false,
+                // and adjacent block is also transparent: render if the adjacent block is of a different type
+                // or interior faces adjacent to the identical blocks are not configured to be culled
+                BlockRenderType::Transparent { .. } => {
+                    block != adjacent_block || !interior_face_culling
+                }
+                // render always if adjacent block is invisible
                 BlockRenderType::Invisible => true,
             },
         }

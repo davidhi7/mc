@@ -89,14 +89,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let lighting_factor = 1.0 - in.ao_intensity * 0.3;
 
     var frag_color = textureSample(textures[in.tex_index], texture_sampler, in.tex_coordinates);
-
-    // Hack to render grayscale grass texture green
-    if in.tex_index == 1 {
-        // Color for minecraft foreest biome
-        // Convert sRGB to linear RGB color
-        let grass_color = pow(vec3f(0.47, 0.75, 0.35), vec3f(2.2));
-        frag_color = frag_color * vec4f(grass_color, 1.0);
+    
+    if frag_color.w < 0.1 {
+        discard;
     }
+
+    // Hack to render grayscale grass/leaves textures green
+    var color_multiplier = vec3f(1.0, 1.0, 1.0);
+    if in.tex_index == 1 {
+        // Color for minecraft forest biome
+        color_multiplier = vec3f(0.47, 0.75, 0.35);
+    } else if in.tex_index == 12 {
+        // Oak leaves, random color
+        color_multiplier = vec3f(0.243, 0.569, 0.208);
+    } else if in.tex_index == 13 {
+        // Spruce leves, random color
+        color_multiplier = vec3f(0.216, 0.439, 0.298);
+    }
+    // Convert sRGB to linear RGB color
+    color_multiplier = pow(color_multiplier, vec3f(2.2));
+    frag_color = frag_color * vec4f(color_multiplier, 1.0);
 
     return lighting_factor * frag_color;
 }

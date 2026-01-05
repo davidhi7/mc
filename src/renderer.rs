@@ -66,7 +66,7 @@ impl Renderer {
             queue.clone(),
             surface_size,
             surface_format,
-            World::new(0),
+            World::new(),
         );
 
         Self {
@@ -176,7 +176,7 @@ impl WorldRenderer {
                 z_near: 0.1,
                 z_far: 1000.0,
             },
-            vec3(177.0, 50.60, 142.1),
+            vec3(177.0, 256.60, 142.1),
             Vec3::Z,
         );
 
@@ -292,7 +292,7 @@ impl WorldRenderer {
                     // right mouse pressed
                     (
                         looked_at_block_coords + direction.get_unit_ivec(),
-                        Block::Gravel,
+                        Block::LeavesOak,
                     )
                 };
 

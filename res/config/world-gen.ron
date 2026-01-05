@@ -1,0 +1,11 @@
+WorldGenSettings(
+    global_seed: 0,
+    sea_level: 32,
+    fbm: (
+        octaves: 4,
+        frequency: 0.12,
+        lacunarity: 2.5,
+        persistance: 0.5,
+        power: 1.85,
+    )
+)

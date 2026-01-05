@@ -1,18 +1,20 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, channel};
+use std::sync::{Arc, RwLock};
 use std::thread::{self};
 
 use glam::{IVec2, IVec3, Vec3, Vec3Swizzles};
 use itertools::Itertools;
+use thiserror::Error;
 use wgpu::{Buffer, CommandEncoder, Device, Queue};
 
 use crate::renderer::indirect_buffer_manager::{
     DrawCallBucket, DrawCallHandle, IndirectBufferUpdatePass,
 };
 use crate::world::chunk::Chunk;
+use crate::world::world_gen::WorldGenSettings;
 use crate::world::world_loader::rolling_grid::RollingGrid;
 use crate::{
     renderer::{
@@ -131,6 +133,7 @@ pub struct WorldLoader {
     grid: RollingGrid<ChunkState>,
     ongoing_chunk_generation: HashSet<ChunkUW>,
     ongoing_chunk_meshing: HashSet<ChunkUVW>,
+    world_gen_settings: Arc<RwLock<WorldGenSettings>>,
 }
 
 impl WorldLoader {
@@ -143,18 +146,27 @@ impl WorldLoader {
     ) -> Self {
         let mut job_counter = JobCounter::new();
         let job_id_cutoff = Arc::new(AtomicU64::new(job_counter.next()));
+        let world_gen_settings = Arc::new(RwLock::new(
+            load_worldgen_settings().expect("Failed to load worldgen settings"),
+        ));
 
         let mut worker_pool = Vec::new();
         let (worker_send, worker_recv) = mpsc::channel();
         for _ in 0..thread_count {
             let (sender, receiver) = channel();
             thread::spawn({
-                let noise = world.noise;
                 let device = device.clone();
                 let sender = worker_send.clone();
                 let job_cutoff_id = Arc::clone(&job_id_cutoff);
+                let world_gen_settings = Arc::clone(&world_gen_settings);
                 move || {
-                    worker::launch(receiver, sender.clone(), job_cutoff_id, device, noise);
+                    worker::launch(
+                        receiver,
+                        sender.clone(),
+                        job_cutoff_id,
+                        world_gen_settings,
+                        device,
+                    );
                 }
             });
 
@@ -189,6 +201,7 @@ impl WorldLoader {
             grid,
             ongoing_chunk_generation,
             ongoing_chunk_meshing,
+            world_gen_settings,
         };
 
         instance.distribute_jobs(jobs);
@@ -451,6 +464,10 @@ impl WorldLoader {
         );
         self.ongoing_chunk_generation.clear();
         self.ongoing_chunk_meshing.clear();
+        match load_worldgen_settings() {
+            Ok(settings) => *self.world_gen_settings.write().unwrap() = settings,
+            Err(err) => log::warn!("Failed to parse worldgen settings: {err}"),
+        }
 
         let mut jobs = Vec::new();
         self.grid.reset(update_rolling_grid(
@@ -500,6 +517,19 @@ fn update_rolling_grid(
 
         ChunkState::BufferingInProcess
     }
+}
+
+#[derive(Error, Debug)]
+enum SettingsLoadingError {
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+    #[error(transparent)]
+    ParseError(#[from] ron::error::SpannedError),
+}
+
+fn load_worldgen_settings() -> Result<WorldGenSettings, SettingsLoadingError> {
+    let contents = std::fs::read_to_string("res/config/world-gen.ron")?;
+    Ok(ron::from_str(&contents)?)
 }
 
 #[cfg(test)]

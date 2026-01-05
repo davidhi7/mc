@@ -9,22 +9,73 @@ use wgpu::{
 
 const TEXTURE_DIR: &str = "res/assets/minecraft/textures/";
 
-const TEXTURES: [&str; 7] = [
-    "block/stone.png",
-    "block/grass_block_top.png",
-    "block/dirt.png",
-    "block/sand.png",
-    "block/gravel.png",
-    "block/andesite.png",
-    "block/snow.png",
-];
+#[repr(u8)]
+pub enum Texture {
+    Stone,
+    GrassBlockTop,
+    Dirt,
+    Sand,
+    Gravel,
+    Andesite,
+    Snow,
+    Water,
+    LogOakTopBottom,
+    LogOakSide,
+    LogSpruceTopBottom,
+    LogSpruceSide,
+    LeavesOak,
+    LeavesSpruce,
+}
+
+impl Texture {
+    fn texture_path(&self) -> &'static str {
+        match self {
+            Texture::Stone => "block/stone.png",
+            Texture::GrassBlockTop => "block/grass_block_top.png",
+            Texture::Dirt => "block/dirt.png",
+            Texture::Sand => "block/sand.png",
+            Texture::Gravel => "block/gravel.png",
+            Texture::Andesite => "block/andesite.png",
+            Texture::Snow => "block/snow.png",
+            Texture::Water => "block/water_still.png",
+            Texture::LogOakTopBottom => "block/oak_log_top.png",
+            Texture::LogOakSide => "block/oak_log.png",
+            Texture::LogSpruceTopBottom => "block/spruce_log_top.png",
+            Texture::LogSpruceSide => "block/spruce_log.png",
+            Texture::LeavesOak => "block/oak_leaves.png",
+            Texture::LeavesSpruce => "block/spruce_leaves.png",
+        }
+    }
+
+    fn iter() -> impl Iterator<Item = Texture> {
+        [
+            Texture::Stone,
+            Texture::GrassBlockTop,
+            Texture::Dirt,
+            Texture::Sand,
+            Texture::Gravel,
+            Texture::Andesite,
+            Texture::Snow,
+            Texture::Water,
+            Texture::LogOakTopBottom,
+            Texture::LogOakSide,
+            Texture::LogSpruceTopBottom,
+            Texture::LogSpruceSide,
+            Texture::LeavesOak,
+            Texture::LeavesSpruce,
+        ]
+        .into_iter()
+    }
+}
 
 /// Load textures and return texture views
 pub fn load_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<TextureView>> {
     let mut texture_views = Vec::new();
 
-    for file in TEXTURES {
-        let img = image::load_from_memory(fs::read(TEXTURE_DIR.to_owned() + file)?.as_slice())?;
+    for texture in Texture::iter() {
+        let img = image::load_from_memory(
+            fs::read(TEXTURE_DIR.to_owned() + texture.texture_path())?.as_slice(),
+        )?;
         let dimensions = img.dimensions();
         let size = wgpu::Extent3d {
             width: dimensions.0,
@@ -33,7 +84,7 @@ pub fn load_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<T
         };
 
         let texture = device.create_texture(&TextureDescriptor {
-            label: Some(&("texture ".to_owned() + file)),
+            label: Some(&("texture ".to_owned() + texture.texture_path())),
             size,
             mip_level_count: 1,
             sample_count: 1,

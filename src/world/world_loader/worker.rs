@@ -1,7 +1,7 @@
 use std::{
     array,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicU64, Ordering},
         mpsc::{Receiver, Sender},
     },
@@ -9,7 +9,6 @@ use std::{
 };
 
 use enum_map::EnumMap;
-use noise::Simplex;
 use wgpu::{
     Buffer, BufferUsages, Device,
     util::{BufferInitDescriptor, DeviceExt},
@@ -17,6 +16,7 @@ use wgpu::{
 
 use crate::world::{
     chunk::Chunk,
+    world_gen::{self, WorldGenSettings},
     world_loader::{ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, TerrainType},
 };
 
@@ -24,8 +24,8 @@ pub fn launch(
     recv: Receiver<ChunkJob>,
     send: Sender<ChunkJobResult>,
     job_cutoff_id: Arc<AtomicU64>,
+    world_gen_settings: Arc<RwLock<WorldGenSettings>>,
     device: Device,
-    noise: Simplex,
 ) {
     loop {
         let ChunkJob { id, job } = match recv.recv() {
@@ -46,7 +46,7 @@ pub fn launch(
                 ChunkJobResultType::Mesh { chunk, buffers }
             }
             ChunkJobType::GenerateAndMeshStack { uw } => {
-                let chunk_stack = Chunk::generate_stack(&noise, uw);
+                let chunk_stack = world_gen::generate(&world_gen_settings.read().unwrap(), uw);
                 let buffers = Box::new(array::from_fn(|v| {
                     create_mesh(&device, &chunk_stack.chunks[v])
                 }));
