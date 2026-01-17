@@ -1,5 +1,6 @@
 WorldGenSettings(
     global_seed: 0,
+    min_height: 0,
     sea_level: 32,
     fbm: (
         octaves: 4,

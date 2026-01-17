@@ -4,6 +4,7 @@ use std::{
 };
 
 use glam::{Vec3, vec3};
+use smallvec::SmallVec;
 use wgpu::{
     Color, CommandEncoder, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue,
     RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
@@ -176,7 +177,7 @@ impl WorldRenderer {
                 z_near: 0.1,
                 z_far: 1000.0,
             },
-            vec3(177.0, 256.60, 142.1),
+            vec3(177.0, 128., 142.1),
             Vec3::Z,
         );
 
@@ -201,7 +202,14 @@ impl WorldRenderer {
             label: Some("render encoder"),
         });
 
-        world_loader.load_chunks(&device, &queue, &mut encoder, &mut ib, player.eye(), None);
+        world_loader.load_chunks(
+            &device,
+            &queue,
+            &mut encoder,
+            &mut ib,
+            player.eye(),
+            SmallVec::new(),
+        );
 
         queue.submit(iter::once(encoder.finish()));
 
@@ -257,22 +265,22 @@ impl WorldRenderer {
                     input_state,
                     timestep_s,
                     time_s,
-                    &self.world_loader.world,
+                    self.world_loader.world(),
                 );
             });
 
         self.globals.update(
             &self.queue,
             self.player
-                .extrapolate_view_projection(lag_s, &self.world_loader.world),
+                .extrapolate_view_projection(lag_s, self.world_loader.world()),
         );
 
-        let mut updated_chunks = None;
+        let mut updated_blocks = SmallVec::new();
 
         let focused_blocks = block_ray_caster::find_looked_at_blocks(
             self.player.eye(),
             self.player.direction(),
-            &self.world_loader.world,
+            self.world_loader.world(),
         );
 
         if let Some(BlockInfo {
@@ -285,7 +293,7 @@ impl WorldRenderer {
             let right_mouse_pressed = input_state.pull_is_pressed(MouseButton::Right);
 
             if left_mouse_pressed || right_mouse_pressed {
-                let (coords, block) = if left_mouse_pressed {
+                let (pos, block) = if left_mouse_pressed {
                     // if both pressed, mining blocks has a higher priority
                     (looked_at_block_coords, Block::Air)
                 } else {
@@ -296,10 +304,10 @@ impl WorldRenderer {
                     )
                 };
 
-                if !self.player.intersects_block(coords)
+                if !self.player.intersects_block(pos)
                     || block.physics_type() != BlockPhysicsType::Solid
                 {
-                    updated_chunks = Some(self.world_loader.world.replace_block(coords, block));
+                    updated_blocks.push((pos, block));
                 }
             }
         }
@@ -314,7 +322,7 @@ impl WorldRenderer {
                 encoder,
                 &mut self.indirect_draw_buffer,
                 self.player.eye(),
-                updated_chunks,
+                updated_blocks,
             );
         }
 

@@ -21,8 +21,9 @@ pub enum BlockRenderType {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Block {
+    #[default]
     Air,
     Stone,
     Grass,

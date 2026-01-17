@@ -1,18 +1,23 @@
-use std::{panic, sync::RwLock};
+use std::{
+    array, mem,
+    ops::{Index, IndexMut},
+    sync::{Arc, RwLock},
+};
 
-use glam::{IVec2, IVec3, ivec2, ivec3};
+use glam::{IVec2, IVec3, USizeVec3, ivec2, ivec3};
 
 use crate::{
+    math::nd_array::{HyperCubeArray, ShiftedHyperCubeArray},
     renderer::vertex_buffer::{QuadInstance, TransparentQuadInstance},
-    world::blocks::{Block, BlockRenderType, Direction},
+    world::{
+        self, World,
+        blocks::{Block, BlockRenderType, Direction},
+    },
 };
 
 pub const CHUNK_WIDTH_BITS: u32 = 5;
 pub const CHUNK_WIDTH: usize = 2_usize.pow(CHUNK_WIDTH_BITS);
 pub const CHUNK_WIDTH_I32: i32 = CHUNK_WIDTH as i32;
-
-pub const CHUNK_WIDTH_P: usize = CHUNK_WIDTH + 2;
-pub const CHUNK_WIDTH_P_I32: i32 = CHUNK_WIDTH_P as i32;
 
 pub const VERTICAL_CHUNK_COUNT: usize = 4;
 
@@ -82,130 +87,82 @@ impl From<ChunkUVW> for IVec3 {
 }
 
 pub struct ChunkStack {
-    pub uw: ChunkUW,
-    pub chunks: [Chunk; VERTICAL_CHUNK_COUNT],
+    uw: ChunkUW,
+    chunks: [Chunk; VERTICAL_CHUNK_COUNT],
 }
 
 impl ChunkStack {
+    pub fn empty(uw: ChunkUW) -> Self {
+        Self {
+            uw,
+            chunks: array::from_fn(|v| Chunk::empty(uw.to_uvw(v as i32))),
+        }
+    }
+
+    pub fn uw(&self) -> ChunkUW {
+        self.uw
+    }
+
+    pub fn get_chunk(&self, v: i32) -> Option<&Chunk> {
+        if !Self::validate_chunk_v(v) {
+            return None;
+        }
+
+        Some(&self.chunks[v as usize])
+    }
+
     pub fn validate_chunk_v(v: i32) -> bool {
-        v >= 0 && v < VERTICAL_CHUNK_COUNT as i32
-    }
-
-    pub fn insert(&mut self, pos: IVec3, block: Block) {
-        let y = pos.y % CHUNK_WIDTH_I32;
-        let v = pos.y as usize / CHUNK_WIDTH;
-
-        if !Self::validate_chunk_v(v as i32) {
-            panic!("Invalid vertical chunk component");
-        }
-
-        self.chunks[v].set_including_padding(pos.with_y(y), block);
-
-        if y == 0 && v > 0 {
-            self.chunks[v - 1].set_including_padding(pos.with_y(CHUNK_WIDTH_I32), block);
-        } else if y == CHUNK_WIDTH_I32 - 1 && v < VERTICAL_CHUNK_COUNT - 1 {
-            self.chunks[v + 1].set_including_padding(pos.with_y(-1), block);
-        }
-    }
-
-    pub fn get(&self, pos: IVec3) -> Block {
-        let y = pos.y % CHUNK_WIDTH_I32;
-        let v = pos.y as usize / CHUNK_WIDTH;
-
-        if !Self::validate_chunk_v(v as i32) {
-            panic!("Invalid vertical chunk component");
-        }
-
-        self.chunks[v].get_including_padding(pos.with_y(y))
+        (0..VERTICAL_CHUNK_COUNT as i32).contains(&v)
     }
 }
 
-pub struct Chunk {
-    uvw: ChunkUVW,
-    data: RwLock<Box<[Block]>>,
+// TODO indexmut?
+#[derive(Clone)]
+pub struct ChunkMeshingContext {
+    pub neighbors: ShiftedHyperCubeArray<2, 3, Arc<ChunkStack>>,
 }
 
-impl Chunk {
-    pub fn empty(uvw: ChunkUVW) -> Self {
-        Chunk {
-            uvw,
-            data: RwLock::new(vec![Block::Air; CHUNK_WIDTH_P.pow(3)].into_boxed_slice()),
-        }
+impl ChunkMeshingContext {
+    // TODO not panic
+    pub fn create(world: &World, uw: ChunkUW) -> Self {
+        // array is shifted so that center chunk is in the center, not the
+        let neighbors =
+            ShiftedHyperCubeArray::from_fn([uw.u as isize - 1, uw.w as isize - 1], |uw| {
+                Arc::clone(
+                    world
+                        .get_chunk_stack(ChunkUW {
+                            u: uw[0] as i32,
+                            w: uw[1] as i32,
+                        })
+                        .unwrap(),
+                )
+            });
+
+        Self { neighbors }
     }
 
-    fn validate_chunk_coordinates(block: IVec3) -> bool {
-        let IVec3 { x, y, z } = block;
-        let range = 0..CHUNK_WIDTH_I32;
-        range.contains(&x) && range.contains(&y) && range.contains(&z)
+    fn get(&self, pos: IVec3) -> Option<Block> {
+        let (uvw, inner_chunk_coords) = world::divide_world_coordinates(pos);
+        let uw = uvw.to_uw();
+
+        let chunk_stack = &self.neighbors[[uw.u as isize, uw.w as isize]];
+        chunk_stack
+            .get_chunk(uvw.v)
+            .map(|chunk| chunk.get(inner_chunk_coords))
     }
 
-    fn validate_chunk_coordinates_with_padding(block: IVec3) -> bool {
-        let IVec3 { x, y, z } = block;
-        let range = -1..=CHUNK_WIDTH_I32;
-        range.contains(&x) && range.contains(&y) && range.contains(&z)
-    }
-
-    fn array_index(x: i32, y: i32, z: i32) -> usize {
-        (((x + 1) * CHUNK_WIDTH_P_I32 + y + 1) * CHUNK_WIDTH_P_I32 + z + 1) as usize
-    }
-
-    pub fn uvw(&self) -> ChunkUVW {
-        self.uvw
-    }
-
-    /// Get the block at the given location.
-    pub fn get(&self, location: IVec3) -> Block {
-        debug_assert!(
-            Chunk::validate_chunk_coordinates(location),
-            "Invalid chunk coordinates {location}",
-        );
-        self.get_including_padding(location)
-    }
-
-    /// Set the block at the given location, returning the old block.
-    #[expect(dead_code)]
-    pub fn set(&self, location: IVec3, block: Block) -> Block {
-        debug_assert!(
-            Chunk::validate_chunk_coordinates(location),
-            "Invalid chunk coordinates {location}",
-        );
-        self.set_including_padding(location, block)
-    }
-
-    /// Get the block at the given location.
-    /// This function allows to set the blocks copied from adjacent chunks, stored at xy/z/ indexes -1 and CHUNK_WIDTH, respectively.
-    pub fn get_including_padding(&self, location: IVec3) -> Block {
-        debug_assert!(
-            Chunk::validate_chunk_coordinates_with_padding(location),
-            "Invalid chunk coordinates {location}",
-        );
-        let IVec3 { x, y, z } = location;
-        self.data.read().unwrap()[Chunk::array_index(x, y, z)]
-    }
-
-    /// Set the block at the given location, returning the old block.
-    /// This function allows to set the blocks copied from adjacent chunks, stored at xy/z/ indexes -1 and CHUNK_WIDTH, respectively.
-    pub fn set_including_padding(&self, location: IVec3, block: Block) -> Block {
-        debug_assert!(
-            Chunk::validate_chunk_coordinates_with_padding(location),
-            "Invalid chunk coordinates {location}",
-        );
-        let IVec3 { x, y, z } = location;
-        std::mem::replace(
-            &mut self.data.write().unwrap()[Chunk::array_index(x, y, z)],
-            block,
-        )
-    }
-
-    pub fn generate_mesh(&self) -> (Vec<QuadInstance>, Vec<TransparentQuadInstance>) {
+    pub fn generate_mesh(
+        &self,
+        uvw: ChunkUVW,
+    ) -> (Vec<QuadInstance>, Vec<TransparentQuadInstance>) {
         let mut solid_instances = Vec::new();
         let mut transparent_instances = Vec::new();
 
         for x in 0..CHUNK_WIDTH_I32 {
             for y in 0..CHUNK_WIDTH_I32 {
                 for z in 0..CHUNK_WIDTH_I32 {
-                    let coords = ivec3(x, y, z);
-                    let block = self.get_including_padding(coords);
+                    let coords = IVec3::from(uvw) * CHUNK_WIDTH_I32 + ivec3(x, y, z);
+                    let block = self.get(coords).unwrap();
                     if let BlockRenderType::Invisible = block.render_type() {
                         continue;
                     }
@@ -215,10 +172,9 @@ impl Chunk {
                         | ((z as u32) << (CHUNK_WIDTH_BITS * 2));
 
                     for direction in Direction::iter() {
-                        if !Chunk::is_face_visible(
-                            block,
-                            self.get_including_padding(coords + direction.get_unit_ivec()),
-                        ) {
+                        if let Some(adjacent_block) = self.get(coords + direction.get_unit_ivec())
+                            && !Chunk::is_face_visible(block, adjacent_block)
+                        {
                             continue;
                         }
 
@@ -244,6 +200,81 @@ impl Chunk {
         }
 
         (solid_instances, transparent_instances)
+    }
+
+    fn get_ao_attributes(&self, coords: IVec3, direction: Direction) -> u32 {
+        let cross_directions = match direction {
+            Direction::NegX => (Direction::Y, Direction::Z),
+            Direction::X => (Direction::Z, Direction::Y),
+
+            Direction::NegY => (Direction::Z, Direction::X),
+            Direction::Y => (Direction::X, Direction::Z),
+
+            Direction::NegZ => (Direction::X, Direction::Y),
+            Direction::Z => (Direction::Y, Direction::X),
+        };
+        let air_block = coords + direction.get_unit_ivec();
+
+        let mut factor = 0;
+
+        for i in 0..4 {
+            // step 0 is -/-/+/+
+            // step 1 is -/+/-/+
+            let step_0 = if i < 2 { -1 } else { 1 };
+            let step_1 = if i & 1 == 1 { 1 } else { -1 };
+
+            // get(pos) should only return None if the block is vertically outside of the allowed block range, in that case we assume its air
+            let side_1 = self
+                .get(air_block + step_0 * cross_directions.0.get_unit_ivec())
+                .unwrap_or(Block::Air)
+                .render_type()
+                == BlockRenderType::Opaque;
+
+            let side_2 = self
+                .get(air_block + step_1 * cross_directions.1.get_unit_ivec())
+                .unwrap_or(Block::Air)
+                .render_type()
+                == BlockRenderType::Opaque;
+
+            let corner = self
+                .get(
+                    air_block
+                        + step_0 * cross_directions.0.get_unit_ivec()
+                        + step_1 * cross_directions.1.get_unit_ivec(),
+                )
+                .unwrap_or(Block::Air)
+                .render_type()
+                == BlockRenderType::Opaque;
+
+            let value = if side_1 && side_2 {
+                3
+            } else {
+                (side_1 as u32) + (side_2 as u32) + (corner as u32)
+            };
+
+            factor |= value << (2 * i);
+        }
+
+        factor
+    }
+}
+
+pub struct Chunk {
+    uvw: ChunkUVW,
+    data: RwLock<HyperCubeArray<3, CHUNK_WIDTH, Block>>,
+}
+
+impl Chunk {
+    pub fn empty(uvw: ChunkUVW) -> Self {
+        Chunk {
+            uvw,
+            data: RwLock::new(HyperCubeArray::default()),
+        }
+    }
+
+    #[expect(dead_code)]
+    pub fn uvw(&self) -> ChunkUVW {
+        self.uvw
     }
 
     /// Returns true if `block`'s face that is adjacent to `adjacent_block`'s face is visible.
@@ -275,54 +306,11 @@ impl Chunk {
         }
     }
 
-    fn get_ao_attributes(&self, coords: IVec3, direction: Direction) -> u32 {
-        let cross_directions = match direction {
-            Direction::NegX => (Direction::Y, Direction::Z),
-            Direction::X => (Direction::Z, Direction::Y),
+    pub fn get(&self, index: USizeVec3) -> Block {
+        *self.data.read().unwrap().index(index)
+    }
 
-            Direction::NegY => (Direction::Z, Direction::X),
-            Direction::Y => (Direction::X, Direction::Z),
-
-            Direction::NegZ => (Direction::X, Direction::Y),
-            Direction::Z => (Direction::Y, Direction::X),
-        };
-        let air_block = coords + direction.get_unit_ivec();
-
-        let mut factor = 0;
-
-        for i in 0..4 {
-            // step 0 is -/-/+/+
-            // step 1 is -/+/-/+
-            let step_0 = if i < 2 { -1 } else { 1 };
-            let step_1 = if i & 1 == 1 { 1 } else { -1 };
-
-            let side_1 = self
-                .get_including_padding(air_block + step_0 * cross_directions.0.get_unit_ivec())
-                .render_type()
-                == BlockRenderType::Opaque;
-            let side_2 = self
-                .get_including_padding(air_block + step_1 * cross_directions.1.get_unit_ivec())
-                .render_type()
-                == BlockRenderType::Opaque;
-
-            let corner = self
-                .get_including_padding(
-                    air_block
-                        + step_0 * cross_directions.0.get_unit_ivec()
-                        + step_1 * cross_directions.1.get_unit_ivec(),
-                )
-                .render_type()
-                == BlockRenderType::Opaque;
-
-            let value = if side_1 && side_2 {
-                3
-            } else {
-                (side_1 as u32) + (side_2 as u32) + (corner as u32)
-            };
-
-            factor |= value << (2 * i);
-        }
-
-        factor
+    pub fn set(&self, index: USizeVec3, block: Block) -> Block {
+        mem::replace(self.data.write().unwrap().index_mut(index), block)
     }
 }

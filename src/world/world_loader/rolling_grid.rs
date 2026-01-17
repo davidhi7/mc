@@ -1,35 +1,46 @@
-use std::{collections::HashSet, mem::MaybeUninit};
+use std::{collections::HashSet, marker::PhantomData, mem::MaybeUninit};
 
 use glam::{IVec2, IVec3, USizeVec3, Vec3Swizzles, ivec2, ivec3};
 use itertools::Itertools;
 
-pub struct RollingGrid<T> {
+pub struct RollingGrid<T, I>
+where
+    I: Copy + Into<IVec3> + From<IVec3>,
+{
     /// Invariant: width is always an uneven number
     width: usize,
     array: Box<[T]>,
     center: IVec3,
+    phantom: PhantomData<I>,
 }
 
-impl<T> RollingGrid<T> {
+impl<T, I> RollingGrid<T, I>
+where
+    I: Copy + Into<IVec3> + From<IVec3>,
+{
     /// Create new instance with the given width and center point.
     /// For every cell in the grid, the load function is called.
-    pub fn new(width: usize, center: IVec3, mut load: impl FnMut(IVec3) -> T) -> Self {
+    pub fn new<Ctx>(
+        width: usize,
+        center: I,
+        ctx: &mut Ctx,
+        load: impl Fn(&mut Ctx, I) -> T,
+    ) -> Self {
         assert!(width & 1 == 1, "N must be an uneven number");
         let mut array: Box<[MaybeUninit<T>]> = Box::new_uninit_slice(width.pow(3));
 
-        for position in Self::iter_3d(width, center) {
+        for position in Self::iter_3d(width, center.into()) {
             // SAFETY: Position is contained in the grid.
-            unsafe {
-                array[Self::position_to_index_unchecked(width, position)] =
-                    MaybeUninit::new(load(position));
-            }
+            array[Self::position_to_index_unchecked(width, position)] =
+                MaybeUninit::new(load(ctx, position.into()));
         }
 
         Self {
             width,
             // SAFETY: All items were initialized in the loop.
             array: unsafe { array.assume_init() },
-            center,
+            center: center.into(),
+            phantom: PhantomData,
         }
     }
 
@@ -51,12 +62,24 @@ impl<T> RollingGrid<T> {
             .map(|((x, y), z)| ivec3(x, y, z))
     }
 
+    /// Returns the lower and upper bound coordinates of the grid.
+    pub fn bounds(&self) -> (I, I) {
+        let min = self.center - IVec3::splat(self.width as i32 / 2);
+        let max = self.center + IVec3::splat(self.width as i32 / 2);
+
+        (min.into(), max.into())
+    }
+
     /// Returns true if the position is within `self.width / 2` from `self.center` on every axis.
-    pub fn contains(&self, position: IVec3) -> bool {
+    pub fn contains(&self, position: I) -> bool {
+        self._contains(position.into())
+    }
+
+    fn _contains(&self, position: IVec3) -> bool {
         usize::try_from((self.center - position).abs().max_element()).unwrap() <= self.width / 2
     }
 
-    unsafe fn position_to_index_unchecked(width: usize, position: IVec3) -> usize {
+    fn position_to_index_unchecked(width: usize, position: IVec3) -> usize {
         let USizeVec3 { x, y, z } = position
             .rem_euclid(IVec3::splat(width.try_into().unwrap()))
             .as_usizevec3();
@@ -67,15 +90,14 @@ impl<T> RollingGrid<T> {
     /// Compute the `self.grid` index from the given vector.
     /// This function panicks if the position is more than `self.width / 2` away from `self.center`.
     fn position_to_index(&self, position: IVec3) -> usize {
-        if !self.contains(position) {
+        if !self._contains(position) {
             panic!(
                 "position vector {} not within grid around {} and width {}",
                 position, self.center, self.width
             );
         }
 
-        // SAFETY: we just checked that the grid contains position
-        unsafe { Self::position_to_index_unchecked(self.width, position) }
+        Self::position_to_index_unchecked(self.width, position)
     }
 
     pub fn center(&self) -> IVec3 {
@@ -85,17 +107,21 @@ impl<T> RollingGrid<T> {
     /// Get an immutable reference to the grid contents of the given position.
     /// Returns None if the position is not within the grid around the current center.
     #[cfg_attr(not(test), expect(dead_code))]
-    pub fn at(&self, position: IVec3) -> Option<&T> {
+    pub fn at(&self, position: I) -> Option<&T> {
         if !self.contains(position) {
             return None;
         }
-        Some(&self.array[self.position_to_index(position)])
+        Some(&self.array[self.position_to_index(position.into())])
     }
 
     /// Get a mutable reference to the grid contents of the given position.
     /// Returns None if the position is not within the grid around the current center.
-    pub fn at_mut(&mut self, position: IVec3) -> Option<&mut T> {
-        if !self.contains(position) {
+    pub fn at_mut(&mut self, position: I) -> Option<&mut T> {
+        self._at_mut(position.into())
+    }
+
+    fn _at_mut(&mut self, position: IVec3) -> Option<&mut T> {
+        if !self._contains(position) {
             return None;
         }
         Some(&mut self.array[self.position_to_index(position)])
@@ -103,7 +129,7 @@ impl<T> RollingGrid<T> {
 
     /// Insert the given value into the grid cell at the given position, returning the old value.
     /// Returns None and does not store the new value if the position is not within the grid around the current center.
-    pub fn replace(&mut self, position: IVec3, new_value: T) -> Option<T> {
+    pub fn replace(&mut self, position: I, new_value: T) -> Option<T> {
         if !self.contains(position) {
             return None;
         }
@@ -113,11 +139,12 @@ impl<T> RollingGrid<T> {
     /// Reposition the grid so the given vector becomes the new center.
     /// This necessitates unloading cells around the old, and loading cells around the new center.
     /// For every unloaded and loaded cell, the respective function is called exactly once.
-    pub fn reposition(
+    pub fn reposition<Ctx>(
         &mut self,
         new_center: IVec3,
-        mut load: impl FnMut(IVec3) -> T,
-        mut unload: impl FnMut(IVec3, T),
+        ctx: &mut Ctx,
+        mut load: impl FnMut(&mut Ctx, I) -> T,
+        mut unload: impl FnMut(&mut Ctx, I, T),
     ) {
         if new_center == self.center {
             return;
@@ -173,8 +200,9 @@ impl<T> RollingGrid<T> {
                 let shifts = ((new_center - old_cell).abs() + IVec3::splat(half_width)) / width_i32;
                 let new_cell = old_cell + diff.signum() * shifts * width_i32;
 
-                let old_value = std::mem::replace(self.at_mut(old_cell).unwrap(), load(new_cell));
-                unload(old_cell, old_value);
+                let old_value =
+                    std::mem::replace(self._at_mut(old_cell).unwrap(), load(ctx, new_cell.into()));
+                unload(ctx, old_cell.into(), old_value);
             }
         };
 
@@ -199,9 +227,9 @@ impl<T> RollingGrid<T> {
         self.center = new_center;
     }
 
-    pub fn reset(&mut self, mut load: impl FnMut(IVec3) -> T) {
+    pub fn reset<Ctx>(&mut self, ctx: &mut Ctx, load: impl Fn(&mut Ctx, I) -> T) {
         for position in Self::iter_3d(self.width, self.center) {
-            self.array[self.position_to_index(position)] = load(position);
+            self.array[self.position_to_index(position)] = load(ctx, position.into());
         }
     }
 }
@@ -215,19 +243,19 @@ mod tests {
 
     use crate::world::world_loader::rolling_grid::RollingGrid;
 
-    impl<T: Default> RollingGrid<T> {
+    impl<T: Default> RollingGrid<T, IVec3> {
         pub fn new_default(width: usize, position: IVec3) -> Self {
-            Self::new(width, position, |_| T::default())
+            Self::new(width, position, &mut (), |_, _| T::default())
         }
 
         pub fn reposition_default(&mut self, new_position: IVec3) {
-            self.reposition(new_position, |_| T::default(), |_, _| ());
+            self.reposition(new_position, &mut (), |_, _| T::default(), |_, _, _| ());
         }
     }
 
     #[test]
     fn test() {
-        let mut grid: RollingGrid<bool> = RollingGrid::new_default(3, IVec3::ZERO);
+        let mut grid: RollingGrid<bool, IVec3> = RollingGrid::new_default(3, IVec3::ZERO);
         *grid.at_mut(IVec3::ZERO).unwrap() = true;
         assert_eq!(grid.at(IVec3::ZERO), Some(&true));
         assert_eq!(grid.at(IVec3::X), Some(&false));
@@ -249,14 +277,15 @@ mod tests {
     fn test_reposition_arguments() {
         let mut load = HashSet::new();
         let mut unload = HashSet::new();
-        let mut grid: RollingGrid<bool> = RollingGrid::new_default(1, IVec3::ZERO);
+        let mut grid: RollingGrid<bool, IVec3> = RollingGrid::new_default(1, IVec3::ZERO);
         grid.reposition(
             ivec3(1, 0, 0),
-            |vec| {
+            &mut (&mut load, &mut unload),
+            |(load, _unload), vec| {
                 load.insert(vec);
                 false
             },
-            |vec, _| {
+            |(_load, unload), vec, _| {
                 unload.insert(vec);
             },
         );
@@ -268,8 +297,9 @@ mod tests {
 
         grid.reposition(
             ivec3(10, -20, 30),
-            |vec| load.insert(vec),
-            |vec, _| {
+            &mut (&mut load, &mut unload),
+            |(load, _unload), vec| load.insert(vec),
+            |(_load, unload), vec, _| {
                 unload.insert(vec);
             },
         );
@@ -279,15 +309,16 @@ mod tests {
         load.clear();
         unload.clear();
 
-        let mut grid: RollingGrid<bool> = RollingGrid::new_default(3, IVec3::ZERO);
+        let mut grid: RollingGrid<bool, IVec3> = RollingGrid::new_default(3, IVec3::ZERO);
         // the grid should only retain at x == y == z == 1
         grid.reposition(
             ivec3(2, 2, 2),
-            |vec| {
+            &mut (&mut load, &mut unload),
+            |(load, _unload), vec| {
                 load.insert(vec);
                 false
             },
-            |vec, _| {
+            |(_load, unload), vec, _| {
                 unload.insert(vec);
             },
         );
@@ -317,11 +348,12 @@ mod tests {
 
         grid.reposition(
             ivec3(-20, 40, 60),
-            |vec| {
+            &mut (&mut load, &mut unload),
+            |(load, _unload), vec| {
                 load.insert(vec);
                 false
             },
-            |vec, _| {
+            |(_load, unload), vec, _| {
                 unload.insert(vec);
             },
         );

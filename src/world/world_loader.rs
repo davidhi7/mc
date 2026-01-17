@@ -7,14 +7,16 @@ use std::thread::{self};
 
 use glam::{IVec2, IVec3, Vec3, Vec3Swizzles};
 use itertools::Itertools;
+use smallvec::SmallVec;
 use thiserror::Error;
 use wgpu::{Buffer, CommandEncoder, Device, Queue};
 
 use crate::renderer::indirect_buffer_manager::{
     DrawCallBucket, DrawCallHandle, IndirectBufferUpdatePass,
 };
-use crate::world::chunk::Chunk;
-use crate::world::world_gen::WorldGenSettings;
+use crate::world::blocks::Block;
+use crate::world::chunk::ChunkMeshingContext;
+use crate::world::world_gen::{ChunkGenResult, WorldGenSettings};
 use crate::world::world_loader::rolling_grid::RollingGrid;
 use crate::{
     renderer::{
@@ -23,7 +25,7 @@ use crate::{
     },
     world::{
         self, World,
-        chunk::{ChunkStack, ChunkUVW, ChunkUW, VERTICAL_CHUNK_COUNT},
+        chunk::{ChunkStack, ChunkUVW, ChunkUW},
     },
 };
 
@@ -74,28 +76,32 @@ impl JobCounter {
 }
 
 enum ChunkJobType {
-    Mesh { chunk: Arc<Chunk> },
-    GenerateAndMeshStack { uw: ChunkUW },
+    Mesh {
+        ctx: ChunkMeshingContext,
+        uvw: ChunkUVW,
+    },
+    Generate {
+        uw: ChunkUW,
+    },
 }
 
 struct ChunkJob {
-    id: u64,
+    job_id: u64,
     job: ChunkJobType,
 }
 
 enum ChunkJobResultType {
     Mesh {
-        chunk: Arc<Chunk>,
+        uvw: ChunkUVW,
         buffers: EnumMap<TerrainType, Option<Buffer>>,
     },
-    GenerateAndMeshStack {
-        chunk_stack: ChunkStack,
-        buffers: Box<[EnumMap<TerrainType, Option<Buffer>>; VERTICAL_CHUNK_COUNT]>,
+    Generate {
+        chunk_gen: ChunkGenResult,
     },
 }
 
 struct ChunkJobResult {
-    id: u64,
+    job_id: u64,
     result: ChunkJobResultType,
 }
 
@@ -124,15 +130,20 @@ impl Ord for WorkerThreadHandle {
     }
 }
 
-pub struct WorldLoader {
-    pub world: World,
+struct ChunkGridContext {
+    ongoing_chunk_generation: HashSet<ChunkUW>,
+    ongoing_chunk_meshing: HashSet<ChunkUVW>,
+    job_buffer: Vec<ChunkJob>,
     job_counter: JobCounter,
+}
+
+pub struct WorldLoader {
+    world: World,
     job_id_cutoff: Arc<AtomicU64>,
     worker_pool: Box<[WorkerThreadHandle]>,
     worker_recv: Receiver<ChunkJobResult>,
-    grid: RollingGrid<ChunkState>,
-    ongoing_chunk_generation: HashSet<ChunkUW>,
-    ongoing_chunk_meshing: HashSet<ChunkUVW>,
+    grid: RollingGrid<ChunkState, ChunkUVW>,
+    grid_ctx: ChunkGridContext,
     world_gen_settings: Arc<RwLock<WorldGenSettings>>,
 }
 
@@ -177,34 +188,30 @@ impl WorldLoader {
         }
         let worker_pool = worker_pool.into_boxed_slice();
 
-        let mut jobs = Vec::new();
-        let mut ongoing_chunk_generation = HashSet::new();
-        let mut ongoing_chunk_meshing = HashSet::new();
+        let mut grid_ctx = ChunkGridContext {
+            ongoing_chunk_generation: HashSet::new(),
+            ongoing_chunk_meshing: HashSet::new(),
+            job_buffer: Vec::new(),
+            job_counter,
+        };
         let grid = RollingGrid::new(
             render_distance as usize * 2 + 1,
-            world::get_chunk_coordinates(position.as_ivec3()).into(),
-            update_rolling_grid(
-                &world,
-                &mut ongoing_chunk_meshing,
-                &mut ongoing_chunk_generation,
-                &mut jobs,
-                &mut job_counter,
-            ),
+            world::divide_world_coordinates(position.as_ivec3()).0,
+            &mut grid_ctx,
+            update_rolling_grid(&world),
         );
 
         let mut instance = Self {
             world,
-            job_counter,
             job_id_cutoff,
             worker_pool,
             worker_recv,
             grid,
-            ongoing_chunk_generation,
-            ongoing_chunk_meshing,
+            grid_ctx,
             world_gen_settings,
         };
 
-        instance.distribute_jobs(jobs);
+        instance.distribute_jobs();
         instance
     }
 
@@ -217,24 +224,47 @@ impl WorldLoader {
         command_encoder: &mut CommandEncoder,
         indirect_buffer: &mut IndirectBufferManager<TerrainType>,
         new_position: Vec3,
-        updated_chunks: Option<Vec<ChunkUVW>>,
+        replaced_blocks: SmallVec<[(IVec3, Block); 1]>,
     ) {
         let mut update_pass = indirect_buffer.create_update_pass();
 
-        let player_chunk = world::get_chunk_coordinates(new_position.as_ivec3());
+        let player_chunk = world::divide_world_coordinates(new_position.as_ivec3()).0;
         self.update_grid(player_chunk, &mut update_pass);
-        self.complete_finished_jobs(&mut update_pass);
+        let chunks_for_meshing = self.complete_finished_jobs(&mut update_pass);
 
-        if let Some(updated_chunks) = updated_chunks {
-            for uvw in updated_chunks {
-                if !self.grid.contains(uvw.into()) {
+        let range = self.grid.bounds();
+        for uw in chunks_for_meshing {
+            let ctx = ChunkMeshingContext::create(&self.world, uw);
+            let (v_min, v_max) = (range.0.v, range.1.v);
+            for v in v_min..=v_max {
+                if !ChunkStack::validate_chunk_v(v) {
                     continue;
                 }
 
-                self.reload_chunk(device, &mut update_pass, uvw);
+                let uvw = uw.to_uvw(v);
+                self.grid_ctx.job_buffer.push(ChunkJob {
+                    job_id: self.grid_ctx.job_counter.next(),
+                    job: ChunkJobType::Mesh {
+                        ctx: ctx.clone(),
+                        uvw,
+                    },
+                });
             }
         }
 
+        let updated_uvw: SmallVec<[ChunkUVW; 1]> = replaced_blocks
+            .into_iter()
+            .flat_map(|(pos, block)| self.world.replace_block(pos, block))
+            .collect();
+        for uvw in updated_uvw {
+            if !self.grid.contains(uvw) {
+                continue;
+            }
+
+            self.reload_chunk(device, &mut update_pass, uvw);
+        }
+
+        self.distribute_jobs();
         update_pass.submit(device, queue, command_encoder);
     }
 
@@ -244,17 +274,11 @@ impl WorldLoader {
         new_center: ChunkUVW,
         update_pass: &mut IndirectBufferUpdatePass<TerrainType>,
     ) {
-        let mut jobs = Vec::new();
         self.grid.reposition(
             new_center.into(),
-            update_rolling_grid(
-                &self.world,
-                &mut self.ongoing_chunk_meshing,
-                &mut self.ongoing_chunk_generation,
-                &mut jobs,
-                &mut self.job_counter,
-            ),
-            |_, state| {
+            &mut self.grid_ctx,
+            update_rolling_grid(&self.world),
+            |_ctx, _uvw, state| {
                 let ChunkState::BufferedAndDrawn(state) = state else {
                     return;
                 };
@@ -266,85 +290,62 @@ impl WorldLoader {
                 }
             },
         );
-
-        self.distribute_jobs(jobs);
     }
 
-    /// Handle all results from finished jobs.
-    /// 1. Inserts newly generated chunk stacks
-    /// 2. Create draw calls for chunks within the render distance.
-    fn complete_finished_jobs(&mut self, update_pass: &mut IndirectBufferUpdatePass<TerrainType>) {
-        fn create_draw_calls(
-            update_pass: &mut IndirectBufferUpdatePass<TerrainType>,
-            uvw: ChunkUVW,
-            buffers: &EnumMap<TerrainType, Option<Buffer>>,
-        ) -> EnumMap<TerrainType, Option<DrawCallHandle<TerrainType>>> {
-            let mut draw_calls = EnumMap::default();
-
-            for (terrain_type, buffer) in buffers.iter() {
-                let Some(buffer) = buffer else {
-                    continue;
-                };
-
-                let draw_call = update_pass.prepare_insert_region(
-                    terrain_type,
-                    buffer.clone(),
-                    (buffer.size() / terrain_type.instance_size())
-                        .try_into()
-                        .unwrap(),
-                    uvw,
-                );
-
-                draw_calls[terrain_type] = Some(draw_call);
-            }
-
-            draw_calls
-        }
-
-        for ChunkJobResult { id, result } in self.worker_recv.try_iter() {
+    /// Handle all results from finished jobs. This returns all now-completed chunks.
+    fn complete_finished_jobs(
+        &mut self,
+        update_pass: &mut IndirectBufferUpdatePass<TerrainType>,
+    ) -> Vec<ChunkUW> {
+        let mut chunks_for_meshing = Vec::new();
+        for ChunkJobResult { job_id: id, result } in self.worker_recv.try_iter() {
             if id <= self.job_id_cutoff.load(Ordering::Relaxed) {
                 continue;
             }
-            match result {
-                ChunkJobResultType::Mesh { chunk, buffers } => {
-                    let uvw = chunk.uvw();
-                    self.ongoing_chunk_meshing.remove(&uvw);
 
-                    let Some(state) = self.grid.at_mut(uvw.into()) else {
+            match result {
+                ChunkJobResultType::Mesh { uvw, buffers } => {
+                    self.grid_ctx.ongoing_chunk_meshing.remove(&uvw);
+
+                    let Some(state) = self.grid.at_mut(uvw) else {
                         // Chunk is no longer in render distance
                         continue;
                     };
 
-                    *state = ChunkState::BufferedAndDrawn(DrawnChunkState {
-                        draw_calls: create_draw_calls(update_pass, uvw, &buffers),
-                        buffers,
-                    });
-                }
-                ChunkJobResultType::GenerateAndMeshStack {
-                    chunk_stack,
-                    buffers,
-                } => {
-                    let uw = chunk_stack.uw;
-                    self.ongoing_chunk_generation.remove(&uw);
+                    let mut draw_calls = EnumMap::default();
 
-                    self.world.insert_chunk_stack(chunk_stack);
-
-                    for (v, buffers) in buffers.into_iter().enumerate() {
-                        let uvw = uw.to_uvw(v as i32);
-
-                        let Some(state) = self.grid.at_mut(uvw.into()) else {
-                            // Chunk is no longer in render distance
+                    for (terrain_type, buffer) in buffers.iter() {
+                        let Some(buffer) = buffer else {
                             continue;
                         };
 
-                        *state = ChunkState::BufferedAndDrawn(DrawnChunkState {
-                            draw_calls: create_draw_calls(update_pass, uvw, &buffers),
-                            buffers,
-                        });
+                        let draw_call = update_pass.prepare_insert_region(
+                            terrain_type,
+                            buffer.clone(),
+                            (buffer.size() / terrain_type.instance_size())
+                                .try_into()
+                                .unwrap(),
+                            uvw,
+                        );
+
+                        draw_calls[terrain_type] = Some(draw_call);
                     }
+
+                    *state = ChunkState::BufferedAndDrawn(DrawnChunkState {
+                        draw_calls,
+                        buffers,
+                    });
+                }
+                ChunkJobResultType::Generate { chunk_gen } => {
+                    let uw = chunk_gen.chunk_stack.uw();
+                    self.grid_ctx.ongoing_chunk_generation.remove(&uw);
+
+                    chunks_for_meshing.extend_from_slice(&self.world.insert_chunk_stack(chunk_gen));
                 }
             }
         }
+
+        chunks_for_meshing
     }
 
     /// Recreate mesh and update draw calls for the chunk at the given coordinates.
@@ -356,7 +357,7 @@ impl WorldLoader {
     ) {
         let chunk_state = self
             .grid
-            .replace(uvw.into(), ChunkState::BufferingInProcess)
+            .replace(uvw, ChunkState::BufferingInProcess)
             .expect("Chunk isn't within render distance");
 
         let old_draw_calls =
@@ -368,10 +369,8 @@ impl WorldLoader {
 
         let buffers = worker::create_mesh(
             device,
-            &self
-                .world
-                .get_chunk(uvw)
-                .expect("Chunk hasn't been generated yet"),
+            &ChunkMeshingContext::create(&self.world, uvw.to_uw()),
+            uvw,
         );
 
         let mut new_draw_calls = EnumMap::default();
@@ -409,7 +408,7 @@ impl WorldLoader {
 
         *self
             .grid
-            .at_mut(uvw.into())
+            .at_mut(uvw)
             .expect("Chunk is not within render distance") =
             ChunkState::BufferedAndDrawn(DrawnChunkState {
                 buffers,
@@ -417,18 +416,19 @@ impl WorldLoader {
             });
     }
 
-    /// Distribute jobs to threads in the thread pool.
+    /// Distribute jobs in `grid_ctx.job_buffer` to threads in the thread pool.
+    /// This method drains the jobs buffer.
     /// The jobs are ordered by the horizontal distance to the chunk the player is in.
-    fn distribute_jobs(&mut self, mut jobs: Vec<ChunkJob>) {
-        if jobs.is_empty() {
+    fn distribute_jobs(&mut self) {
+        if self.grid_ctx.job_buffer.is_empty() {
             return;
         }
 
         // Sort by distance between job chunk uw and center chunk uw
-        jobs.sort_unstable_by_key(|job| {
+        self.grid_ctx.job_buffer.sort_unstable_by_key(|job| {
             let uw = match &job.job {
-                ChunkJobType::Mesh { chunk } => chunk.uvw().to_uw(),
-                ChunkJobType::GenerateAndMeshStack { uw } => *uw,
+                ChunkJobType::Mesh { uvw, .. } => uvw.to_uw(),
+                ChunkJobType::Generate { uw } => *uw,
             };
 
             (IVec2::from(uw) - self.grid.center().xz()).length_squared()
@@ -438,7 +438,7 @@ impl WorldLoader {
         let mut worker_heap: BinaryHeap<Reverse<&mut _>> =
             self.worker_pool.iter_mut().map(Reverse).collect();
 
-        for job in jobs {
+        for job in self.grid_ctx.job_buffer.drain(..) {
             // Get the worker with the least job count
             let Reverse(worker) = worker_heap.pop().unwrap();
 
@@ -459,57 +459,54 @@ impl WorldLoader {
         indirect_buffer.clear();
 
         self.job_id_cutoff.store(
-            self.job_counter.next(),
+            self.grid_ctx.job_counter.next(),
             std::sync::atomic::Ordering::Relaxed,
         );
-        self.ongoing_chunk_generation.clear();
-        self.ongoing_chunk_meshing.clear();
+        self.grid_ctx.ongoing_chunk_generation.clear();
+        self.grid_ctx.ongoing_chunk_meshing.clear();
+        self.grid_ctx.job_buffer.clear();
         match load_worldgen_settings() {
             Ok(settings) => *self.world_gen_settings.write().unwrap() = settings,
             Err(err) => log::warn!("Failed to parse worldgen settings: {err}"),
         }
 
-        let mut jobs = Vec::new();
-        self.grid.reset(update_rolling_grid(
-            &self.world,
-            &mut self.ongoing_chunk_meshing,
-            &mut self.ongoing_chunk_generation,
-            &mut jobs,
-            &mut self.job_counter,
-        ));
-        self.distribute_jobs(jobs);
+        self.grid
+            .reset(&mut self.grid_ctx, update_rolling_grid(&self.world));
+        self.distribute_jobs();
+    }
+
+    pub fn world(&self) -> &World {
+        &self.world
     }
 }
 
 /// Return closure that manages jobs and bookkeeping during grid creation and reposition.
-fn update_rolling_grid(
-    world: &World,
-    ongoing_chunk_meshing: &mut HashSet<ChunkUVW>,
-    ongoing_chunk_generation: &mut HashSet<ChunkUW>,
-    job_destination: &mut Vec<ChunkJob>,
-    job_counter: &mut JobCounter,
-) -> impl FnMut(IVec3) -> ChunkState {
-    |vec| {
-        let uvw = ChunkUVW::from(vec);
+fn update_rolling_grid(world: &World) -> impl Fn(&mut ChunkGridContext, ChunkUVW) -> ChunkState {
+    |grid_ctx, uvw| {
         if !ChunkStack::validate_chunk_v(uvw.v) {
             return ChunkState::OutOfBounds;
         }
 
-        match world.get_chunk(uvw) {
-            Some(chunk) => {
-                if ongoing_chunk_meshing.insert(uvw) {
-                    job_destination.push(ChunkJob {
-                        id: job_counter.next(),
-                        job: ChunkJobType::Mesh { chunk },
-                    });
-                }
+        if world.is_complete(uvw.to_uw()) {
+            if grid_ctx.ongoing_chunk_meshing.insert(uvw) {
+                grid_ctx.job_buffer.push(ChunkJob {
+                    job_id: grid_ctx.job_counter.next(),
+                    job: ChunkJobType::Mesh {
+                        ctx: ChunkMeshingContext::create(world, uvw.to_uw()),
+                        uvw,
+                    },
+                });
             }
-            None => {
-                let uw = ChunkUVW::from(vec).to_uw();
-                if ongoing_chunk_generation.insert(uw) {
-                    job_destination.push(ChunkJob {
-                        id: job_counter.next(),
-                        job: ChunkJobType::GenerateAndMeshStack { uw },
+        } else {
+            for (u_shift, w_shift) in (-1..=1).cartesian_product(-1..=1) {
+                let mut uw = uvw.to_uw();
+                // TODO prettier arithmetic
+                uw.u += u_shift;
+                uw.w += w_shift;
+                if !world.is_generated(uw) && grid_ctx.ongoing_chunk_generation.insert(uw) {
+                    grid_ctx.job_buffer.push(ChunkJob {
+                        job_id: grid_ctx.job_counter.next(),
+                        job: ChunkJobType::Generate { uw },
                     });
                 }
             }
