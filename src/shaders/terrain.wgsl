@@ -16,8 +16,11 @@ var<uniform> vertices: array<Vertex, 48>;
 @group(1) @binding(1)
 var<storage> chunks: array<vec3i>;
 
+// proposal for texture binding arrays in WebGPU: https://github.com/gpuweb/gpuweb/blob/main/proposals/sized-binding-arrays.md
+// Already present in WGPU and desktop graphics apis
 @group(2) @binding(0)
-var textures: binding_array<texture_2d<f32>>;
+var textures: texture_2d<f32>;
+// var textures: binding_array<texture_2d<f32>>;
 
 @group(2) @binding(1)
 var texture_sampler: sampler;
@@ -88,8 +91,8 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let lighting_factor = 1.0 - in.ao_intensity * 0.3;
 
-    var frag_color = textureSample(textures[in.tex_index], texture_sampler, in.tex_coordinates);
-    
+    var frag_color = textureSample(textures, texture_sampler, in.tex_coordinates);
+
     if frag_color.w < 0.1 {
         discard;
     }

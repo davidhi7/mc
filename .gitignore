@@ -2,3 +2,5 @@
 /res/assets/
 .idea/
 .DS_Store
+wasm/dist/
+wasm/node_modules

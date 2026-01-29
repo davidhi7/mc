@@ -91,7 +91,7 @@ impl BlockOutlinePipeline {
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("block outline render pipeline layout"),
                 bind_group_layouts: &[&globals_binding.layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             })),
             vertex: VertexState {
                 module: &shader,
@@ -105,7 +105,8 @@ impl BlockOutlinePipeline {
                 front_face: FrontFace::Cw,
                 cull_mode: None,
                 unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Line,
+                // TODO ?
+                polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
             depth_stencil: Some(DepthStencilState {
@@ -130,7 +131,7 @@ impl BlockOutlinePipeline {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 

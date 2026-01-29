@@ -1,95 +1,63 @@
-use std::{
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
-        mpsc::{Receiver, Sender},
-    },
-    thread,
-};
+use std::sync::Arc;
 
 use enum_map::EnumMap;
-use wgpu::{
-    Buffer, BufferUsages, Device,
-    util::{BufferInitDescriptor, DeviceExt},
-};
 
 use crate::world::{
-    chunk::{ChunkMeshingContext, ChunkUVW},
-    world_gen::{self, WorldGenSettings},
-    world_loader::{ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, TerrainType},
+    chunk::{ChunkMeshingContext, ChunkStack, ChunkUVW},
+    world_gen::{self},
+    world_loader::{
+        ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, ExecutorContext, TerrainType,
+    },
 };
 
-pub fn launch(
-    recv: Receiver<ChunkJob>,
-    send: Sender<ChunkJobResult>,
-    job_cutoff_id: Arc<AtomicU64>,
-    world_gen_settings: Arc<RwLock<WorldGenSettings>>,
-    device: Device,
-) {
-    loop {
-        let ChunkJob { job_id, job } = match recv.recv() {
-            Ok(job) => job,
-            Err(err) => {
-                eprintln!("{:?}: {:?}", thread::current().id(), err);
-                return;
+pub fn create_job(
+    job: ChunkJob,
+) -> Box<dyn FnOnce(Arc<ExecutorContext>) -> ChunkJobResult + 'static + Send> {
+    let ChunkJob { job_id, job } = job;
+    match job {
+        ChunkJobType::Mesh { chunk_context, uvw } => Box::new(move |ctx| {
+            if ctx.job_id_cutoff.load(std::sync::atomic::Ordering::Relaxed) > job_id {
+                return ChunkJobResult {
+                    job_id,
+                    result: ChunkJobResultType::Cancelled,
+                };
             }
-        };
-
-        if job_id <= job_cutoff_id.load(Ordering::Relaxed) {
-            continue;
-        }
-
-        let result = match &job {
-            ChunkJobType::Mesh { ctx, uvw } => {
-                let buffers = create_mesh(&device, ctx, *uvw);
-                ChunkJobResultType::Mesh { buffers, uvw: *uvw }
+            let buffers = create_mesh(&chunk_context, uvw);
+            ChunkJobResult {
+                job_id,
+                result: ChunkJobResultType::Mesh { uvw, buffers },
             }
-            ChunkJobType::Generate { uw } => {
-                let chunk_gen = world_gen::generate(&world_gen_settings.read().unwrap(), *uw);
-
-                ChunkJobResultType::Generate { chunk_gen }
+        }),
+        ChunkJobType::Generate { uw } => Box::new(move |ctx| {
+            if ctx.job_id_cutoff.load(std::sync::atomic::Ordering::Relaxed) > job_id {
+                return ChunkJobResult {
+                    job_id,
+                    result: ChunkJobResultType::Cancelled,
+                };
             }
-        };
+            let chunk_gen = world_gen::generate(&ctx.world_gen_settings, uw);
 
-        send.send(ChunkJobResult { job_id, result })
-            .expect("Couldn't send result to main thread");
+            ChunkJobResult {
+                job_id,
+                result: ChunkJobResultType::Generate { chunk_gen },
+            }
+        }),
     }
 }
 
 pub fn create_mesh(
-    device: &Device,
     ctx: &ChunkMeshingContext,
     uvw: ChunkUVW,
-) -> EnumMap<TerrainType, Option<Buffer>> {
+) -> EnumMap<TerrainType, Option<Box<[u8]>>> {
     let (solid_instances, transparent_instances) = ctx.generate_mesh(uvw);
     let mut buffers = EnumMap::default();
 
     if !solid_instances.is_empty() {
-        let buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some(&format!(
-                "{:?} terrain mesh at {:?}",
-                TerrainType::Solid,
-                uvw
-            )),
-            contents: bytemuck::cast_slice(solid_instances.as_slice()),
-            usage: BufferUsages::COPY_SRC,
-        });
-
-        buffers[TerrainType::Solid] = Some(buffer);
+        buffers[TerrainType::Solid] = Some(solid_instances.into_boxed_slice());
     }
 
     if !transparent_instances.is_empty() {
-        let buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some(&format!(
-                "{:?} terrain mesh at {:?}",
-                TerrainType::Transparent,
-                uvw
-            )),
-            contents: bytemuck::cast_slice(transparent_instances.as_slice()),
-            usage: BufferUsages::COPY_SRC,
-        });
-
-        buffers[TerrainType::Transparent] = Some(buffer);
+        buffers[TerrainType::Transparent] = Some(transparent_instances.into_boxed_slice());
     }
 
     buffers

@@ -1,15 +1,11 @@
-mod camera;
-mod logging;
-mod math;
-mod renderer;
-pub(crate) mod shaders;
-#[cfg(test)]
-pub(crate) mod tests;
-mod texture;
-mod window;
-mod world;
+use std::{num::NonZero, thread};
+
+use mc::launch;
 
 fn main() {
-    env_logger::init();
-    pollster::block_on(window::run());
+    launch(
+        thread::available_parallelism()
+            .unwrap_or(NonZero::new(2).unwrap())
+            .get(),
+    );
 }

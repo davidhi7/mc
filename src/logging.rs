@@ -1,5 +1,18 @@
 use std::fmt::Display;
 
+pub fn setup_logger() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        console_error_panic_hook::set_once();
+        console_log::init_with_level(log::Level::Debug).expect("Couldn't initialize console_log");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ReadableBytes(pub u64);
 

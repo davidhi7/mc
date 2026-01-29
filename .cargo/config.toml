@@ -1,0 +1,14 @@
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-Clink-arg=--export=__tls_align",
+  "-Clink-arg=--export=__tls_base",
+  "-Clink-arg=--export=__tls_size",
+  "-Clink-arg=--export=__wasm_init_tls",
+  "-Clink-arg=--import-memory",
+  "-Clink-arg=--max-memory=1073741824",
+  "-Clink-arg=--shared-memory",
+  "-Ctarget-feature=+atomics,+bulk-memory",
+]
+
+[unstable]
+build-std = ["panic_abort", "std"]

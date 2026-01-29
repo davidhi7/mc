@@ -1,5 +1,3 @@
-use std::num::NonZeroU32;
-
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingResource, BindingType, BlendState, Buffer, BufferBindingType,
@@ -81,9 +79,7 @@ impl TerrainBinding {
                         view_dimension: TextureViewDimension::D2,
                         sample_type: TextureSampleType::Float { filterable: true },
                     },
-                    count: Some(
-                        NonZeroU32::new(textures.len() as u32).expect("Zero textures not allowed"),
-                    ),
+                    count: None,
                 },
                 // Textures sampler
                 BindGroupLayoutEntry {
@@ -116,9 +112,9 @@ impl TerrainBinding {
             entries: &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: BindingResource::TextureViewArray(
+                    resource: BindingResource::TextureView(
                         // Map `TextureView` to `&TextureView`
-                        &(textures.iter().collect::<Vec<_>>()),
+                        &textures[0],
                     ),
                 },
                 BindGroupEntry {
@@ -172,7 +168,7 @@ impl TerrainPipeline {
                     &binding.buffers.layout,
                     &binding.textures.layout,
                 ],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             })),
             vertex: VertexState {
                 module: &terrain_shader,
@@ -182,6 +178,27 @@ impl TerrainPipeline {
                     constants: &[],
                     zero_initialize_workgroup_memory: false,
                 },
+            },
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: FrontFace::Cw,
+                cull_mode: Some(Face::Back),
+                polygon_mode: PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less,
+                stencil: StencilState::default(),
+                bias: DepthBiasState::default(),
+            }),
+            multisample: MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
             },
             fragment: Some(FragmentState {
                 module: &terrain_shader,
@@ -196,6 +213,30 @@ impl TerrainPipeline {
                     zero_initialize_workgroup_memory: false,
                 },
             }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let water_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("terrain water render pipeline"),
+            layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some("terrain water render pipeline layout"),
+                bind_group_layouts: &[
+                    &globals_binding.layout,
+                    &binding.buffers.layout,
+                    &binding.textures.layout,
+                ],
+                immediate_size: 0,
+            })),
+            vertex: VertexState {
+                module: &water_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[TransparentQuadInstance::desc()],
+                compilation_options: PipelineCompilationOptions {
+                    constants: &[],
+                    zero_initialize_workgroup_memory: false,
+                },
+            },
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleStrip,
                 strip_index_format: None,
@@ -216,30 +257,6 @@ impl TerrainPipeline {
                 count: 1,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-            cache: None,
-        });
-
-        let water_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("terrain water render pipeline"),
-            layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
-                label: Some("terrain water render pipeline layout"),
-                bind_group_layouts: &[
-                    &globals_binding.layout,
-                    &binding.buffers.layout,
-                    &binding.textures.layout,
-                ],
-                push_constant_ranges: &[],
-            })),
-            vertex: VertexState {
-                module: &water_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[TransparentQuadInstance::desc()],
-                compilation_options: PipelineCompilationOptions {
-                    constants: &[],
-                    zero_initialize_workgroup_memory: false,
-                },
             },
             fragment: Some(FragmentState {
                 module: &water_shader,
@@ -254,28 +271,7 @@ impl TerrainPipeline {
                     zero_initialize_workgroup_memory: false,
                 },
             }),
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: FrontFace::Cw,
-                cull_mode: Some(Face::Back),
-                polygon_mode: PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(DepthStencilState {
-                format: TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
-                stencil: StencilState::default(),
-                bias: DepthBiasState::default(),
-            }),
-            multisample: MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 

@@ -1,7 +1,5 @@
-use std::fs;
-
-use anyhow::*;
-use image::GenericImageView;
+use image::{DynamicImage, GenericImageView, ImageError};
+use thiserror::Error;
 use wgpu::{
     Device, Sampler, TexelCopyBufferLayout, TextureDescriptor, TextureDimension, TextureFormat,
     TextureUsages, TextureView, TextureViewDescriptor,
@@ -47,8 +45,8 @@ impl Texture {
         }
     }
 
-    fn iter() -> impl Iterator<Item = Texture> {
-        [
+    fn all() -> &'static [Texture] {
+        &[
             Texture::Stone,
             Texture::GrassBlockTop,
             Texture::Dirt,
@@ -64,18 +62,60 @@ impl Texture {
             Texture::LeavesOak,
             Texture::LeavesSpruce,
         ]
-        .into_iter()
     }
 }
 
+#[derive(Debug, Error)]
+pub enum TextureLoadError {
+    #[error("Texture fetch via wasm failed")]
+    #[cfg(target_arch = "wasm32")]
+    WasmFetch,
+    #[error(transparent)]
+    NativeIo(#[from] std::io::Error),
+    #[error(transparent)]
+    TextureParse(#[from] ImageError),
+}
+
+async fn load_texture_files() -> Result<Vec<DynamicImage>, TextureLoadError> {
+    let mut textures = Vec::with_capacity(Texture::all().len());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        for texture in Texture::all() {
+            let bytes = &std::fs::read(TEXTURE_DIR.to_string() + texture.texture_path())?;
+            textures.push(image::load_from_memory(bytes)?);
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        use futures::future;
+
+        use crate::wasm_fetch;
+
+        for texture in future::join_all(
+            Texture::all()
+                .iter()
+                .map(|texture| TEXTURE_DIR.to_string() + texture.texture_path())
+                .map(wasm_fetch::fetch),
+        )
+        .await
+        {
+            let bytes = texture.map_err(|_| TextureLoadError::WasmFetch)?;
+            textures.push(image::load_from_memory(&bytes)?);
+        }
+    }
+
+    Ok(textures)
+}
+
 /// Load textures and return texture views
-pub fn load_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<TextureView>> {
+pub async fn load_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> Result<Vec<TextureView>, TextureLoadError> {
     let mut texture_views = Vec::new();
 
-    for texture in Texture::iter() {
-        let img = image::load_from_memory(
-            fs::read(TEXTURE_DIR.to_owned() + texture.texture_path())?.as_slice(),
-        )?;
+    for (i, img) in load_texture_files().await?.into_iter().enumerate() {
         let dimensions = img.dimensions();
         let size = wgpu::Extent3d {
             width: dimensions.0,
@@ -84,7 +124,7 @@ pub fn load_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<T
         };
 
         let texture = device.create_texture(&TextureDescriptor {
-            label: Some(&("texture ".to_owned() + texture.texture_path())),
+            label: Some(&("texture ".to_owned() + Texture::all()[i].texture_path())),
             size,
             mip_level_count: 1,
             sample_count: 1,
@@ -119,7 +159,7 @@ pub fn create_sampler(device: &Device) -> Sampler {
         address_mode_w: wgpu::AddressMode::Repeat,
         mag_filter: wgpu::FilterMode::Nearest,
         min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     })
 }

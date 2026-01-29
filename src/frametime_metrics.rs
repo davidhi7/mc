@@ -1,7 +1,5 @@
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, time::Duration};
+use web_time::Instant;
 
 pub struct FrameTimeMetrics {
     deque: VecDeque<Duration>,
@@ -24,7 +22,7 @@ impl FrameTimeMetrics {
         self.deque.push_back(frametime);
     }
 
-    pub fn update_sample(&mut self) {
+    pub fn maybe_update_sample(&mut self) -> bool {
         let now = Instant::now();
         if now.duration_since(self.last_sample_instant).as_millis() >= self.sampling_interval_ms {
             let frametime_sample_us = self
@@ -36,6 +34,9 @@ impl FrameTimeMetrics {
             self.last_sample_frametime_ms = frametime_sample_us as f64 / 1000f64;
             self.deque.clear();
             self.last_sample_instant = now;
+            true
+        } else {
+            false
         }
     }
 

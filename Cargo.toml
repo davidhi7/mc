@@ -1,28 +1,58 @@
 [package]
-name = "mc"
-version = "0.1.0"
 edition = "2024"
+name = "mc"
 resolver = "2"
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1.0.86"
 bytemuck = { version = "1.16.1", features = ["derive"] }
+enum-map = "2.7.3"
 env_logger = "0.11.3"
 glam = { version = "0.30.8", features = ["bytemuck"] }
 image = "0.25.1"
+itertools = "0.14.0"
+lazy_static = "1.5.0"
 log = "0.4.21"
 noise = "0.9.0"
 pollster = "0.3.0"
-wgpu = "26.0.1"
-winit = "0.30.3"
-itertools = "0.14.0"
-lazy_static = "1.5.0"
-enum-map = "2.7.3"
-thiserror = "2.0.17"
-serde = { version = "1.0.228", features = ["derive"] }
-ron = "0.12.0"
 rand_pcg = "0.9.0"
+rayon = "1.11.0"
+ron = "0.12.0"
+serde = { version = "1.0.228", features = ["derive"] }
 smallvec = "1.15.1"
+thiserror = "2.0.17"
+web-time = "1.1.0"
+wgpu = "28.0.0"
+winit = "0.30.12"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+console_log = "1.0.0"
+futures = "0.3.31"
+js-sys = "0.3.85"
+wasm-bindgen = "0.2.108"
+wasm-bindgen-futures = "0.4.58"
+web-sys = { version = "0.3.85", features = [
+    "Document",
+    "Element",
+    "Window",
+    "Worker",
+    'Headers',
+    'MessageEvent',
+    'Request',
+    'RequestInit',
+    'RequestMode',
+    'Response',
+    'WorkerOptions',
+    'WorkerType',
+] }
+
+[package.metadata.wasm-pack.profile.dev.wasm-bindgen]
+dwarf-debug-info = true
 
 [dev-dependencies]
 googletest = "0.14.0"

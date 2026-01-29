@@ -22,7 +22,7 @@ impl UiPipeline {
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("reticle render pipeline layout"),
             bind_group_layouts: &[&globals_binding.layout],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -34,16 +34,6 @@ impl UiPipeline {
                 buffers: &[],
                 compilation_options: Default::default(),
             },
-            fragment: Some(FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(ColorTargetState {
-                    format: surface_format,
-                    blend: Some(BlendState::REPLACE),
-                    write_mask: ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::LineList,
                 strip_index_format: None,
@@ -65,7 +55,17 @@ impl UiPipeline {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            multiview: None,
+            fragment: Some(FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(ColorTargetState {
+                    format: surface_format,
+                    blend: Some(BlendState::REPLACE),
+                    write_mask: ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            multiview_mask: None,
             cache: None,
         });
 

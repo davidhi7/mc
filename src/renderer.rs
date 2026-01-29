@@ -1,7 +1,5 @@
-use std::{
-    iter,
-    time::{Duration, Instant},
-};
+use std::{iter, time::Duration};
+use web_time::Instant;
 
 use glam::{Vec3, vec3};
 use smallvec::SmallVec;
@@ -19,6 +17,7 @@ use crate::{
         block_ray_caster::{self, BlockInfo},
         player::{self, PlayerState},
     },
+    input::InputState,
     renderer::{
         indirect_buffer_manager::IndirectBufferManager,
         pipelines::{
@@ -27,7 +26,6 @@ use crate::{
         },
     },
     texture,
-    window::input::InputState,
     world::{
         World,
         blocks::{Block, BlockPhysicsType},
@@ -58,6 +56,7 @@ impl Renderer {
         queue: Queue,
         surface_size: PhysicalSize<u32>,
         surface_format: TextureFormat,
+        textures: Vec<TextureView>,
     ) -> Self {
         let (depth_texture, depth_texture_view) =
             Renderer::create_depth_texture(&device, surface_size.width, surface_size.height);
@@ -68,6 +67,7 @@ impl Renderer {
             surface_size,
             surface_format,
             World::new(),
+            textures,
         );
 
         Self {
@@ -124,11 +124,11 @@ impl Renderer {
     pub fn render(
         &self,
         surface: &Surface<'_>,
-        surface_format: TextureFormat,
+        surface_view_format: TextureFormat,
     ) -> Result<(), SurfaceError> {
         let surface_texture = surface.get_current_texture()?;
         let view = surface_texture.texture.create_view(&TextureViewDescriptor {
-            format: Some(surface_format.add_srgb_suffix()),
+            format: Some(surface_view_format),
             ..Default::default()
         });
 
@@ -169,6 +169,7 @@ impl WorldRenderer {
         surface_size: PhysicalSize<u32>,
         surface_format: TextureFormat,
         world: World,
+        textures: Vec<TextureView>,
     ) -> Self {
         let player = PlayerState::new(
             Perspective {
@@ -183,13 +184,7 @@ impl WorldRenderer {
 
         let globals = GlobalsBinding::new(&device, player.view_projection());
 
-        let mut world_loader = WorldLoader::new(
-            world,
-            player.eye(),
-            8,
-            device.clone(),
-            CHUNK_RENDER_DISTANCE,
-        );
+        let mut world_loader = WorldLoader::new(world, player.eye(), CHUNK_RENDER_DISTANCE);
 
         let chunks_per_bucket = (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
             * u64::min(
@@ -218,7 +213,7 @@ impl WorldRenderer {
             &globals,
             &vertex_buffer::create_vertex_buffer(&device),
             ib.uniform_buffer(),
-            texture::load_textures(&device, &queue).unwrap(),
+            textures,
             &texture::create_sampler(&device),
             surface_format,
         );
@@ -370,8 +365,9 @@ impl WorldRenderer {
                 }),
                 stencil_ops: None,
             }),
-            occlusion_query_set: None,
             timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         if self.indirect_draw_buffer.draw_count(TerrainType::Solid) > 0 {

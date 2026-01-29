@@ -1,8 +1,6 @@
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, time::Duration};
 
+use web_time::Instant;
 use winit::{
     event::{ElementState, KeyEvent, MouseButton},
     keyboard::{KeyCode, PhysicalKey},

@@ -1,15 +1,13 @@
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, channel};
-use std::sync::{Arc, RwLock};
-use std::thread::{self};
 
 use glam::{IVec2, IVec3, Vec3, Vec3Swizzles};
 use itertools::Itertools;
 use smallvec::SmallVec;
 use thiserror::Error;
-use wgpu::{Buffer, CommandEncoder, Device, Queue};
+use wgpu::util::DeviceExt;
+use wgpu::{Buffer, BufferUsages, CommandEncoder, Device, Queue};
 
 use crate::renderer::indirect_buffer_manager::{
     DrawCallBucket, DrawCallHandle, IndirectBufferUpdatePass,
@@ -17,6 +15,7 @@ use crate::renderer::indirect_buffer_manager::{
 use crate::world::blocks::Block;
 use crate::world::chunk::ChunkMeshingContext;
 use crate::world::world_gen::{ChunkGenResult, WorldGenSettings};
+use crate::world::world_loader::executor::{Executor, ThreadPoolExecutor};
 use crate::world::world_loader::rolling_grid::RollingGrid;
 use crate::{
     renderer::{
@@ -31,6 +30,7 @@ use crate::{
 
 use enum_map::{Enum, EnumMap};
 
+mod executor;
 mod rolling_grid;
 mod worker;
 
@@ -77,10 +77,11 @@ impl JobCounter {
 
 enum ChunkJobType {
     Mesh {
-        ctx: ChunkMeshingContext,
+        chunk_context: ChunkMeshingContext,
         uvw: ChunkUVW,
     },
     Generate {
+        // chunk_stack: Box<ChunkStack>,
         uw: ChunkUW,
     },
 }
@@ -93,11 +94,12 @@ struct ChunkJob {
 enum ChunkJobResultType {
     Mesh {
         uvw: ChunkUVW,
-        buffers: EnumMap<TerrainType, Option<Buffer>>,
+        buffers: EnumMap<TerrainType, Option<Box<[u8]>>>,
     },
     Generate {
         chunk_gen: ChunkGenResult,
     },
+    Cancelled,
 }
 
 struct ChunkJobResult {
@@ -105,29 +107,10 @@ struct ChunkJobResult {
     result: ChunkJobResultType,
 }
 
-struct WorkerThreadHandle {
-    sender: Sender<ChunkJob>,
-    job_count: usize,
-}
-
-impl PartialEq for WorkerThreadHandle {
-    fn eq(&self, other: &Self) -> bool {
-        self.job_count == other.job_count
-    }
-}
-
-impl Eq for WorkerThreadHandle {}
-
-impl PartialOrd for WorkerThreadHandle {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for WorkerThreadHandle {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.job_count.cmp(&other.job_count)
-    }
+struct ExecutorContext {
+    // device: Device,
+    world_gen_settings: WorldGenSettings,
+    job_id_cutoff: AtomicU64,
 }
 
 struct ChunkGridContext {
@@ -139,54 +122,21 @@ struct ChunkGridContext {
 
 pub struct WorldLoader {
     world: World,
-    job_id_cutoff: Arc<AtomicU64>,
-    worker_pool: Box<[WorkerThreadHandle]>,
-    worker_recv: Receiver<ChunkJobResult>,
     grid: RollingGrid<ChunkState, ChunkUVW>,
     grid_ctx: ChunkGridContext,
-    world_gen_settings: Arc<RwLock<WorldGenSettings>>,
+    executor: ThreadPoolExecutor<ChunkJobResult>,
+    executor_ctx: Arc<ExecutorContext>,
 }
 
 impl WorldLoader {
-    pub fn new(
-        world: World,
-        position: Vec3,
-        thread_count: u32,
-        device: Device,
-        render_distance: u32,
-    ) -> Self {
+    pub fn new(world: World, position: Vec3, render_distance: u32) -> Self {
         let mut job_counter = JobCounter::new();
-        let job_id_cutoff = Arc::new(AtomicU64::new(job_counter.next()));
-        let world_gen_settings = Arc::new(RwLock::new(
-            load_worldgen_settings().expect("Failed to load worldgen settings"),
-        ));
 
-        let mut worker_pool = Vec::new();
-        let (worker_send, worker_recv) = mpsc::channel();
-        for _ in 0..thread_count {
-            let (sender, receiver) = channel();
-            thread::spawn({
-                let device = device.clone();
-                let sender = worker_send.clone();
-                let job_cutoff_id = Arc::clone(&job_id_cutoff);
-                let world_gen_settings = Arc::clone(&world_gen_settings);
-                move || {
-                    worker::launch(
-                        receiver,
-                        sender.clone(),
-                        job_cutoff_id,
-                        world_gen_settings,
-                        device,
-                    );
-                }
-            });
-
-            worker_pool.push(WorkerThreadHandle {
-                sender,
-                job_count: 0,
-            });
-        }
-        let worker_pool = worker_pool.into_boxed_slice();
+        let executor_ctx = Arc::new(ExecutorContext {
+            world_gen_settings: load_worldgen_settings().expect("Failed to load worldgen settings"),
+            job_id_cutoff: AtomicU64::new(job_counter.next()),
+        });
+        let executor = ThreadPoolExecutor::new();
 
         let mut grid_ctx = ChunkGridContext {
             ongoing_chunk_generation: HashSet::new(),
@@ -203,12 +153,10 @@ impl WorldLoader {
 
         let mut instance = Self {
             world,
-            job_id_cutoff,
-            worker_pool,
-            worker_recv,
             grid,
             grid_ctx,
-            world_gen_settings,
+            executor,
+            executor_ctx,
         };
 
         instance.distribute_jobs();
@@ -230,7 +178,7 @@ impl WorldLoader {
 
         let player_chunk = world::divide_world_coordinates(new_position.as_ivec3()).0;
         self.update_grid(player_chunk, &mut update_pass);
-        let chunks_for_meshing = self.complete_finished_jobs(&mut update_pass);
+        let chunks_for_meshing = self.complete_finished_jobs(device.clone(), &mut update_pass);
 
         let range = self.grid.bounds();
         for uw in chunks_for_meshing {
@@ -245,7 +193,7 @@ impl WorldLoader {
                 self.grid_ctx.job_buffer.push(ChunkJob {
                     job_id: self.grid_ctx.job_counter.next(),
                     job: ChunkJobType::Mesh {
-                        ctx: ctx.clone(),
+                        chunk_context: ctx.clone(),
                         uvw,
                     },
                 });
@@ -295,17 +243,21 @@ impl WorldLoader {
     /// Handle all results from finished jobs. This returns all now-completed chunks.
     fn complete_finished_jobs(
         &mut self,
+        device: Device,
         update_pass: &mut IndirectBufferUpdatePass<TerrainType>,
     ) -> Vec<ChunkUW> {
         let mut chunks_for_meshing = Vec::new();
-        for ChunkJobResult { job_id: id, result } in self.worker_recv.try_iter() {
-            if id <= self.job_id_cutoff.load(Ordering::Relaxed) {
+        for ChunkJobResult { job_id, result } in
+            Executor::<_, ExecutorContext>::fetch(&mut self.executor)
+        {
+            if job_id <= self.executor_ctx.job_id_cutoff.load(Ordering::Relaxed) {
                 continue;
             }
 
             match result {
                 ChunkJobResultType::Mesh { uvw, buffers } => {
                     self.grid_ctx.ongoing_chunk_meshing.remove(&uvw);
+                    let actual_buffers = EnumMap::default();
 
                     let Some(state) = self.grid.at_mut(uvw) else {
                         // Chunk is no longer in render distance
@@ -319,10 +271,17 @@ impl WorldLoader {
                             continue;
                         };
 
+                        let actual_buffer =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("test"),
+                                contents: buffer,
+                                usage: BufferUsages::COPY_SRC,
+                            });
+
                         let draw_call = update_pass.prepare_insert_region(
                             terrain_type,
-                            buffer.clone(),
-                            (buffer.size() / terrain_type.instance_size())
+                            actual_buffer.clone(),
+                            (actual_buffer.size() / terrain_type.instance_size())
                                 .try_into()
                                 .unwrap(),
                             uvw,
@@ -333,7 +292,7 @@ impl WorldLoader {
 
                     *state = ChunkState::BufferedAndDrawn(DrawnChunkState {
                         draw_calls,
-                        buffers,
+                        buffers: actual_buffers,
                     });
                 }
                 ChunkJobResultType::Generate { chunk_gen } => {
@@ -342,6 +301,7 @@ impl WorldLoader {
 
                     chunks_for_meshing.extend_from_slice(&self.world.insert_chunk_stack(chunk_gen));
                 }
+                ChunkJobResultType::Cancelled => {}
             }
         }
 
@@ -367,11 +327,9 @@ impl WorldLoader {
                 EnumMap::default()
             };
 
-        let buffers = worker::create_mesh(
-            device,
-            &ChunkMeshingContext::create(&self.world, uvw.to_uw()),
-            uvw,
-        );
+        let buffers =
+            worker::create_mesh(&ChunkMeshingContext::create(&self.world, uvw.to_uw()), uvw);
+        let mut actual_buffers = EnumMap::default();
 
         let mut new_draw_calls = EnumMap::default();
         for ((terrain_type, old_draw_call), (_, buffer)) in
@@ -379,27 +337,42 @@ impl WorldLoader {
         {
             match (old_draw_call, buffer) {
                 (None, Some(buffer)) => {
+                    let actual_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: None,
+                            contents: buffer,
+                            usage: BufferUsages::COPY_SRC,
+                        });
                     let draw_call = update_pass.prepare_insert_region(
                         terrain_type,
-                        buffer.to_owned(),
-                        (buffer.size() / terrain_type.instance_size())
+                        actual_buffer.to_owned(),
+                        (actual_buffer.size() / terrain_type.instance_size())
                             .try_into()
                             .unwrap(),
                         uvw,
                     );
+                    actual_buffers[terrain_type] = Some(actual_buffer);
                     new_draw_calls[terrain_type] = Some(draw_call);
                 }
                 (Some(old_draw_call), None) => {
                     update_pass.prepare_drop_region(old_draw_call);
                 }
                 (Some(old_draw_call), Some(new_buffer)) => {
+                    let actual_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: None,
+                            contents: new_buffer,
+                            usage: BufferUsages::COPY_SRC,
+                        });
                     update_pass.prepare_replace_region(
                         old_draw_call,
-                        new_buffer.to_owned(),
-                        (new_buffer.size() / terrain_type.instance_size())
+                        // TODO drop to_owned everywhere
+                        actual_buffer.to_owned(),
+                        (actual_buffer.size() / terrain_type.instance_size())
                             .try_into()
                             .unwrap(),
                     );
+                    actual_buffers[terrain_type] = Some(actual_buffer);
                     new_draw_calls[terrain_type] = Some(old_draw_call);
                 }
                 (None, None) => (),
@@ -411,7 +384,7 @@ impl WorldLoader {
             .at_mut(uvw)
             .expect("Chunk is not within render distance") =
             ChunkState::BufferedAndDrawn(DrawnChunkState {
-                buffers,
+                buffers: actual_buffers,
                 draw_calls: new_draw_calls,
             });
     }
@@ -428,6 +401,7 @@ impl WorldLoader {
         self.grid_ctx.job_buffer.sort_unstable_by_key(|job| {
             let uw = match &job.job {
                 ChunkJobType::Mesh { uvw, .. } => uvw.to_uw(),
+                // ChunkJobType::Generate { chunk_stack } => *&chunk_stack.uw(),
                 ChunkJobType::Generate { uw } => *uw,
             };
 
@@ -435,38 +409,59 @@ impl WorldLoader {
         });
 
         // Priority queue (min-heap) to manage workers by their job count
-        let mut worker_heap: BinaryHeap<Reverse<&mut _>> =
-            self.worker_pool.iter_mut().map(Reverse).collect();
+        // let mut worker_heap: BinaryHeap<Reverse<&mut _>> =
+        //     self.worker_pool.iter_mut().map(Reverse).collect();
 
-        for job in self.grid_ctx.job_buffer.drain(..) {
-            // Get the worker with the least job count
-            let Reverse(worker) = worker_heap.pop().unwrap();
-
-            // Assign the job to this worker
-            worker
-                .sender
-                .send(job)
-                .expect("Failed to send job to chunk worker thread");
-            worker.job_count += 1;
-
-            // Push the worker back into the heap with updated job count
-            worker_heap.push(Reverse(worker));
+        let mut vec = Vec::new();
+        for el in self.grid_ctx.job_buffer.drain(..) {
+            vec.push(worker::create_job(el));
         }
+
+        self.executor
+            .dispatch(vec.into_boxed_slice(), self.executor_ctx.clone());
+
+        // for job in self.grid_ctx.job_buffeVjjr.drain(..) {
+        //     // Get the worker with the least job count
+        //     let Reverse(worker) = worker_heap.pop().unwrap();
+
+        // Assign the job to this worker
+        // worker
+        //     .sender
+        //     .send(job)
+        //     .expect("Failed to send job to chunk worker thread");
+        // worker.job_count += 1;
+
+        // Push the worker back into the heap with updated job count
+        // worker_heap.push(Reverse(worker));
+        // }
     }
 
     pub fn reload_world(&mut self, indirect_buffer: &mut IndirectBufferManager<TerrainType>) {
         self.world.clear();
         indirect_buffer.clear();
 
-        self.job_id_cutoff.store(
+        self.executor_ctx.job_id_cutoff.store(
             self.grid_ctx.job_counter.next(),
             std::sync::atomic::Ordering::Relaxed,
         );
         self.grid_ctx.ongoing_chunk_generation.clear();
         self.grid_ctx.ongoing_chunk_meshing.clear();
         self.grid_ctx.job_buffer.clear();
+
+        // Set cutoff id for existing jobs
+        let new_cutoff_id = self.grid_ctx.job_counter.next();
+        self.executor_ctx
+            .job_id_cutoff
+            .store(new_cutoff_id, Ordering::Relaxed);
+
+        // Set new context for all new jobs, with the new world gen settings
         match load_worldgen_settings() {
-            Ok(settings) => *self.world_gen_settings.write().unwrap() = settings,
+            Ok(world_gen_settings) => {
+                self.executor_ctx = Arc::new(ExecutorContext {
+                    world_gen_settings,
+                    job_id_cutoff: AtomicU64::new(new_cutoff_id),
+                })
+            }
             Err(err) => log::warn!("Failed to parse worldgen settings: {err}"),
         }
 
@@ -492,7 +487,7 @@ fn update_rolling_grid(world: &World) -> impl Fn(&mut ChunkGridContext, ChunkUVW
                 grid_ctx.job_buffer.push(ChunkJob {
                     job_id: grid_ctx.job_counter.next(),
                     job: ChunkJobType::Mesh {
-                        ctx: ChunkMeshingContext::create(world, uvw.to_uw()),
+                        chunk_context: ChunkMeshingContext::create(world, uvw.to_uw()),
                         uvw,
                     },
                 });
@@ -506,7 +501,10 @@ fn update_rolling_grid(world: &World) -> impl Fn(&mut ChunkGridContext, ChunkUVW
                 if !world.is_generated(uw) && grid_ctx.ongoing_chunk_generation.insert(uw) {
                     grid_ctx.job_buffer.push(ChunkJob {
                         job_id: grid_ctx.job_counter.next(),
-                        job: ChunkJobType::Generate { uw },
+                        job: ChunkJobType::Generate {
+                            // chunk_stack: Box::new(ChunkStack::empty(uw)),
+                            uw,
+                        },
                     });
                 }
             }
@@ -525,8 +523,14 @@ enum SettingsLoadingError {
 }
 
 fn load_worldgen_settings() -> Result<WorldGenSettings, SettingsLoadingError> {
-    let contents = std::fs::read_to_string("res/config/world-gen.ron")?;
-    Ok(ron::from_str(&contents)?)
+    const PATH: &str = "res/config/world-gen.ron";
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let contents = &std::fs::read_to_string(PATH)?;
+    #[cfg(target_arch = "wasm32")]
+    // TODO load from server
+    let contents = include_str!("../../res/config/world-gen.ron");
+    Ok(ron::from_str(contents)?)
 }
 
 #[cfg(test)]

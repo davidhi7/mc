@@ -17,8 +17,8 @@ use winit::keyboard::KeyCode;
 
 use crate::{
     camera::{Perspective, View},
+    input::InputState,
     math::{Aabb3, Aabb3I},
-    window::input::InputState,
     world::{LookupBlock, blocks::BlockPhysicsType},
 };
 

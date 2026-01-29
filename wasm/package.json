@@ -1,0 +1,22 @@
+{
+  "name": "mc-wasm",
+  "version": "1.0.0",
+  "description": "",
+  "homepage": "https://github.com/davidhi7/mc#readme",
+  "bugs": {
+    "url": "https://github.com/davidhi7/mc/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/davidhi7/mc.git"
+  },
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "scripts": {
+    "build": "wasm-pack build --dev --target web --out-dir ./wasm/pkg/ && tsc"
+  },
+  "dependencies": {
+    "typescript": "^5.9.3"
+  }
+}

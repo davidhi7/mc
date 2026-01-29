@@ -151,10 +151,7 @@ impl ChunkMeshingContext {
             .map(|chunk| chunk.get(inner_chunk_coords))
     }
 
-    pub fn generate_mesh(
-        &self,
-        uvw: ChunkUVW,
-    ) -> (Vec<QuadInstance>, Vec<TransparentQuadInstance>) {
+    pub fn generate_mesh(&self, uvw: ChunkUVW) -> (Vec<u8>, Vec<u8>) {
         let mut solid_instances = Vec::new();
         let mut transparent_instances = Vec::new();
 
@@ -184,14 +181,18 @@ impl ChunkMeshingContext {
 
                         match block {
                             Block::Water => {
-                                transparent_instances.push(TransparentQuadInstance { attributes });
+                                transparent_instances.extend_from_slice(bytemuck::bytes_of(
+                                    &TransparentQuadInstance { attributes },
+                                ));
                             }
                             Block::Air => unreachable!(),
                             _ => {
-                                solid_instances.push(QuadInstance {
-                                    attributes,
-                                    ao_attributes: self.get_ao_attributes(coords, direction),
-                                });
+                                solid_instances.extend_from_slice(bytemuck::bytes_of(
+                                    &QuadInstance {
+                                        attributes,
+                                        ao_attributes: self.get_ao_attributes(coords, direction),
+                                    },
+                                ));
                             }
                         };
                     }
