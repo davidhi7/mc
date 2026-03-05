@@ -18,9 +18,9 @@ var<storage> chunks: array<vec3i>;
 
 // proposal for texture binding arrays in WebGPU: https://github.com/gpuweb/gpuweb/blob/main/proposals/sized-binding-arrays.md
 // Already present in WGPU and desktop graphics apis
-@group(2) @binding(0)
-var textures: texture_2d<f32>;
 // var textures: binding_array<texture_2d<f32>>;
+@group(2) @binding(0)
+var textures: texture_2d_array<f32>;
 
 @group(2) @binding(1)
 var texture_sampler: sampler;
@@ -91,7 +91,7 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let lighting_factor = 1.0 - in.ao_intensity * 0.3;
 
-    var frag_color = textureSample(textures, texture_sampler, in.tex_coordinates);
+    var frag_color = textureSample(textures, texture_sampler, in.tex_coordinates, in.tex_index);
 
     if frag_color.w < 0.1 {
         discard;
@@ -102,10 +102,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if in.tex_index == 1 {
         // Color for minecraft forest biome
         color_multiplier = vec3f(0.47, 0.75, 0.35);
-    } else if in.tex_index == 12 {
+    } else if in.tex_index == 11 {
         // Oak leaves, random color
         color_multiplier = vec3f(0.243, 0.569, 0.208);
-    } else if in.tex_index == 13 {
+    } else if in.tex_index == 12 {
         // Spruce leves, random color
         color_multiplier = vec3f(0.216, 0.439, 0.298);
     }

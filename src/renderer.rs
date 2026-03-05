@@ -56,7 +56,7 @@ impl Renderer {
         queue: Queue,
         surface_size: PhysicalSize<u32>,
         surface_format: TextureFormat,
-        textures: Vec<TextureView>,
+        texture_array: TextureView,
     ) -> Self {
         let (depth_texture, depth_texture_view) =
             Renderer::create_depth_texture(&device, surface_size.width, surface_size.height);
@@ -67,7 +67,7 @@ impl Renderer {
             surface_size,
             surface_format,
             World::new(),
-            textures,
+            texture_array,
         );
 
         Self {
@@ -169,7 +169,7 @@ impl WorldRenderer {
         surface_size: PhysicalSize<u32>,
         surface_format: TextureFormat,
         world: World,
-        textures: Vec<TextureView>,
+        texture_array: TextureView,
     ) -> Self {
         let player = PlayerState::new(
             Perspective {
@@ -213,7 +213,7 @@ impl WorldRenderer {
             &globals,
             &vertex_buffer::create_vertex_buffer(&device),
             ib.uniform_buffer(),
-            textures,
+            texture_array,
             &texture::create_sampler(&device),
             surface_format,
         );

@@ -40,9 +40,11 @@ pub enum Block {
 }
 
 impl Block {
-    pub fn texture_index(&self, face: Direction) -> u8 {
+    pub fn texture_index(&self, face: Direction) -> Option<u8> {
         let texture = match self {
-            Block::Air => panic!("{:?} doesn't feature a texture", self),
+            Block::Air | Block::Water => {
+                return None;
+            }
             Block::Stone => Texture::Stone,
             Block::Grass => match face {
                 Direction::Y => Texture::GrassBlockTop,
@@ -54,7 +56,6 @@ impl Block {
             Block::Gravel => Texture::Gravel,
             Block::Andesite => Texture::Andesite,
             Block::Snow => Texture::Snow,
-            Block::Water => Texture::Water,
             Block::LogOak => match face {
                 Direction::NegY | Direction::Y => Texture::LogOakTopBottom,
                 _ => Texture::LogOakSide,
@@ -66,7 +67,7 @@ impl Block {
             Block::LeavesOak => Texture::LeavesOak,
             Block::LeavesSpruce => Texture::LeavesSpruce,
         };
-        texture as u8
+        Some(texture as u8)
     }
 
     pub fn physics_type(&self) -> BlockPhysicsType {

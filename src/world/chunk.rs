@@ -176,7 +176,8 @@ impl ChunkMeshingContext {
                         }
 
                         let attributes = common_packed_bits
-                            | ((block.texture_index(direction) as u32) << (CHUNK_WIDTH_BITS * 3))
+                            | ((block.texture_index(direction).unwrap_or(u8::MAX) as u32)
+                                << (CHUNK_WIDTH_BITS * 3))
                             | ((direction as u32) << (CHUNK_WIDTH_BITS * 3 + 8));
 
                         match block {

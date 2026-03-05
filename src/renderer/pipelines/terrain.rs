@@ -36,7 +36,7 @@ impl TerrainBinding {
         device: &Device,
         vertex_buffer: &Buffer,
         chunk_buffer: &Buffer,
-        textures: Vec<TextureView>,
+        texture_array: TextureView,
         sampler: &Sampler,
     ) -> Self {
         let layout_buffers = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -76,7 +76,7 @@ impl TerrainBinding {
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Texture {
                         multisampled: false,
-                        view_dimension: TextureViewDimension::D2,
+                        view_dimension: TextureViewDimension::D2Array,
                         sample_type: TextureSampleType::Float { filterable: true },
                     },
                     count: None,
@@ -112,10 +112,7 @@ impl TerrainBinding {
             entries: &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: BindingResource::TextureView(
-                        // Map `TextureView` to `&TextureView`
-                        &textures[0],
-                    ),
+                    resource: BindingResource::TextureView(&texture_array),
                 },
                 BindGroupEntry {
                     binding: 1,
@@ -149,11 +146,12 @@ impl TerrainPipeline {
         globals_binding: &GlobalsBinding,
         vertex_buffer: &Buffer,
         chunk_buffer: &Buffer,
-        textures: Vec<TextureView>,
+        texture_array: TextureView,
         sampler: &Sampler,
         surface_format: TextureFormat,
     ) -> Self {
-        let binding = TerrainBinding::new(device, vertex_buffer, chunk_buffer, textures, sampler);
+        let binding =
+            TerrainBinding::new(device, vertex_buffer, chunk_buffer, texture_array, sampler);
 
         let terrain_shader = device.create_shader_module(shaders::SHADER_TERRAIN);
 

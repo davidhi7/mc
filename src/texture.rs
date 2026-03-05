@@ -1,8 +1,9 @@
 use image::{DynamicImage, GenericImageView, ImageError};
 use thiserror::Error;
 use wgpu::{
-    Device, Sampler, TexelCopyBufferLayout, TextureDescriptor, TextureDimension, TextureFormat,
-    TextureUsages, TextureView, TextureViewDescriptor,
+    Device, Extent3d, Origin3d, Queue, Sampler, TexelCopyBufferLayout, TexelCopyTextureInfo,
+    TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    TextureViewDescriptor,
 };
 
 const TEXTURE_DIR: &str = "res/assets/minecraft/textures/";
@@ -16,7 +17,6 @@ pub enum Texture {
     Gravel,
     Andesite,
     Snow,
-    Water,
     LogOakTopBottom,
     LogOakSide,
     LogSpruceTopBottom,
@@ -26,7 +26,7 @@ pub enum Texture {
 }
 
 impl Texture {
-    fn texture_path(&self) -> &'static str {
+    const fn texture_path(&self) -> &'static str {
         match self {
             Texture::Stone => "block/stone.png",
             Texture::GrassBlockTop => "block/grass_block_top.png",
@@ -35,7 +35,6 @@ impl Texture {
             Texture::Gravel => "block/gravel.png",
             Texture::Andesite => "block/andesite.png",
             Texture::Snow => "block/snow.png",
-            Texture::Water => "block/water_still.png",
             Texture::LogOakTopBottom => "block/oak_log_top.png",
             Texture::LogOakSide => "block/oak_log.png",
             Texture::LogSpruceTopBottom => "block/spruce_log_top.png",
@@ -45,7 +44,7 @@ impl Texture {
         }
     }
 
-    fn all() -> &'static [Texture] {
+    const fn all() -> &'static [Texture] {
         &[
             Texture::Stone,
             Texture::GrassBlockTop,
@@ -54,7 +53,6 @@ impl Texture {
             Texture::Gravel,
             Texture::Andesite,
             Texture::Snow,
-            Texture::Water,
             Texture::LogOakTopBottom,
             Texture::LogOakSide,
             Texture::LogSpruceTopBottom,
@@ -108,47 +106,61 @@ async fn load_texture_files() -> Result<Vec<DynamicImage>, TextureLoadError> {
     Ok(textures)
 }
 
-/// Load textures and return texture views
 pub async fn load_textures(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> Result<Vec<TextureView>, TextureLoadError> {
-    let mut texture_views = Vec::new();
-
-    for (i, img) in load_texture_files().await?.into_iter().enumerate() {
-        let dimensions = img.dimensions();
-        let size = wgpu::Extent3d {
-            width: dimensions.0,
-            height: dimensions.1,
-            depth_or_array_layers: 1,
-        };
-
-        let texture = device.create_texture(&TextureDescriptor {
-            label: Some(&("texture ".to_owned() + Texture::all()[i].texture_path())),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+    device: &Device,
+    queue: &Queue,
+) -> Result<TextureView, TextureLoadError> {
+    let mut texture_files = load_texture_files().await?.into_iter().peekable();
+    let Some(img) = texture_files.peek() else {
+        panic!("There should be at least one texture");
+    };
+    let texture = device.create_texture(&TextureDescriptor {
+        label: Some("texture array"),
+        size: Extent3d {
+            width: img.dimensions().0,
+            height: img.dimensions().1,
+            depth_or_array_layers: Texture::all().len().try_into().unwrap(),
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::Rgba8UnormSrgb,
+        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (i, img) in texture_files.enumerate() {
+        assert_eq!(
+            (texture.size().width, texture.size().height),
+            img.dimensions(),
+            "Textures have inconsistent dimensions"
+        );
 
         queue.write_texture(
-            texture.as_image_copy(),
+            TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: i.try_into().unwrap(),
+                },
+                aspect: TextureAspect::All,
+            },
             &img.to_rgba8(),
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * dimensions.0),
-                rows_per_image: Some(dimensions.1),
+                bytes_per_row: Some(4 * img.dimensions().0),
+                rows_per_image: Some(img.dimensions().1),
             },
-            size,
+            Extent3d {
+                width: img.dimensions().0,
+                height: img.dimensions().1,
+                depth_or_array_layers: 1,
+            },
         );
-
-        texture_views.push(texture.create_view(&TextureViewDescriptor::default()));
     }
 
-    Ok(texture_views)
+    Ok(texture.create_view(&TextureViewDescriptor::default()))
 }
 
 /// Create texture sampler
