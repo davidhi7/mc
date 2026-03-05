@@ -79,7 +79,7 @@ fn chunk_in_frustum(chunk: vec3i) -> bool {
 fn compute_chunk_visibility(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = global_id.x;
     if index < bounds.chunk_count {
-        chunks[index].visible = u32(chunk_in_frustum(chunks[index].uvw));   
+        chunks[index].visible = u32(chunk_in_frustum(chunks[index].uvw));
     }
 }
 

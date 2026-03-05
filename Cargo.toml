@@ -7,6 +7,10 @@ version = "0.1.0"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# [lints.clippy]
+# pedantic = "warn"
+# nursery = "warn"
+
 [dependencies]
 anyhow = "1.0.86"
 bytemuck = { version = "1.16.1", features = ["derive"] }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use enum_map::EnumMap;
 
 use crate::world::{
-    chunk::{ChunkMeshingContext, ChunkStack, ChunkUVW},
+    chunk::{ChunkMeshingContext, ChunkUVW},
     world_gen::{self},
     world_loader::{
         ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, ExecutorContext, TerrainType,

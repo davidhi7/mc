@@ -14,7 +14,7 @@
   "author": "",
   "type": "module",
   "scripts": {
-    "build": "wasm-pack build --dev --target web --out-dir ./wasm/pkg/ && tsc"
+    "build": "wasm-pack build --release --target web --out-dir ./wasm/pkg/ && tsc"
   },
   "dependencies": {
     "typescript": "^5.9.3"

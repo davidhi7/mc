@@ -15,7 +15,7 @@ use crate::renderer::indirect_buffer_manager::{
 use crate::world::blocks::Block;
 use crate::world::chunk::ChunkMeshingContext;
 use crate::world::world_gen::{ChunkGenResult, WorldGenSettings};
-use crate::world::world_loader::executor::{Executor, ThreadPoolExecutor};
+use crate::world::world_loader::executor::{Executor, Job, ThreadPoolExecutor};
 use crate::world::world_loader::rolling_grid::RollingGrid;
 use crate::{
     renderer::{
@@ -108,7 +108,6 @@ struct ChunkJobResult {
 }
 
 struct ExecutorContext {
-    // device: Device,
     world_gen_settings: WorldGenSettings,
     job_id_cutoff: AtomicU64,
 }
@@ -159,7 +158,7 @@ impl WorldLoader {
             executor_ctx,
         };
 
-        instance.distribute_jobs();
+        instance.execute_jobs();
         instance
     }
 
@@ -212,7 +211,7 @@ impl WorldLoader {
             self.reload_chunk(device, &mut update_pass, uvw);
         }
 
-        self.distribute_jobs();
+        self.execute_jobs();
         update_pass.submit(device, queue, command_encoder);
     }
 
@@ -389,10 +388,10 @@ impl WorldLoader {
             });
     }
 
-    /// Distribute jobs in `grid_ctx.job_buffer` to threads in the thread pool.
+    /// Execute jobs in `grid_ctx.job_buffer` to threads in the thread pool.
     /// This method drains the jobs buffer.
-    /// The jobs are ordered by the horizontal distance to the chunk the player is in.
-    fn distribute_jobs(&mut self) {
+    /// The jobs are ordered by the horizontal distance relative to the chunk the player is in.
+    fn execute_jobs(&mut self) {
         if self.grid_ctx.job_buffer.is_empty() {
             return;
         }
@@ -408,32 +407,15 @@ impl WorldLoader {
             (IVec2::from(uw) - self.grid.center().xz()).length_squared()
         });
 
-        // Priority queue (min-heap) to manage workers by their job count
-        // let mut worker_heap: BinaryHeap<Reverse<&mut _>> =
-        //     self.worker_pool.iter_mut().map(Reverse).collect();
-
-        let mut vec = Vec::new();
-        for el in self.grid_ctx.job_buffer.drain(..) {
-            vec.push(worker::create_job(el));
-        }
+        let jobs: Vec<Job<ChunkJobResult, ExecutorContext>> = self
+            .grid_ctx
+            .job_buffer
+            .drain(..)
+            .map(|job| worker::create_job(job))
+            .collect();
 
         self.executor
-            .dispatch(vec.into_boxed_slice(), self.executor_ctx.clone());
-
-        // for job in self.grid_ctx.job_buffeVjjr.drain(..) {
-        //     // Get the worker with the least job count
-        //     let Reverse(worker) = worker_heap.pop().unwrap();
-
-        // Assign the job to this worker
-        // worker
-        //     .sender
-        //     .send(job)
-        //     .expect("Failed to send job to chunk worker thread");
-        // worker.job_count += 1;
-
-        // Push the worker back into the heap with updated job count
-        // worker_heap.push(Reverse(worker));
-        // }
+            .dispatch(jobs.into_boxed_slice(), self.executor_ctx.clone());
     }
 
     pub fn reload_world(&mut self, indirect_buffer: &mut IndirectBufferManager<TerrainType>) {
@@ -467,7 +449,7 @@ impl WorldLoader {
 
         self.grid
             .reset(&mut self.grid_ctx, update_rolling_grid(&self.world));
-        self.distribute_jobs();
+        self.execute_jobs();
     }
 
     pub fn world(&self) -> &World {
@@ -523,14 +505,15 @@ enum SettingsLoadingError {
 }
 
 fn load_worldgen_settings() -> Result<WorldGenSettings, SettingsLoadingError> {
-    const PATH: &str = "res/config/world-gen.ron";
-
     #[cfg(not(target_arch = "wasm32"))]
-    let contents = &std::fs::read_to_string(PATH)?;
+    {
+        const PATH: &str = "res/config/world-gen.ron";
+        Ok(ron::from_str(&std::fs::read_to_string(PATH)?)?)
+    }
     #[cfg(target_arch = "wasm32")]
-    // TODO load from server
-    let contents = include_str!("../../res/config/world-gen.ron");
-    Ok(ron::from_str(contents)?)
+    Ok(ron::from_str(include_str!(
+        "../../res/config/world-gen.ron"
+    ))?)
 }
 
 #[cfg(test)]
