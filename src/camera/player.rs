@@ -11,7 +11,7 @@ the velocity is incremented by `SPRINT_JUMP_ACCEL` facing in the current acceler
 */
 use std::f32::consts::{FRAC_1_SQRT_2, PI};
 
-use glam::{IVec3, Mat3, Mat4, Vec3, ivec3, vec3};
+use glam::{IVec3, Mat3, Vec3, ivec3, vec3};
 use lazy_static::lazy_static;
 use winit::keyboard::KeyCode;
 
@@ -76,7 +76,7 @@ lazy_static! {
     static ref FLYING_Y_VELOCITY: f32 = 5.0 / TPS;
 }
 
-/// Multiplied by mouse dx/dy, then added or subtracted from [`PlayerState::yaw`], [`PlayerState::pitch`].
+/// Multiplied by mouse dx and dy, then added or subtracted from [`PlayerState::yaw_norm`], [`PlayerState::pitch_norm`].
 const CAMERA_SENSITIVITY: f32 = 0.002;
 
 /// Hitbox height in metres.
@@ -104,10 +104,10 @@ enum MovementState {
 pub struct PlayerState {
     /// Camera perspective
     perspective: Perspective,
-    /// Horizontal camera orientation when multiplied with pi. Within [0.0, 2.0). 0.0 is facing towards X+ / east; 0.5 is facing towards Z+ / north.
-    yaw: f32,
-    /// Vertical camera orientation when multiplied with pi. Within [-0.5, 0.5]. 0.0 is facing forward; -0.5 is facing downward.
-    pitch: f32,
+    /// Horizontal camera orientation. Within [0.0, 2.0). 0.0 is facing towards X+ / east; 0.5 is facing towards Z+ / north.
+    yaw_norm: f32,
+    /// Vertical camera orientation. Within [-0.5, 0.5]. 0.0 is facing forward; -0.5 is facing downward.
+    pitch_norm: f32,
     /// Current movement state.
     movement_state: MovementState,
     /// Current physics related state.
@@ -131,11 +131,14 @@ struct PlayerPhysicsState {
 
 impl PlayerState {
     pub fn new(perspective: Perspective, eye: Vec3, direction: Vec3) -> Self {
+        assert_ne!(direction, Vec3::Y);
+        assert_ne!(direction, Vec3::NEG_Y);
+        assert!(direction.is_normalized());
         Self {
             perspective,
-            // TODO check yaw and pitch
-            yaw: f32::atan2(direction.x, direction.z),
-            pitch: f32::atan(direction.y),
+            // Convert [-1.0, 1.0] to [0.0, 2.0]
+            yaw_norm: (f32::atan2(direction.z, direction.x) / PI + 2.0) % 2.0,
+            pitch_norm: f32::asin(direction.y) / PI,
             movement_state: MovementState::Walking,
             physics_state: PlayerPhysicsState {
                 eye,
@@ -170,8 +173,8 @@ impl PlayerState {
 
     pub fn update_rotation(&mut self, input_state: &mut InputState) {
         let (dx, dy) = input_state.pull_mouse_movement();
-        let mut new_yaw = self.yaw - (dx as f32) * CAMERA_SENSITIVITY;
-        let new_pitch = (self.pitch - (dy as f32) * CAMERA_SENSITIVITY)
+        let mut new_yaw = self.yaw_norm - (dx as f32) * CAMERA_SENSITIVITY;
+        let new_pitch = (self.pitch_norm - (dy as f32) * CAMERA_SENSITIVITY)
             .clamp(-0.5 + f32::EPSILON, 0.5 - f32::EPSILON);
 
         // Normalize yaw value
@@ -180,8 +183,8 @@ impl PlayerState {
             new_yaw += 2.0;
         }
 
-        self.yaw = new_yaw;
-        self.pitch = new_pitch;
+        self.yaw_norm = new_yaw;
+        self.pitch_norm = new_pitch;
     }
 
     pub fn update_position(
@@ -252,7 +255,7 @@ impl PlayerState {
         // rotate acceleration so that it uses the world coordinate system
         // TODO why 2 - yaw?
         let mut world_acceleration =
-            Mat3::from_rotation_y((2.0 - self.yaw) * PI) * rotated_acceleration;
+            Mat3::from_rotation_y((2.0 - self.yaw_norm) * PI) * rotated_acceleration;
         let mut jump_initiated = false;
 
         match self.movement_state {
@@ -359,16 +362,19 @@ impl PlayerState {
     }
 
     pub fn direction(&self) -> Vec3 {
-        let (yaw_sin, yaw_cos) = (self.yaw * PI).sin_cos();
-        let (pitch_sin, pitch_cos) = (self.pitch * PI).sin_cos();
+        let (yaw_sin, yaw_cos) = (self.yaw_norm * PI).sin_cos();
+        let (pitch_sin, pitch_cos) = (self.pitch_norm * PI).sin_cos();
         vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin)
     }
 
     pub fn view(&self) -> View {
+        let direction = self.direction();
+        debug_assert!(direction.is_normalized());
         View {
             eye: self.physics_state.eye,
-            direction: self.direction(),
-            up: Vec3::Y,
+            direction,
+            // Find the vector in the plane between `direction` and Y that is perpendicular to `direction`
+            up: direction.cross(Vec3::Y).normalize().cross(direction),
         }
     }
 
@@ -376,11 +382,8 @@ impl PlayerState {
         self.perspective
     }
 
-    pub fn view_projection(&self) -> Mat4 {
-        self.perspective.get_matrix() * self.view().get_matrix()
-    }
-
     pub fn extrapolate_view(&self, lag_s: f32, block_lookup: &impl LookupBlock) -> View {
+        let mut view = self.view();
         let lag_ticks = lag_s / TPS.recip();
         let extrapolated_state = resolve_collisions(
             self.physics_state,
@@ -389,17 +392,8 @@ impl PlayerState {
             block_lookup,
         );
 
-        View {
-            eye: extrapolated_state.eye,
-            direction: self.direction(),
-            up: Vec3::Y,
-        }
-    }
-
-    pub fn extrapolate_view_projection(&self, lag_s: f32, block_lookup: &impl LookupBlock) -> Mat4 {
-        let view = self.extrapolate_view(lag_s, block_lookup);
-
-        self.perspective.get_matrix() * view.get_matrix()
+        view.eye = extrapolated_state.eye;
+        view
     }
 
     /// Returns true if the block intersects the player AABB and the block is solid

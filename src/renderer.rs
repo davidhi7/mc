@@ -173,7 +173,7 @@ impl WorldRenderer {
     ) -> Self {
         let player = PlayerState::new(
             Perspective {
-                fov_y: f32::to_radians(90.0),
+                fov_y_rad: f32::to_radians(90.0),
                 aspect_ratio: surface_size.width as f32 / surface_size.height as f32,
                 z_near: 0.1,
                 z_far: 1000.0,
@@ -182,7 +182,7 @@ impl WorldRenderer {
             Vec3::Z,
         );
 
-        let globals = GlobalsBinding::new(&device, player.view_projection());
+        let globals = GlobalsBinding::new(&device, player.view(), player.perspective());
 
         let mut world_loader = WorldLoader::new(world, player.eye(), CHUNK_RENDER_DISTANCE);
 
@@ -226,6 +226,8 @@ impl WorldRenderer {
             ib.indirect_buffer(),
             chunks_per_bucket as u32,
             2 * chunks_per_bucket as u32,
+            player.view(),
+            player.perspective(),
         );
 
         let block_outline_pipeline = BlockOutlinePipeline::new(&device, &globals, surface_format);
@@ -264,11 +266,15 @@ impl WorldRenderer {
                 );
             });
 
-        self.globals.update(
-            &self.queue,
-            self.player
-                .extrapolate_view_projection(lag_s, self.world_loader.world()),
-        );
+        let extrapolated_view = self
+            .player
+            .extrapolate_view(lag_s, self.world_loader.world());
+        let perspective = self.player.perspective();
+
+        self.globals
+            .update(&self.queue, extrapolated_view, perspective);
+        self.frustum_culling_pass
+            .update_camera(&self.queue, extrapolated_view, perspective);
 
         let mut updated_blocks = SmallVec::new();
 
@@ -333,12 +339,7 @@ impl WorldRenderer {
         surface_view: &TextureView,
         depth_texture_view: &TextureView,
     ) {
-        self.frustum_culling_pass.run(
-            &self.queue,
-            encoder,
-            &self.player.view(),
-            &self.player.perspective(),
-        );
+        self.frustum_culling_pass.run(encoder);
 
         let mut render_pass: RenderPass<'_> = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("render pass"),

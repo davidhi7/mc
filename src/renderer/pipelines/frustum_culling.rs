@@ -1,7 +1,7 @@
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferUsages,
-    CommandEncoder, ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device,
+    BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferUsages, CommandEncoder,
+    ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device,
     PipelineLayoutDescriptor, Queue, ShaderStages,
     util::{BufferInitDescriptor, DeviceExt},
 };
@@ -25,7 +25,7 @@ impl CullingDataBinding {
         draw_buffer: &Buffer,
     ) -> Self {
         let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("culling data layout"),
+            label: Some("frustum culling data layout"),
             entries: &[
                 // Frustum planes buffer
                 BindGroupLayoutEntry {
@@ -74,7 +74,7 @@ impl CullingDataBinding {
             ],
         });
         let binding = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("culling data binding"),
+            label: Some("frustum culling data binding"),
             layout: &layout,
             entries: &[
                 BindGroupEntry {
@@ -115,12 +115,13 @@ impl FrustumCullingComputePass {
         indirect_draw_buffer: &Buffer,
         uniform_count: u32,
         draw_count: u32,
+        view: View,
+        perspective: Perspective,
     ) -> FrustumCullingComputePass {
-        let frustum_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("culling frustum buffer"),
-            size: std::mem::size_of::<CameraFrustum>() as u64,
+        let frustum_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("frustum culling frustum buffer"),
+            contents: bytemuck::bytes_of(&CameraFrustum::from_camera(view, perspective)),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
 
         let bounds_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -177,24 +178,19 @@ impl FrustumCullingComputePass {
         }
     }
 
-    pub fn run(
-        &self,
-        queue: &Queue,
-        encoder: &mut CommandEncoder,
-        view: &View,
-        perspective: &Perspective,
-    ) {
+    pub fn update_camera(&self, queue: &Queue, view: View, perspective: Perspective) {
         queue.write_buffer(
             &self.frustum_buffer,
             0,
             bytemuck::bytes_of(&CameraFrustum::from_camera(view, perspective)),
         );
+    }
 
+    pub fn run(&self, encoder: &mut CommandEncoder) {
         let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some("culling compute pass"),
             timestamp_writes: None,
         });
-
         cpass.set_bind_group(0, &self.culling_data_binding.binding, &[]);
 
         cpass.set_pipeline(&self.visibility_check_pipeline);
