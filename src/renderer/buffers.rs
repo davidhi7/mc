@@ -26,10 +26,12 @@ impl<T: Pod> AsBytes for T {
 }
 
 pub trait WriteBuffer {
+    /// Write bytes to the buffer at the given offset.
     fn write(&mut self, offset: u64, data: &[u8]);
 }
 
 pub trait CopyFromBuffer<T> {
+    /// Write `copy_size` bytes from the source to the buffer, taking offsets into account.
     fn copy_from_buffer(
         &mut self,
         source: &T,
@@ -62,11 +64,14 @@ impl<'a> BufferMemoryTarget<'a> {
         }
     }
 
+    /// Shift all write operations by the given global offset.
     pub fn with_global_offset(mut self, offset: u64) -> Self {
         self.global_offset = offset;
         self
     }
 
+    /// Upper limit for write operations. All write operations must not write beyong `offset + data.len() < limit`
+    /// This limit is shifted according to the global offset, if set.
     pub fn with_limit(mut self, limit: u64) -> Self {
         self.limit = Some(limit);
         self
@@ -74,12 +79,14 @@ impl<'a> BufferMemoryTarget<'a> {
 }
 
 impl<'a> WriteBuffer for BufferMemoryTarget<'a> {
-    /// Write the data completely into the buffer, starting at `offset` added to `global_offset`, if set.
     fn write(&mut self, offset: u64, data: &[u8]) {
         if let Some(limit) = self.limit
-            && offset >= limit
+            && offset
+                .checked_add(data.len() as u64)
+                .expect("Buffer write overflow")
+                >= limit
         {
-            panic!("Buffer write at greater limit than permitted");
+            panic!("Buffer write up to a greater limit than permitted");
         }
         self.queue
             .write_buffer(self.buffer, self.global_offset + offset, data);
