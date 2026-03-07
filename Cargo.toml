@@ -14,6 +14,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow = "1.0.86"
 bytemuck = { version = "1.16.1", features = ["derive"] }
+egui = "0.33.3"
+egui-wgpu = "0.33.3"
+egui-winit = {version = "0.33.3", default-features = false }
 enum-map = "2.7.3"
 env_logger = "0.11.3"
 glam = { version = "0.30.8", features = ["bytemuck"] }
@@ -30,7 +33,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 smallvec = "1.15.1"
 thiserror = "2.0.17"
 web-time = "1.1.0"
-wgpu = "28.0.0"
+wgpu = "27.0.1"
 winit = "0.30.12"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

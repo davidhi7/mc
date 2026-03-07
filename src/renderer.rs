@@ -6,8 +6,8 @@ use smallvec::SmallVec;
 use wgpu::{
     Color, CommandEncoder, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue,
     RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
-    StoreOp, Surface, SurfaceError, Texture, TextureDescriptor, TextureDimension, TextureFormat,
-    TextureUsages, TextureView, TextureViewDescriptor,
+    StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+    TextureView, TextureViewDescriptor,
 };
 use winit::{dpi::PhysicalSize, event::MouseButton, keyboard::KeyCode};
 
@@ -121,30 +121,9 @@ impl Renderer {
         self.queue.submit(iter::once(encoder.finish()));
     }
 
-    pub fn render(
-        &self,
-        surface: &Surface<'_>,
-        surface_view_format: TextureFormat,
-    ) -> Result<(), SurfaceError> {
-        let surface_texture = surface.get_current_texture()?;
-        let view = surface_texture.texture.create_view(&TextureViewDescriptor {
-            format: Some(surface_view_format),
-            ..Default::default()
-        });
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("render command encoder"),
-            });
-
+    pub fn render(&self, encoder: &mut CommandEncoder, surface_view: &TextureView) {
         self.world_renderer
-            .render(&mut encoder, &view, &self.depth_texture_view);
-
-        self.queue.submit(iter::once(encoder.finish()));
-        surface_texture.present();
-
-        Ok(())
+            .render(encoder, surface_view, &self.depth_texture_view);
     }
 }
 
@@ -368,7 +347,6 @@ impl WorldRenderer {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
-            multiview_mask: None,
         });
 
         if self.indirect_draw_buffer.draw_count(TerrainType::Solid) > 0 {

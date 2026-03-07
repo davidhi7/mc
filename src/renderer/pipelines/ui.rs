@@ -22,7 +22,7 @@ impl UiPipeline {
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("reticle render pipeline layout"),
             bind_group_layouts: &[&globals_binding.layout],
-            immediate_size: 0,
+            push_constant_ranges: &[],
         });
 
         let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -65,7 +65,7 @@ impl UiPipeline {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview_mask: None,
+            multiview: None,
             cache: None,
         });
 

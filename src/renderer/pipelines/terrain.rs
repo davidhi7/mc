@@ -166,7 +166,7 @@ impl TerrainPipeline {
                     &binding.buffers.layout,
                     &binding.textures.layout,
                 ],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             })),
             vertex: VertexState {
                 module: &terrain_shader,
@@ -211,7 +211,7 @@ impl TerrainPipeline {
                     zero_initialize_workgroup_memory: false,
                 },
             }),
-            multiview_mask: None,
+            multiview: None,
             cache: None,
         });
 
@@ -224,7 +224,7 @@ impl TerrainPipeline {
                     &binding.buffers.layout,
                     &binding.textures.layout,
                 ],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             })),
             vertex: VertexState {
                 module: &water_shader,
@@ -269,7 +269,7 @@ impl TerrainPipeline {
                     zero_initialize_workgroup_memory: false,
                 },
             }),
-            multiview_mask: None,
+            multiview: None,
             cache: None,
         });
 

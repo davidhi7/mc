@@ -91,7 +91,7 @@ impl BlockOutlinePipeline {
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("block outline render pipeline layout"),
                 bind_group_layouts: &[&globals_binding.layout],
-                immediate_size: 0,
+                push_constant_ranges: &[],
             })),
             vertex: VertexState {
                 module: &shader,
@@ -131,7 +131,7 @@ impl BlockOutlinePipeline {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview_mask: None,
+            multiview: None,
             cache: None,
         });
 

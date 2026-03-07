@@ -11,6 +11,7 @@ pub(crate) mod shaders;
 pub(crate) mod tests;
 mod texture;
 pub mod thread_pool;
+mod ui;
 #[cfg(target_arch = "wasm32")]
 mod wasm_fetch;
 mod world;
@@ -18,27 +19,32 @@ mod world;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use std::sync::Arc;
+use std::{iter, sync::Arc};
 use web_time::Instant;
 
 use wgpu::{
     CompositeAlphaMode, Device, DeviceDescriptor, ExperimentalFeatures, Features, Instance,
-    InstanceDescriptor, Limits, MemoryHints, PowerPreference, PresentMode, RequestAdapterOptions,
-    Surface, SurfaceConfiguration, SurfaceError, TextureFormat, TextureUsages, Trace,
+    InstanceDescriptor, Limits, MemoryHints, PowerPreference, PresentMode, Queue,
+    RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceError, TextureFormat,
+    TextureUsages, TextureViewDescriptor, Trace, wgt::CommandEncoderDescriptor,
 };
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::*,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
+    keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
 
-use crate::{frametime_metrics::FrameTimeMetrics, input::InputState, renderer::Renderer};
+use crate::{
+    frametime_metrics::FrameTimeMetrics, input::InputState, renderer::Renderer, ui::EguiState,
+};
 
 struct Graphics {
     window: Arc<Window>,
     device: Device,
+    queue: Queue,
     surface: Surface<'static>,
     // Format for surface cannot be sRGB in WebGPU
     surface_format: TextureFormat,
@@ -47,6 +53,8 @@ struct Graphics {
     input_state: InputState,
     frametimes: FrameTimeMetrics,
     renderer: Renderer,
+    egui_state: EguiState,
+    surface_size: PhysicalSize<u32>,
 }
 
 impl Graphics {
@@ -117,15 +125,21 @@ impl Graphics {
             texture::load_textures(&device, &queue).await.unwrap(),
         );
 
+        let egui_state = EguiState::new(&window, &device, surface_view_format);
+        let surface_size = window.inner_size();
+
         let state = Graphics {
             window,
             device,
+            queue,
             surface,
             surface_format,
             surface_view_format,
             input_state: Default::default(),
             frametimes: FrameTimeMetrics::new(1000),
             renderer,
+            egui_state,
+            surface_size,
         };
 
         state.configure_surface(size);
@@ -134,6 +148,7 @@ impl Graphics {
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        self.surface_size = new_size;
         self.configure_surface(new_size);
         self.renderer.resize(new_size);
     }
@@ -144,7 +159,7 @@ impl Graphics {
             format: self.surface_format,
             width: size.width,
             height: size.height,
-            present_mode: PresentMode::AutoVsync,
+            present_mode: PresentMode::AutoNoVsync,
             desired_maximum_frame_latency: 2,
             alpha_mode: CompositeAlphaMode::Auto,
             view_formats: vec![self.surface_view_format],
@@ -157,11 +172,35 @@ impl Graphics {
         let frametime_start = Instant::now();
 
         self.renderer.update(&mut self.input_state);
-        match self
-            .renderer
-            .render(&self.surface, self.surface_view_format)
-        {
-            Ok(_) => {}
+
+        match self.surface.get_current_texture() {
+            Ok(surface_texture) => {
+                let mut encoder = self
+                    .device
+                    .create_command_encoder(&CommandEncoderDescriptor {
+                        label: Some("render command encoder"),
+                    });
+
+                let surface_view = surface_texture.texture.create_view(&TextureViewDescriptor {
+                    format: Some(self.surface_view_format),
+                    ..Default::default()
+                });
+
+                self.renderer.render(&mut encoder, &surface_view);
+
+                self.egui_state.render(
+                    &self.window,
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &surface_view,
+                    self.surface_size,
+                );
+
+                self.queue.submit(iter::once(encoder.finish()));
+
+                surface_texture.present();
+            }
             // Reconfigure the surface if it's lost or outdated
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
                 self.configure_surface(self.window.inner_size());
@@ -293,7 +332,9 @@ impl ApplicationHandler<Graphics> for App {
             return;
         };
 
-        if let DeviceEvent::MouseMotion { delta } = event {
+        if let DeviceEvent::MouseMotion { delta } = event
+            && !gfx.egui_state.wants_pointer_input()
+        {
             gfx.input_state.increment_mouse_movement(delta);
         }
     }
@@ -303,6 +344,10 @@ impl ApplicationHandler<Graphics> for App {
             log::warn!("Window event but app is not ready");
             return;
         };
+
+        if gfx.egui_state.on_window_event(&gfx.window, &event).consumed {
+            return;
+        }
 
         match event {
             WindowEvent::CloseRequested => {
@@ -327,7 +372,17 @@ impl ApplicationHandler<Graphics> for App {
                     .or_else(|_e| gfx.window.set_cursor_grab(CursorGrabMode::Confined))
                     .unwrap();
             }
-            WindowEvent::KeyboardInput { event, .. } => gfx.input_state.handle_key_event(event),
+            WindowEvent::KeyboardInput { event, .. } => match event {
+                KeyEvent {
+                    physical_key: PhysicalKey::Code(KeyCode::Escape),
+                    ..
+                } => {
+                    if let Err(err) = gfx.window.set_cursor_grab(CursorGrabMode::None) {
+                        log::warn!("Failed to release cursor: {err:?}");
+                    };
+                }
+                _ => gfx.input_state.handle_key_event(event),
+            },
             WindowEvent::MouseInput {
                 state: button_state,
                 button,

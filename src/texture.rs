@@ -171,7 +171,7 @@ pub fn create_sampler(device: &Device) -> Sampler {
         address_mode_w: wgpu::AddressMode::Repeat,
         mag_filter: wgpu::FilterMode::Nearest,
         min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
         ..Default::default()
     })
 }

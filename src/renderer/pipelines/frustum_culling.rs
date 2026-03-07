@@ -146,7 +146,7 @@ impl FrustumCullingComputePass {
                 layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                     label: Some("chunk visibility check pipeline layout"),
                     bind_group_layouts: &[&culling_data_binding.layout],
-                    immediate_size: 0,
+                    push_constant_ranges: &[],
                 })),
                 module: &shader,
                 entry_point: Some("compute_chunk_visibility"),
@@ -160,7 +160,7 @@ impl FrustumCullingComputePass {
                 layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                     label: Some("chunk visibility writeback pipeline layout"),
                     bind_group_layouts: &[&culling_data_binding.layout],
-                    immediate_size: 0,
+                    push_constant_ranges: &[],
                 })),
                 module: &shader,
                 entry_point: Some("write_chunk_data"),
