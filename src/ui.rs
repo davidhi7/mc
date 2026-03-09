@@ -1,16 +1,22 @@
-use egui::{Context, Shadow, ViewportId, Visuals};
+use egui::{Context, Shadow, Ui, ViewportId, Visuals};
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State;
 use wgpu::{
-    CommandBuffer, Device, LoadOp, Operations, Queue, RenderPassColorAttachment,
-    RenderPassDescriptor, StoreOp, TextureFormat,
+    CommandBuffer, CommandEncoder, Device, LoadOp, Operations, Queue, RenderPassColorAttachment,
+    RenderPassDescriptor, StoreOp, TextureFormat, TextureView,
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
+
+pub struct GuiModule {
+    pub title: String,
+    pub add_contents: Box<dyn FnMut(&mut Ui)>,
+}
 
 pub struct EguiState {
     context: Context,
     winit_state: State,
     renderer: Renderer,
+    gui_modules: Vec<GuiModule>,
 }
 
 impl EguiState {
@@ -36,7 +42,12 @@ impl EguiState {
             context,
             winit_state,
             renderer,
+            gui_modules: Vec::new(),
         }
+    }
+
+    pub fn add_gui_module(&mut self, module: GuiModule) {
+        self.gui_modules.push(module);
     }
 
     pub fn on_window_event(
@@ -56,15 +67,22 @@ impl EguiState {
         window: &Window,
         device: &Device,
         queue: &Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        target_view: &wgpu::TextureView,
+        encoder: &mut CommandEncoder,
+        target_view: &TextureView,
         surface_size: PhysicalSize<u32>,
     ) -> Vec<CommandBuffer> {
         let raw_input = self.winit_state.take_egui_input(window);
 
         let full_output = self.context.run(raw_input, |ctx| {
-            egui::Window::new("Hello").show(ctx, |ui| {
-                ui.label("Hello world!");
+            egui::Window::new("Title").title_bar(false).show(ctx, |ui| {
+                for GuiModule {
+                    title,
+                    add_contents: renderer,
+                } in self.gui_modules.iter_mut()
+                {
+                    ui.heading(title);
+                    ui.scope(renderer);
+                }
             });
         });
 

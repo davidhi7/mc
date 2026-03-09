@@ -11,7 +11,7 @@ pub(crate) mod shaders;
 pub(crate) mod tests;
 mod texture;
 pub mod thread_pool;
-mod ui;
+pub mod ui;
 #[cfg(target_arch = "wasm32")]
 mod wasm_fetch;
 mod world;
@@ -125,7 +125,10 @@ impl Graphics {
             texture::load_textures(&device, &queue).await.unwrap(),
         );
 
-        let egui_state = EguiState::new(&window, &device, surface_view_format);
+        let frametimes = FrameTimeMetrics::new(1000);
+
+        let mut egui_state = EguiState::new(&window, &device, surface_view_format);
+        egui_state.add_gui_module(frametime_metrics::create_ui_module(&frametimes));
         let surface_size = window.inner_size();
 
         let state = Graphics {
@@ -136,7 +139,7 @@ impl Graphics {
             surface_format,
             surface_view_format,
             input_state: Default::default(),
-            frametimes: FrameTimeMetrics::new(1000),
+            frametimes,
             renderer,
             egui_state,
             surface_size,
@@ -223,16 +226,7 @@ impl Graphics {
         }
 
         self.frametimes.push(frametime_start.elapsed());
-        if self.frametimes.maybe_update_sample() {
-            if cfg!(target_arch = "wasm32") {
-                log::info!("{}ms", self.frametimes.get_sample_frametime());
-            } else {
-                self.window.set_title(&format!(
-                    "mc | {}ms",
-                    self.frametimes.get_sample_frametime()
-                ));
-            }
-        }
+        self.frametimes.maybe_update_sample();
     }
 }
 
