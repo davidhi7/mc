@@ -7,11 +7,11 @@ use wgpu::{
 
 use crate::{renderer::pipelines::GlobalsBinding, shaders};
 
-pub struct UiPipeline {
+pub struct CrosshairPipeline {
     pipeline: RenderPipeline,
 }
 
-impl UiPipeline {
+impl CrosshairPipeline {
     pub fn new(
         device: &Device,
         globals_binding: &GlobalsBinding,
@@ -69,7 +69,7 @@ impl UiPipeline {
             cache: None,
         });
 
-        UiPipeline {
+        CrosshairPipeline {
             pipeline: render_pipeline,
         }
     }

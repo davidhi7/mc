@@ -131,7 +131,7 @@ impl<Bucket: DrawCallBucket> IndirectBufferAllocator<Bucket> {
     ) -> Result<IndirectBufferHandle<Bucket>, AllocationError> {
         let target = &mut BufferMemoryTarget::new(&self.buffer, queue, command_encoder)
             .with_global_offset(self.offset(bucket))
-            .with_limit(self.block_segment_size());
+            .with_limit(self.bytes_per_bucket());
 
         let allocator = &mut self.allocators[bucket];
         let first_free_block = allocator.allocator.first_free_block()?;
@@ -157,7 +157,7 @@ impl<Bucket: DrawCallBucket> IndirectBufferAllocator<Bucket> {
     ) -> Result<(), AllocationError> {
         let target = &mut BufferMemoryTarget::new(&self.buffer, queue, command_encoder)
             .with_global_offset(self.offset(handle.bucket))
-            .with_limit(self.block_segment_size());
+            .with_limit(self.bytes_per_bucket());
 
         self.allocators[handle.bucket]
             .allocator
@@ -192,7 +192,7 @@ impl<Bucket: DrawCallBucket> IndirectBufferAllocator<Bucket> {
     }
 
     /// Size of indirect buffer segment for one bucket type, in bytes.
-    fn block_segment_size(&self) -> u64 {
+    fn bytes_per_bucket(&self) -> u64 {
         self.chunks_per_bucket * std::mem::size_of::<DrawIndirectArgs>() as u64
     }
 
@@ -657,7 +657,12 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         self.indirect_buffer_allocator.draw_count(bucket)
     }
 
-    pub fn construct_draw_indirect_args<T>(
+    /// Maximum number of chunks per bucket
+    pub fn chunks_per_bucket(&self) -> u64 {
+        self.indirect_buffer_allocator.chunks_per_bucket
+    }
+
+    fn construct_draw_indirect_args<T>(
         bucket: Bucket,
         vertex_buffer_segment: SegmentHandle,
         uniform_buffer_handle: CountedBlockHandle<T>,

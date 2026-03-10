@@ -36,7 +36,7 @@ impl View {
     }
 }
 
-#[derive(Clone, Copy, Zeroable, Pod)]
+#[derive(Clone, Copy, Default, Zeroable, Pod)]
 #[repr(C)]
 pub struct ViewProjectionMatrix([[f32; 4]; 4]);
 

@@ -11,25 +11,25 @@ use crate::{
 const FOCUS_DISTANCE: f32 = 10.0;
 
 #[derive(Clone, Copy, Debug)]
-pub struct BlockInfo {
+pub struct BlockHitInfo {
     pub coords: IVec3,
     #[expect(dead_code)]
     pub block: Block,
     pub face: Option<Direction>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct LookedAtBlockResult {
-    pub solid_block: Option<BlockInfo>,
-    pub liquid_block: Option<BlockInfo>,
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LookedAtBlocks {
+    pub solid_block: Option<BlockHitInfo>,
+    pub liquid_block: Option<BlockHitInfo>,
 }
 
 pub fn find_looked_at_blocks(
     eye: Vec3,
     direction: Vec3,
     block_lookup: &impl LookupBlock,
-) -> LookedAtBlockResult {
-    let mut focused_blocks = LookedAtBlockResult {
+) -> LookedAtBlocks {
+    let mut focused_blocks = LookedAtBlocks {
         solid_block: None,
         liquid_block: None,
     };
@@ -47,7 +47,7 @@ pub fn find_looked_at_blocks(
             if let Some(block) = block_lookup.lookup_block(voxel) {
                 match block.physics_type() {
                     BlockPhysicsType::Solid => {
-                        focused_blocks.solid_block = Some(BlockInfo {
+                        focused_blocks.solid_block = Some(BlockHitInfo {
                             coords: voxel,
                             block,
                             face: direction,
@@ -56,7 +56,7 @@ pub fn find_looked_at_blocks(
                     }
                     BlockPhysicsType::Liquid => {
                         if focused_blocks.liquid_block.is_none() {
-                            focused_blocks.liquid_block = Some(BlockInfo {
+                            focused_blocks.liquid_block = Some(BlockHitInfo {
                                 coords: voxel,
                                 block,
                                 face: direction,

@@ -9,9 +9,9 @@ use wgpu::{
 use crate::camera::{Perspective, View, ViewProjectionMatrix};
 
 pub mod block_outlines;
+pub mod debug_crosshair;
 pub mod frustum_culling;
 pub mod terrain;
-pub mod ui;
 
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -27,11 +27,11 @@ pub struct GlobalsBinding {
 }
 
 impl GlobalsBinding {
-    pub fn new(device: &Device, view: View, perspective: Perspective) -> Self {
+    pub fn new(device: &Device) -> Self {
         let globals_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("globals buffer"),
             contents: bytemuck::bytes_of(&Globals {
-                view_proj: ViewProjectionMatrix::new(view, perspective),
+                view_proj: ViewProjectionMatrix::default(),
             }),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });

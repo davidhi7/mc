@@ -38,7 +38,7 @@ use winit::{
 };
 
 use crate::{
-    frametime_metrics::FrameTimeMetrics, input::InputState, renderer::Renderer, ui::EguiState,
+    frametime_metrics::FrameTimeMetrics, input::InputState, renderer::SceneState, ui::EguiState,
 };
 
 struct Graphics {
@@ -52,7 +52,7 @@ struct Graphics {
     surface_view_format: TextureFormat,
     input_state: InputState,
     frametimes: FrameTimeMetrics,
-    renderer: Renderer,
+    scene_state: SceneState,
     egui_state: EguiState,
     surface_size: PhysicalSize<u32>,
 }
@@ -117,7 +117,7 @@ impl Graphics {
 
         let size = window.inner_size();
 
-        let renderer = Renderer::new(
+        let scene_state = SceneState::new(
             device.clone(),
             queue.clone(),
             size,
@@ -140,7 +140,7 @@ impl Graphics {
             surface_view_format,
             input_state: Default::default(),
             frametimes,
-            renderer,
+            scene_state,
             egui_state,
             surface_size,
         };
@@ -153,7 +153,7 @@ impl Graphics {
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.surface_size = new_size;
         self.configure_surface(new_size);
-        self.renderer.resize(new_size);
+        self.scene_state.resize(new_size);
     }
 
     fn configure_surface(&self, size: PhysicalSize<u32>) {
@@ -174,7 +174,7 @@ impl Graphics {
     fn render(&mut self, event_loop: &ActiveEventLoop) {
         let frametime_start = Instant::now();
 
-        self.renderer.update(&mut self.input_state);
+        self.scene_state.update(&mut self.input_state);
 
         match self.surface.get_current_texture() {
             Ok(surface_texture) => {
@@ -189,7 +189,7 @@ impl Graphics {
                     ..Default::default()
                 });
 
-                self.renderer.render(&mut encoder, &surface_view);
+                self.scene_state.render(&mut encoder, &surface_view);
 
                 self.egui_state.render(
                     &self.window,

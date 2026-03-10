@@ -16,7 +16,10 @@ use lazy_static::lazy_static;
 use winit::keyboard::KeyCode;
 
 use crate::{
-    camera::{Perspective, View},
+    camera::{
+        Perspective, View,
+        block_ray_caster::{self, LookedAtBlocks},
+    },
     input::InputState,
     math::{Aabb3, Aabb3I},
     world::{LookupBlock, blocks::BlockPhysicsType},
@@ -112,6 +115,8 @@ pub struct PlayerState {
     movement_state: MovementState,
     /// Current physics related state.
     physics_state: PlayerPhysicsState,
+    /// Blocks currently looked-at
+    looked_at_blocks: LookedAtBlocks,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -164,6 +169,7 @@ impl PlayerState {
                     pos_z_collision: false,
                 },
             },
+            looked_at_blocks: LookedAtBlocks::default(),
         }
     }
 
@@ -357,6 +363,11 @@ impl PlayerState {
         }
     }
 
+    pub fn update_looked_at_blocks(&mut self, block_lookup: &impl LookupBlock) {
+        self.looked_at_blocks =
+            block_ray_caster::find_looked_at_blocks(self.eye(), self.direction(), block_lookup);
+    }
+
     pub fn eye(&self) -> Vec3 {
         self.physics_state.eye
     }
@@ -394,6 +405,10 @@ impl PlayerState {
 
         view.eye = extrapolated_state.eye;
         view
+    }
+
+    pub fn looked_at_blocks(&self) -> LookedAtBlocks {
+        self.looked_at_blocks
     }
 
     /// Returns true if the block intersects the player AABB and the block is solid
