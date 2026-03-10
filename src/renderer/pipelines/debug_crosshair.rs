@@ -17,16 +17,16 @@ impl CrosshairPipeline {
         globals_binding: &GlobalsBinding,
         surface_format: TextureFormat,
     ) -> Self {
-        let shader = device.create_shader_module(shaders::SHADER_RETICLE);
+        let shader = device.create_shader_module(shaders::SHADER_CROSSHAIR);
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("reticle render pipeline layout"),
+            label: Some("crosshair render pipeline layout"),
             bind_group_layouts: &[&globals_binding.layout],
             push_constant_ranges: &[],
         });
 
         let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("reticle render pipeline"),
+            label: Some("crosshair render pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: VertexState {
                 module: &shader,
