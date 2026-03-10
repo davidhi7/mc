@@ -1,7 +1,7 @@
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, time::Duration};
 use web_time::Instant;
 
-use crate::ui::GuiModule;
+use crate::ui::{CreateGuiModule, GuiModule};
 
 #[derive(Clone)]
 pub struct FrameTimeMetrics {
@@ -50,16 +50,18 @@ impl FrameTimeMetrics {
     }
 }
 
-pub fn create_ui_module(instance: &FrameTimeMetrics) -> GuiModule {
-    let instance_clone = instance.clone();
-    GuiModule {
-        title: "Frame times".to_string(),
-        add_contents: Box::new(move |ui| {
-            let frametime = instance_clone.inner.borrow().last_sample_frametime_ms;
-            ui.horizontal(|ui| {
-                ui.label("Frame times:");
-                ui.monospace(format!("{:.2} ms", frametime));
-            });
-        }),
+impl CreateGuiModule for FrameTimeMetrics {
+    fn create_ui_module(&self) -> GuiModule {
+        let clone = self.clone();
+        GuiModule {
+            title: "Frame times".to_string(),
+            add_contents: Box::new(move |ui| {
+                let frametime = clone.inner.borrow().last_sample_frametime_ms;
+                ui.horizontal(|ui| {
+                    ui.label("Frame times:");
+                    ui.monospace(format!("{:.2} ms", frametime));
+                });
+            }),
+        }
     }
 }

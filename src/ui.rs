@@ -7,6 +7,14 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
+pub trait CreateGuiModule {
+    fn create_ui_module(&self) -> GuiModule;
+}
+
+pub trait AddToGui {
+    fn add_to_ui(&self, ui: &mut Ui);
+}
+
 pub struct GuiModule {
     pub title: String,
     pub add_contents: Box<dyn FnMut(&mut Ui)>,

@@ -13,7 +13,6 @@ const FOCUS_DISTANCE: f32 = 10.0;
 #[derive(Clone, Copy, Debug)]
 pub struct BlockHitInfo {
     pub coords: IVec3,
-    #[expect(dead_code)]
     pub block: Block,
     pub face: Option<Direction>,
 }

@@ -1,4 +1,4 @@
-use std::{iter, time::Duration};
+use std::{cell::RefCell, rc::Rc, time::Duration};
 use web_time::Instant;
 
 use glam::{IVec3, Vec3, vec3};
@@ -27,6 +27,7 @@ use crate::{
         },
     },
     texture,
+    ui::{AddToGui, CreateGuiModule, GuiModule},
     world::{
         World,
         blocks::{Block, BlockPhysicsType},
@@ -50,7 +51,7 @@ pub struct SceneState {
     depth_texture_view: TextureView,
     world_renderer: WorldRenderer,
     world_loader: WorldLoader,
-    player: PlayerState,
+    player: Rc<RefCell<PlayerState>>,
     update_loop: FixedTimestepLoop,
     indirect_buffer_manager: IndirectBufferManager<TerrainType>,
 }
@@ -104,7 +105,7 @@ impl SceneState {
             depth_texture,
             depth_texture_view,
             world_renderer,
-            player,
+            player: Rc::new(RefCell::new(player)),
             world_loader,
             update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(player::TPS.recip())),
             indirect_buffer_manager,
@@ -139,30 +140,26 @@ impl SceneState {
         self.depth_texture_view = depth_texture_view;
 
         self.player
+            .borrow_mut()
             .set_aspect_ratio(new_size.width as f32 / new_size.height as f32);
     }
 
     pub fn update(&mut self, input_state: &mut InputState) {
-        self.player.update_rotation(input_state);
+        let mut player = self.player.borrow_mut();
+        player.update_rotation(input_state);
         let lag_s = self
             .update_loop
             .tick(|TickInformation { timestep_s, time_s }| {
-                self.player.update_position(
-                    input_state,
-                    timestep_s,
-                    time_s,
-                    self.world_loader.world(),
-                );
+                player.update_position(input_state, timestep_s, time_s, self.world_loader.world());
             });
-        self.player
-            .update_looked_at_blocks(self.world_loader.world());
+        player.update_looked_at_blocks(self.world_loader.world());
 
         let mut updated_blocks = SmallVec::new();
         if let Some(BlockHitInfo {
             coords: looked_at_block_coords,
             face: Some(direction),
             ..
-        }) = self.player.looked_at_blocks().solid_block
+        }) = player.looked_at_blocks().solid_block
         {
             let left_mouse_pressed = input_state.pull_is_pressed(MouseButton::Left);
             let right_mouse_pressed = input_state.pull_is_pressed(MouseButton::Right);
@@ -179,22 +176,19 @@ impl SceneState {
                     )
                 };
 
-                if !self.player.intersects_block(pos)
-                    || block.physics_type() != BlockPhysicsType::Solid
+                if !player.intersects_block(pos) || block.physics_type() != BlockPhysicsType::Solid
                 {
                     updated_blocks.push((pos, block));
                 }
             }
         }
 
-        let extrapolated_view = self
-            .player
-            .extrapolate_view(lag_s, self.world_loader.world());
+        let extrapolated_view = player.extrapolate_view(lag_s, self.world_loader.world());
 
         self.world_renderer.update(
             extrapolated_view,
-            self.player.perspective(),
-            self.player
+            player.perspective(),
+            player
                 .looked_at_blocks()
                 .solid_block
                 .map(|block| block.coords),
@@ -214,7 +208,7 @@ impl SceneState {
                 &self.queue,
                 &mut encoder,
                 &mut self.indirect_buffer_manager,
-                self.player.eye(),
+                player.eye(),
                 updated_blocks,
             );
             self.queue.submit([encoder.finish()]);
@@ -228,6 +222,61 @@ impl SceneState {
             &self.depth_texture_view,
             &self.indirect_buffer_manager,
         );
+    }
+}
+
+impl AddToGui for BlockHitInfo {
+    fn add_to_ui(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.monospace(format!("{:?}", self.block));
+            ui.label("at");
+            ui.monospace(format!("{:?}", self.coords));
+        });
+    }
+}
+
+impl CreateGuiModule for SceneState {
+    fn create_ui_module(&self) -> GuiModule {
+        let player = self.player.clone();
+        GuiModule {
+            title: "Player state".to_string(),
+            add_contents: Box::new(move |ui| {
+                let p = player.borrow();
+                ui.horizontal(|ui| {
+                    let Vec3 { x, y, z } = p.eye();
+                    ui.label("eye:");
+                    ui.monospace(format!("{x:+.2} {y:+.2} {z:+.2}"));
+                });
+                ui.horizontal(|ui| {
+                    let Vec3 { x, y, z } = p.direction();
+                    ui.label("direction:");
+                    ui.monospace(format!("{x:+.2} {y:+.2} {z:+.2}"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("focused block:");
+                    match p.looked_at_blocks().solid_block {
+                        Some(info) => {
+                            info.add_to_ui(ui);
+                        }
+                        None => {
+                            ui.monospace("None");
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("focused liquid:");
+                    match p.looked_at_blocks().liquid_block {
+                        Some(info) => {
+                            info.add_to_ui(ui);
+                        }
+                        None => {
+                            ui.monospace("None");
+                        }
+                    }
+                    // ui.monospace(format!("({:?}){x:+.2} {y:+.2} {z:+.2}"));
+                });
+            }),
+        }
     }
 }
 
