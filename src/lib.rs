@@ -38,10 +38,7 @@ use winit::{
 };
 
 use crate::{
-    frametime_metrics::FrameTimeMetrics,
-    input::InputState,
-    renderer::SceneState,
-    ui::{CreateGuiModule, EguiState},
+    frametime_metrics::FrameTimeMetrics, input::InputState, renderer::SceneState, ui::EguiState,
 };
 
 struct Graphics {
@@ -130,9 +127,7 @@ impl Graphics {
 
         let frametimes = FrameTimeMetrics::new(1000);
 
-        let mut egui_state = EguiState::new(&window, &device, surface_view_format);
-        egui_state.add_gui_module(frametimes.create_ui_module());
-        egui_state.add_gui_module(scene_state.create_ui_module());
+        let egui_state = EguiState::new(&window, &device, &queue, surface_view_format);
         let surface_size = window.inner_size();
 
         let state = Graphics {
@@ -197,11 +192,10 @@ impl Graphics {
 
                 self.egui_state.render(
                     &self.window,
-                    &self.device,
-                    &self.queue,
                     &mut encoder,
                     &surface_view,
                     self.surface_size,
+                    &[&self.frametimes, &self.scene_state],
                 );
 
                 self.queue.submit(iter::once(encoder.finish()));

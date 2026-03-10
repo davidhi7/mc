@@ -7,28 +7,30 @@ use wgpu::{
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
-pub trait CreateGuiModule {
-    fn create_ui_module(&self) -> GuiModule;
-}
-
 pub trait AddToGui {
     fn add_to_ui(&self, ui: &mut Ui);
 }
 
-pub struct GuiModule {
-    pub title: String,
-    pub add_contents: Box<dyn FnMut(&mut Ui)>,
+pub trait GuiModule {
+    fn title(&self) -> &str;
+    fn add_contents(&self, ui: &mut Ui);
 }
 
 pub struct EguiState {
     context: Context,
     winit_state: State,
     renderer: Renderer,
-    gui_modules: Vec<GuiModule>,
+    device: Device,
+    queue: Queue,
 }
 
 impl EguiState {
-    pub fn new(window: &Window, device: &Device, surface_view_format: TextureFormat) -> Self {
+    pub fn new(
+        window: &Window,
+        device: &Device,
+        queue: &Queue,
+        surface_view_format: TextureFormat,
+    ) -> Self {
         let context = Context::default();
         context.set_visuals(Visuals {
             window_shadow: Shadow::NONE,
@@ -50,12 +52,9 @@ impl EguiState {
             context,
             winit_state,
             renderer,
-            gui_modules: Vec::new(),
+            device: device.clone(),
+            queue: queue.clone(),
         }
-    }
-
-    pub fn add_gui_module(&mut self, module: GuiModule) {
-        self.gui_modules.push(module);
     }
 
     pub fn on_window_event(
@@ -73,23 +72,18 @@ impl EguiState {
     pub fn render(
         &mut self,
         window: &Window,
-        device: &Device,
-        queue: &Queue,
         encoder: &mut CommandEncoder,
         target_view: &TextureView,
         surface_size: PhysicalSize<u32>,
+        modules: &[&dyn GuiModule],
     ) -> Vec<CommandBuffer> {
         let raw_input = self.winit_state.take_egui_input(window);
 
         let full_output = self.context.run(raw_input, |ctx| {
             egui::Window::new("Title").title_bar(false).show(ctx, |ui| {
-                for GuiModule {
-                    title,
-                    add_contents: renderer,
-                } in self.gui_modules.iter_mut()
-                {
-                    ui.heading(title);
-                    ui.scope(renderer);
+                for module in modules {
+                    ui.heading(module.title());
+                    module.add_contents(ui);
                 }
             });
         });
@@ -104,7 +98,7 @@ impl EguiState {
 
         for (id, image_delta) in &full_output.textures_delta.set {
             self.renderer
-                .update_texture(device, queue, *id, image_delta);
+                .update_texture(&self.device, &self.queue, *id, image_delta);
         }
 
         let screen_descriptor = ScreenDescriptor {
@@ -112,9 +106,13 @@ impl EguiState {
             pixels_per_point,
         };
 
-        let user_cmd_buffers =
-            self.renderer
-                .update_buffers(device, queue, encoder, &paint_jobs, &screen_descriptor);
+        let user_cmd_buffers = self.renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            encoder,
+            &paint_jobs,
+            &screen_descriptor,
+        );
 
         {
             let render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
