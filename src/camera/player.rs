@@ -17,7 +17,7 @@ use winit::keyboard::KeyCode;
 
 use crate::{
     camera::{
-        Perspective, View,
+        CardinalDirection, Perspective, View,
         block_ray_caster::{self, LookedAtBlocks},
     },
     input::InputState,
@@ -376,6 +376,10 @@ impl PlayerState {
         let (yaw_sin, yaw_cos) = (self.yaw_norm * PI).sin_cos();
         let (pitch_sin, pitch_cos) = (self.pitch_norm * PI).sin_cos();
         vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin)
+    }
+
+    pub fn cardinal_direction(&self) -> CardinalDirection {
+        CardinalDirection::from_yaw(self.yaw_norm)
     }
 
     pub fn view(&self) -> View {

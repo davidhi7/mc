@@ -251,12 +251,14 @@ impl GuiModule for SceneState {
         ui.horizontal(|ui| {
             let Vec3 { x, y, z } = self.player.eye();
             ui.label("eye:");
-            ui.monospace(format!("{x:+.2} {y:+.2} {z:+.2}"));
+            ui.monospace(format!("{x:.2} / {y:.2} / {z:.2}"));
         });
         ui.horizontal(|ui| {
             let Vec3 { x, y, z } = self.player.direction();
             ui.label("direction:");
-            ui.monospace(format!("{x:+.2} {y:+.2} {z:+.2}"));
+            ui.monospace(format!("{x:+.2} / {y:+.2} / {z:+.2}"));
+            ui.label("facing");
+            ui.monospace(format!("{:?}", self.player.cardinal_direction()));
         });
         ui.horizontal(|ui| {
             ui.label("focused block:");
@@ -279,7 +281,6 @@ impl GuiModule for SceneState {
                     ui.monospace("None");
                 }
             }
-            // ui.monospace(format!("({:?}){x:+.2} {y:+.2} {z:+.2}"));
         });
     }
 }

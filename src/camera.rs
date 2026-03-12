@@ -6,6 +6,26 @@ use glam::{Mat4, Vec3};
 pub mod block_ray_caster;
 pub mod player;
 
+#[derive(Debug)]
+pub enum CardinalDirection {
+    North,
+    East,
+    South,
+    West,
+}
+
+impl CardinalDirection {
+    pub fn from_yaw(yaw: f32) -> Self {
+        match yaw {
+            0.0..0.25 | 1.75..=2.0 => CardinalDirection::East,
+            0.25..0.75 => CardinalDirection::North,
+            0.75..1.25 => CardinalDirection::West,
+            1.25..1.75 => CardinalDirection::South,
+            _ => panic!("Invalid yaw value"),
+        }
+    }
+}
+
 /// Struct that stores all information required for the projection matrix.
 #[derive(Debug, Clone, Copy)]
 pub struct Perspective {
