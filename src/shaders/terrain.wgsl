@@ -1,5 +1,6 @@
 struct Globals {
     view_proj: mat4x4<f32>,
+    light_view_proj: mat4x4<f32>,
 };
 
 struct Vertex {
@@ -25,6 +26,12 @@ var textures: texture_2d_array<f32>;
 @group(2) @binding(1)
 var texture_sampler: sampler;
 
+@group(3) @binding(0)
+var shadow_map: texture_depth_2d;
+
+@group(3) @binding(1)
+var shadow_map_sampler: sampler_comparison;
+
 struct InstanceInput {
     @location(0) attributes: u32,
     @location(1) ao_attributes: u32,
@@ -36,6 +43,7 @@ struct VertexOutput {
     @location(1) @interpolate(flat) tex_index: u32,
     @location(2) @interpolate(flat) direction: u32,
     @location(3) ao_intensity: f32,
+    @location(4) light_position: vec3<f32>,
 };
 
 @vertex
@@ -84,12 +92,30 @@ fn vs_main(
     out.tex_index = tex_index;
     out.direction = direction;
     out.ao_intensity = f32(ao_intensity);
+    // Since we use orthographic projections, perspective dividde is not needed
+    // x,y are in [-1, 1], z in [0, 1]
+    let light_ndc = globals.light_view_proj * vec4f(global_position, 1);
+    // x,y are now in [0, 1], z unchanged
+    // Negating the y component is neccessary because in NDC, x=0, y=0 is in the bottom left,
+    // but in texture coordinates, x=0, y=0 is in the top left
+    out.light_position = vec3(light_ndc.xy * vec2(0.5, -0.5) + vec2(0.5), light_ndc.z);
     return out;
+}
+
+fn shadow(light_position: vec3f) -> f32 {
+    // not required if orthogonal projection used
+// let ndc = light_position.xyz / light_position.w;
+    // let shadow_map_uv = ndc.xy * 0.5 + vec2(0.5);
+    // if ndc.z > sampled depth:
+
+    let shadow = textureSampleCompare(shadow_map, shadow_map_sampler, light_position.xy, light_position.z - 0.0005);
+    return shadow;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let lighting_factor = 1.0 - in.ao_intensity * 0.3;
+    // let lighting_factor = 1.0 - in.ao_intensity * 0.3;
+    let lighting_factor = 0.2 + 0.5 * shadow(in.light_position) + 0.3 * (3 - in.ao_intensity / 3);
 
     var frag_color = textureSample(textures, texture_sampler, in.tex_coordinates, in.tex_index);
 

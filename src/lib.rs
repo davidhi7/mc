@@ -91,7 +91,8 @@ impl Graphics {
                     max_binding_array_elements_per_shader_stage: 127,
                     ..Default::default()
                 },
-                required_features: Features::INDIRECT_FIRST_INSTANCE,
+                required_features: Features::INDIRECT_FIRST_INSTANCE
+                    | Features::ADDRESS_MODE_CLAMP_TO_BORDER,
                 memory_hints: MemoryHints::Performance,
                 trace: Trace::Off,
                 experimental_features: ExperimentalFeatures::disabled(),
@@ -116,10 +117,12 @@ impl Graphics {
         log::debug!("Used surface view format: {:?}", surface_view_format);
 
         let size = window.inner_size();
+        let mut egui_state = EguiState::new(&window, &device, &queue, surface_view_format);
 
         let scene_state = SceneState::new(
             device.clone(),
             queue.clone(),
+            &mut egui_state,
             size,
             surface_view_format,
             texture::load_textures(&device, &queue).await.unwrap(),
@@ -127,7 +130,6 @@ impl Graphics {
 
         let frametimes = FrameTimeMetrics::new(1000);
 
-        let egui_state = EguiState::new(&window, &device, &queue, surface_view_format);
         let surface_size = window.inner_size();
 
         let state = Graphics {

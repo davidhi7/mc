@@ -11,3 +11,6 @@ pub const SHADER_FRUSTUM_CULLING: ShaderModuleDescriptor =
 
 pub const SHADER_BLOCK_OUTLINES: ShaderModuleDescriptor =
     include_wgsl!("shaders/block-outlines.wgsl");
+
+pub const SHADER_SHADOW_MAPPING: ShaderModuleDescriptor =
+    include_wgsl!("shaders/shadow-mapping.wgsl");

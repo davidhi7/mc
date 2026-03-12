@@ -1,3 +1,4 @@
+use egui::{ImageSource, load::SizedTexture};
 use std::time::Duration;
 use web_time::Instant;
 
@@ -7,7 +8,7 @@ use wgpu::{
     Color, CommandEncoder, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue,
     RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
-    TextureView, TextureViewDescriptor,
+    TextureView, TextureViewDescriptor, wgc::id::TextureId,
 };
 use winit::{dpi::PhysicalSize, event::MouseButton, keyboard::KeyCode};
 
@@ -21,13 +22,16 @@ use crate::{
     renderer::{
         indirect_buffer_manager::IndirectBufferManager,
         pipelines::{
-            GlobalsBinding, block_outlines::BlockOutlinePipeline,
-            debug_crosshair::CrosshairPipeline, frustum_culling::FrustumCullingComputePass,
-            terrain::TerrainPipeline,
+            GlobalsBinding,
+            block_outlines::BlockOutlinePipeline,
+            debug_crosshair::CrosshairPipeline,
+            frustum_culling::FrustumCullingComputePass,
+            shadow_mapping::ShadowMappingPipeline,
+            terrain::{TerrainBinding, TerrainPipeline},
         },
     },
     texture,
-    ui::{AddToGui, GuiModule},
+    ui::{AddToGui, EguiState, GuiModule},
     world::{
         World,
         blocks::{Block, BlockPhysicsType},
@@ -54,12 +58,15 @@ pub struct SceneState {
     player: PlayerState,
     update_loop: FixedTimestepLoop,
     indirect_buffer_manager: IndirectBufferManager<TerrainType>,
+    depth_texture_id: egui::TextureId,
 }
 
 impl SceneState {
     pub fn new(
         device: Device,
         queue: Queue,
+        // todo rm
+        egui_state: &mut EguiState,
         surface_size: PhysicalSize<u32>,
         surface_format: TextureFormat,
         texture_array: TextureView,
@@ -71,7 +78,7 @@ impl SceneState {
                 z_near: 0.1,
                 z_far: 1000.0,
             },
-            vec3(177.0, 128., 142.1),
+            vec3(0.0, 100.0, 0.0),
             Vec3::Z,
         );
 
@@ -98,6 +105,9 @@ impl SceneState {
             &player,
         );
 
+        let depth_texture_id =
+            egui_state.register_native_texture(&world_renderer.shadow_pipeline.render_target_view);
+
         // todo reorder struct fields
         Self {
             device,
@@ -109,6 +119,7 @@ impl SceneState {
             world_loader,
             update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(player::TPS.recip())),
             indirect_buffer_manager,
+            depth_texture_id,
         }
     }
 
@@ -279,7 +290,14 @@ impl GuiModule for SceneState {
                     ui.monospace("None");
                 }
             }
-            // ui.monospace(format!("({:?}){x:+.2} {y:+.2} {z:+.2}"));
+        });
+        ui.scope(|ui| {
+            ui.set_width(200.0);
+            ui.set_height(200.0);
+            ui.image(ImageSource::Texture(SizedTexture::new(
+                self.depth_texture_id,
+                egui::Vec2::new(200.0, 200.0),
+            )));
         });
     }
 }
@@ -291,6 +309,7 @@ pub struct WorldRenderer {
     terrain_pipeline: TerrainPipeline,
     frustum_culling_pass: FrustumCullingComputePass,
     block_outline_pipeline: BlockOutlinePipeline,
+    pub shadow_pipeline: ShadowMappingPipeline,
 }
 
 impl WorldRenderer {
@@ -303,15 +322,21 @@ impl WorldRenderer {
         player: &PlayerState,
     ) -> Self {
         let globals = GlobalsBinding::new(&device);
-
-        let terrain_pipeline = TerrainPipeline::new(
+        let terrain_binding = TerrainBinding::new(
             &device,
-            &globals,
             &vertex_buffer::create_vertex_buffer(&device),
             indirect_buffer_manager.uniform_buffer(),
             texture_array,
             &texture::create_sampler(&device),
+        );
+        let shadow_pipeline = ShadowMappingPipeline::new(&device, &globals, &terrain_binding);
+
+        let terrain_pipeline = TerrainPipeline::new(
+            &device,
+            &globals,
+            terrain_binding,
             surface_format,
+            &shadow_pipeline.binding,
         );
 
         let crosshair_pipeline = CrosshairPipeline::new(&device, &globals, surface_format);
@@ -335,6 +360,7 @@ impl WorldRenderer {
             terrain_pipeline,
             frustum_culling_pass,
             block_outline_pipeline,
+            shadow_pipeline,
         }
     }
 
@@ -361,6 +387,15 @@ impl WorldRenderer {
         indirect_buffer_manager: &IndirectBufferManager<TerrainType>,
     ) {
         self.frustum_culling_pass.run(encoder);
+        self.shadow_pipeline.render(
+            encoder,
+            &self.globals,
+            &self.terrain_pipeline.binding,
+            indirect_buffer_manager.vertex_buffer(),
+            indirect_buffer_manager.indirect_buffer(),
+            indirect_buffer_manager.indirect_buffer_offset(TerrainType::Solid),
+            indirect_buffer_manager.draw_count(TerrainType::Solid) as u32,
+        );
 
         let mut render_pass: RenderPass<'_> = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("scene render pass"),
@@ -395,6 +430,7 @@ impl WorldRenderer {
             self.terrain_pipeline.render_terrain(
                 &mut render_pass,
                 &self.globals,
+                &self.shadow_pipeline.binding,
                 indirect_buffer_manager.vertex_buffer(),
                 indirect_buffer_manager.indirect_buffer(),
                 indirect_buffer_manager.indirect_buffer_offset(TerrainType::Solid),

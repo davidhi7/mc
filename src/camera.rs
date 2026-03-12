@@ -44,6 +44,10 @@ impl ViewProjectionMatrix {
     pub fn new(view: View, perspective: Perspective) -> Self {
         Self((perspective.get_matrix() * view.get_matrix()).to_cols_array_2d())
     }
+
+    pub fn from_matrix(matrix: Mat4) -> Self {
+        Self(matrix.to_cols_array_2d())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Zeroable, Pod)]

@@ -1,4 +1,4 @@
-use egui::{Context, Shadow, Ui, ViewportId, Visuals};
+use egui::{Context, Shadow, TextureId, Ui, ViewportId, Visuals};
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State;
 use wgpu::{
@@ -67,6 +67,11 @@ impl EguiState {
 
     pub fn wants_pointer_input(&self) -> bool {
         self.context.wants_pointer_input()
+    }
+
+    pub fn register_native_texture(&mut self, texture_view: &TextureView) -> TextureId {
+        self.renderer
+            .register_native_texture(&self.device, texture_view, wgpu::FilterMode::Nearest)
     }
 
     pub fn render(
