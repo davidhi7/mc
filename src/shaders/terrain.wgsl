@@ -1,11 +1,12 @@
 struct Globals {
-    view_proj: mat4x4<f32>,
-    light_view_proj: mat4x4<f32>,
+    view_proj: mat4x4f,
+    light_view_projs: array<mat4x4f, 4>,
+    light_direction: vec3f,
 };
 
 struct Vertex {
-    position: vec3<f32>,
-    tex_coordinates: vec2<f32>,
+    position: vec3f,
+    tex_coordinates: vec2f,
 };
 
 @group(0) @binding(0)
@@ -27,7 +28,7 @@ var textures: texture_2d_array<f32>;
 var texture_sampler: sampler;
 
 @group(3) @binding(0)
-var shadow_map: texture_depth_2d;
+var shadow_map: texture_depth_2d_array;
 
 @group(3) @binding(1)
 var shadow_map_sampler: sampler_comparison;
@@ -38,12 +39,13 @@ struct InstanceInput {
 };
 
 struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) tex_coordinates: vec2<f32>,
+    @builtin(position) clip_position: vec4f,
+    @location(0) tex_coordinates: vec2f,
     @location(1) @interpolate(flat) tex_index: u32,
     @location(2) @interpolate(flat) direction: u32,
     @location(3) ao_intensity: f32,
-    @location(4) light_position: vec3<f32>,
+    @location(4) distance: f32,
+    @location(5) light_position: vec3f,
 };
 
 @vertex
@@ -94,7 +96,7 @@ fn vs_main(
     out.ao_intensity = f32(ao_intensity);
     // Since we use orthographic projections, perspective dividde is not needed
     // x,y are in [-1, 1], z in [0, 1]
-    let light_ndc = globals.light_view_proj * vec4f(global_position, 1);
+    let light_ndc = globals.light_view_projs[0] * vec4f(global_position, 1);
     // x,y are now in [0, 1], z unchanged
     // Negating the y component is neccessary because in NDC, x=0, y=0 is in the bottom left,
     // but in texture coordinates, x=0, y=0 is in the top left
@@ -102,20 +104,40 @@ fn vs_main(
     return out;
 }
 
-fn shadow(light_position: vec3f) -> f32 {
-    // not required if orthogonal projection used
-// let ndc = light_position.xyz / light_position.w;
-    // let shadow_map_uv = ndc.xy * 0.5 + vec2(0.5);
-    // if ndc.z > sampled depth:
-
-    let shadow = textureSampleCompare(shadow_map, shadow_map_sampler, light_position.xy, light_position.z - 0.0005);
+fn shadow(light_position: vec3f, normal: vec3f) -> f32 {
+    // let bias = max(0.0005 * (1.0 - dot(normal, globals.light_direction)), 0.00005);
+    // let bias = 0.05;
+    let bias = 0.0;
+    // `textureSampleCompare` with `shadow_map_sampler` returns 1.0 if `light_position.z` is less than all sampled values, or a number between 0 and 1 if the provided depth is greater than some or all samples
+    let shadow = textureSampleCompare(shadow_map, shadow_map_sampler, light_position.xy, 1, light_position.z - bias);
     return shadow;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // let lighting_factor = 1.0 - in.ao_intensity * 0.3;
-    let lighting_factor = 0.2 + 0.5 * shadow(in.light_position) + 0.3 * (3 - in.ao_intensity / 3);
+    var normal: vec3f;
+    if in.direction == 0 {
+        normal = vec3(-1, 0, 0);
+        // return vec4(1, 0, 0, 1);
+    } else if in.direction == 1 {
+        normal = vec3(1, 0, 0);
+    } else if in.direction == 2 {
+        normal = vec3(0, -1, 0);
+        // return vec4(0, 1, 0, 1);
+    } else if in.direction == 3 {
+        normal = vec3(0, 1, 0);
+    } else if in.direction == 4 {
+        normal = vec3(0, 0, -1);
+        // return vec4(0, 0, 1, 1);
+    } else {
+        normal = vec3(0, 0, 1);
+    }
+    // return vec4(vec3(1) * max(0, dot(normal, -globals.light_direction)), 1);
+    var lighting_factor = (1.0 - in.ao_intensity * 0.3) * mix(0.5, 1.0, shadow(in.light_position, normal));
+    // if (shadow(in.light_position) == 0.0) {
+    //     lighting_factor = lighting_factor * 0.2;
+    // }
+    // // let lighting_factor =
 
     var frag_color = textureSample(textures, texture_sampler, in.tex_coordinates, in.tex_index);
 

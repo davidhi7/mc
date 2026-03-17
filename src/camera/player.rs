@@ -17,11 +17,13 @@ use winit::keyboard::KeyCode;
 
 use crate::{
     camera::{
-        Perspective, View,
-        block_ray_caster::{self, LookedAtBlocks},
+        PerspectiveProj, View, YawPitch,
+        block_ray_caster::{self, BlockHitInfo, LookedAtBlocks},
+        direction_to_yaw_pitch, yaw_pitch_to_direction,
     },
     input::InputState,
     math::{Aabb3, Aabb3I},
+    ui::{AddToGui, GuiModule},
     world::{LookupBlock, blocks::BlockPhysicsType},
 };
 
@@ -106,11 +108,9 @@ enum MovementState {
 #[derive(Debug)]
 pub struct PlayerState {
     /// Camera perspective
-    perspective: Perspective,
-    /// Horizontal camera orientation. Within [0.0, 2.0). 0.0 is facing towards X+ / east; 0.5 is facing towards Z+ / north.
-    yaw_norm: f32,
-    /// Vertical camera orientation. Within [-0.5, 0.5]. 0.0 is facing forward; -0.5 is facing downward.
-    pitch_norm: f32,
+    perspective: PerspectiveProj,
+    /// yaw and pitch values
+    yaw_pitch: YawPitch,
     /// Current movement state.
     movement_state: MovementState,
     /// Current physics related state.
@@ -135,15 +135,13 @@ struct PlayerPhysicsState {
 }
 
 impl PlayerState {
-    pub fn new(perspective: Perspective, eye: Vec3, direction: Vec3) -> Self {
+    pub fn new(perspective: PerspectiveProj, eye: Vec3, direction: Vec3) -> Self {
         assert_ne!(direction, Vec3::Y);
         assert_ne!(direction, Vec3::NEG_Y);
         assert!(direction.is_normalized());
         Self {
             perspective,
-            // Convert [-1.0, 1.0] to [0.0, 2.0]
-            yaw_norm: (f32::atan2(direction.z, direction.x) / PI + 2.0) % 2.0,
-            pitch_norm: f32::asin(direction.y) / PI,
+            yaw_pitch: direction_to_yaw_pitch(direction),
             movement_state: MovementState::Walking,
             physics_state: PlayerPhysicsState {
                 eye,
@@ -179,8 +177,8 @@ impl PlayerState {
 
     pub fn update_rotation(&mut self, input_state: &mut InputState) {
         let (dx, dy) = input_state.pull_mouse_movement();
-        let mut new_yaw = self.yaw_norm - (dx as f32) * CAMERA_SENSITIVITY;
-        let new_pitch = (self.pitch_norm - (dy as f32) * CAMERA_SENSITIVITY)
+        let mut new_yaw = self.yaw_pitch.yaw_norm - (dx as f32) * CAMERA_SENSITIVITY;
+        let new_pitch = (self.yaw_pitch.pitch_norm - (dy as f32) * CAMERA_SENSITIVITY)
             .clamp(-0.5 + f32::EPSILON, 0.5 - f32::EPSILON);
 
         // Normalize yaw value
@@ -189,8 +187,8 @@ impl PlayerState {
             new_yaw += 2.0;
         }
 
-        self.yaw_norm = new_yaw;
-        self.pitch_norm = new_pitch;
+        self.yaw_pitch.yaw_norm = new_yaw;
+        self.yaw_pitch.pitch_norm = new_pitch;
     }
 
     pub fn update_position(
@@ -261,7 +259,7 @@ impl PlayerState {
         // rotate acceleration so that it uses the world coordinate system
         // TODO why 2 - yaw?
         let mut world_acceleration =
-            Mat3::from_rotation_y((2.0 - self.yaw_norm) * PI) * rotated_acceleration;
+            Mat3::from_rotation_y((2.0 - self.yaw_pitch.yaw_norm) * PI) * rotated_acceleration;
         let mut jump_initiated = false;
 
         match self.movement_state {
@@ -373,23 +371,21 @@ impl PlayerState {
     }
 
     pub fn direction(&self) -> Vec3 {
-        let (yaw_sin, yaw_cos) = (self.yaw_norm * PI).sin_cos();
-        let (pitch_sin, pitch_cos) = (self.pitch_norm * PI).sin_cos();
-        vec3(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin)
+        yaw_pitch_to_direction(self.yaw_pitch)
     }
 
     pub fn view(&self) -> View {
         let direction = self.direction();
         debug_assert!(direction.is_normalized());
-        View {
-            eye: self.physics_state.eye,
+        View::new(
+            self.physics_state.eye,
             direction,
             // Find the vector in the plane between `direction` and Y that is perpendicular to `direction`
-            up: direction.cross(Vec3::Y).normalize().cross(direction),
-        }
+            direction.cross(Vec3::Y).normalize().cross(direction),
+        )
     }
 
-    pub fn perspective(&self) -> Perspective {
+    pub fn perspective(&self) -> PerspectiveProj {
         self.perspective
     }
 
@@ -547,4 +543,55 @@ fn resolve_collisions(
         pos_z_collision,
     };
     physics_state
+}
+
+impl AddToGui for BlockHitInfo {
+    fn add_to_ui(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.monospace(format!("{:?}", self.block));
+            ui.label("at");
+            ui.monospace(format!("{:?}", self.coords));
+        });
+    }
+}
+
+impl GuiModule for PlayerState {
+    fn title(&self) -> &str {
+        "Player state"
+    }
+
+    fn add_contents(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let Vec3 { x, y, z } = self.eye();
+            ui.label("eye:");
+            ui.monospace(format!("{x:+.2} {y:+.2} {z:+.2}"));
+        });
+        ui.horizontal(|ui| {
+            let Vec3 { x, y, z } = self.direction();
+            ui.label("direction:");
+            ui.monospace(format!("{x:+.2} {y:+.2} {z:+.2}"));
+        });
+        ui.horizontal(|ui| {
+            ui.label("focused block:");
+            match self.looked_at_blocks().solid_block {
+                Some(info) => {
+                    info.add_to_ui(ui);
+                }
+                None => {
+                    ui.monospace("None");
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("focused liquid:");
+            match self.looked_at_blocks().liquid_block {
+                Some(info) => {
+                    info.add_to_ui(ui);
+                }
+                None => {
+                    ui.monospace("None");
+                }
+            }
+        });
+    }
 }

@@ -19,7 +19,7 @@ mod world;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use std::{iter, sync::Arc};
+use std::sync::Arc;
 use web_time::Instant;
 
 use wgpu::{
@@ -38,7 +38,10 @@ use winit::{
 };
 
 use crate::{
-    frametime_metrics::FrameTimeMetrics, input::InputState, renderer::SceneState, ui::EguiState,
+    frametime_metrics::FrameTimeMetrics,
+    input::InputState,
+    renderer::SceneState,
+    ui::{EguiState, GuiModule},
 };
 
 struct Graphics {
@@ -49,7 +52,7 @@ struct Graphics {
     // Format for surface cannot be sRGB in WebGPU
     surface_format: TextureFormat,
     // So add sRGB when creating texture views
-    surface_view_format: TextureFormat,
+    surface_format_srgb: TextureFormat,
     input_state: InputState,
     frametimes: FrameTimeMetrics,
     scene_state: SceneState,
@@ -110,21 +113,21 @@ impl Graphics {
             .find(|format| !format.is_srgb() && format.has_color_aspect())
             .expect("Should find at least one linear RGB surface format")
             .to_owned();
-        let surface_view_format = surface_format.add_srgb_suffix();
+        let surface_format_srgb = surface_format.add_srgb_suffix();
 
         log::debug!("Available surface formats: {:?}", caps.formats);
         log::debug!("Used surface format: {:?}", surface_format);
-        log::debug!("Used surface view format: {:?}", surface_view_format);
+        log::debug!("Used surface view format: {:?}", surface_format_srgb);
 
         let size = window.inner_size();
-        let mut egui_state = EguiState::new(&window, &device, &queue, surface_view_format);
+        let mut egui_state = EguiState::new(&window, &device, &queue, surface_format);
 
         let scene_state = SceneState::new(
             device.clone(),
             queue.clone(),
             &mut egui_state,
             size,
-            surface_view_format,
+            surface_format_srgb,
             texture::load_textures(&device, &queue).await.unwrap(),
         );
 
@@ -138,7 +141,7 @@ impl Graphics {
             queue,
             surface,
             surface_format,
-            surface_view_format,
+            surface_format_srgb,
             input_state: Default::default(),
             frametimes,
             scene_state,
@@ -166,7 +169,7 @@ impl Graphics {
             present_mode: PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
             alpha_mode: CompositeAlphaMode::Auto,
-            view_formats: vec![self.surface_view_format],
+            view_formats: vec![self.surface_format_srgb],
         };
 
         self.surface.configure(&self.device, &surface_config);
@@ -185,22 +188,33 @@ impl Graphics {
                         label: Some("render command encoder"),
                     });
 
+                // egui prefers non-srgb surfaces
                 let surface_view = surface_texture.texture.create_view(&TextureViewDescriptor {
-                    format: Some(self.surface_view_format),
+                    format: Some(self.surface_format),
                     ..Default::default()
                 });
 
-                self.scene_state.render(&mut encoder, &surface_view);
+                let surface_view_srgb =
+                    surface_texture.texture.create_view(&TextureViewDescriptor {
+                        format: Some(self.surface_format_srgb),
+                        ..Default::default()
+                    });
 
-                self.egui_state.render(
+                self.scene_state.render(&mut encoder, &surface_view_srgb);
+
+                let mut modules: Vec<&mut dyn GuiModule> = vec![&mut self.frametimes];
+                modules.extend(self.scene_state.gui_modules());
+                let egui_command_buffers = self.egui_state.render(
                     &self.window,
                     &mut encoder,
                     &surface_view,
                     self.surface_size,
-                    &[&self.frametimes, &self.scene_state],
+                    modules,
                 );
 
-                self.queue.submit(iter::once(encoder.finish()));
+                let mut command_buffers = Vec::from_iter(egui_command_buffers);
+                command_buffers.push(encoder.finish());
+                self.queue.submit(command_buffers);
 
                 surface_texture.present();
             }

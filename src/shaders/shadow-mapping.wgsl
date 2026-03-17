@@ -1,6 +1,7 @@
 struct Globals {
-    view_proj: mat4x4<f32>,
-    light_view_proj: mat4x4<f32>,
+    view_proj: mat4x4f,
+    light_view_projs: array<mat4x4f, 4>,
+    light_direction: vec3f,
 };
 
 struct Vertex {
@@ -25,6 +26,9 @@ var textures: texture_2d_array<f32>;
 
 @group(2) @binding(1)
 var texture_sampler: sampler;
+
+@group(3) @binding(0)
+var<uniform> shadow_cascade: u32;
 
 struct InstanceInput {
     @location(0) attributes: u32,
@@ -60,22 +64,18 @@ fn vs_main(
     let global_position = vec3f(32 * chunks[chunk_index] + chunk_relative_coords) + vertex.position;
 
     var out: VertexOutput;
-    out.clip_position = globals.light_view_proj * vec4f(global_position, 1);
+    out.clip_position = globals.light_view_projs[shadow_cascade] * vec4f(global_position, 1);
     out.tex_coordinates = vertex.tex_coordinates;
     out.tex_index = tex_index;
     return out;
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+fn fs_main(in: VertexOutput) {
+// fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     var frag_color = textureSample(textures, texture_sampler, in.tex_coordinates, in.tex_index);
 
     if frag_color.w < 0.1 {
         discard;
     }
-
-    let depth = pow(in.clip_position.z, 10);
-
-    // return vec4(depth * vec3(1), 1);
-    return vec4(1.0, 0.0, 0.0, 1.0);
 }

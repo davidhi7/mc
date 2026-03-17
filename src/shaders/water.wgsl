@@ -1,6 +1,7 @@
 struct Globals {
-    view_proj: mat4x4<f32>,
-    light_view_proj: mat4x4<f32>,
+    view_proj: mat4x4f,
+    light_view_projs: array<mat4x4f, 4>,
+    light_direction: vec3f,
 };
 
 struct Vertex {

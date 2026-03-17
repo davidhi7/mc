@@ -49,9 +49,9 @@ pub fn create_mesh(
     ctx: &ChunkMeshingContext,
     uvw: ChunkUVW,
 ) -> EnumMap<TerrainType, Option<Box<[u8]>>> {
-    if uvw.u != 0 || uvw.w != 0 {
-        return EnumMap::default();
-    }
+    // if (uvw.u + uvw.w) & 1 == 0 {
+    //     return Default::default();
+    // }
     let (solid_instances, transparent_instances) = ctx.generate_mesh(uvw);
     let mut buffers = EnumMap::default();
 

@@ -90,10 +90,10 @@ fn write_chunk_data(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if index < bounds.draw_count {
         let chunk_index = draws[index].first_vertex >> 2;
 
-        // if chunks[chunk_index].visible == 1 {
-        //     draws[index].vertex_count = 4u;
-        // } else {
-        //     draws[index].vertex_count = 0u;
-        // }
+        if chunks[chunk_index].visible == 1 {
+            draws[index].vertex_count = 4u;
+        } else {
+            draws[index].vertex_count = 0u;
+        }
     }
 }

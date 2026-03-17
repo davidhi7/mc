@@ -13,7 +13,7 @@ pub trait AddToGui {
 
 pub trait GuiModule {
     fn title(&self) -> &str;
-    fn add_contents(&self, ui: &mut Ui);
+    fn add_contents(&mut self, ui: &mut Ui);
 }
 
 pub struct EguiState {
@@ -80,13 +80,13 @@ impl EguiState {
         encoder: &mut CommandEncoder,
         target_view: &TextureView,
         surface_size: PhysicalSize<u32>,
-        modules: &[&dyn GuiModule],
+        mut modules: Vec<&mut dyn GuiModule>,
     ) -> Vec<CommandBuffer> {
         let raw_input = self.winit_state.take_egui_input(window);
 
         let full_output = self.context.run(raw_input, |ctx| {
             egui::Window::new("Title").title_bar(false).show(ctx, |ui| {
-                for module in modules {
+                for module in modules.iter_mut() {
                     ui.heading(module.title());
                     module.add_contents(ui);
                 }
