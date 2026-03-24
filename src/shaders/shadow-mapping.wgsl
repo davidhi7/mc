@@ -1,7 +1,10 @@
+const NUM_CASCADES = 4u;
+
 struct Globals {
     view_proj: mat4x4f,
-    light_view_projs: array<mat4x4f, 4>,
+    light_view_projs: array<mat4x4f, NUM_CASCADES>,
     light_direction: vec3f,
+    cascades_far_distances: vec4f
 };
 
 struct Vertex {
@@ -72,7 +75,6 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) {
-// fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     var frag_color = textureSample(textures, texture_sampler, in.tex_coordinates, in.tex_index);
 
     if frag_color.w < 0.1 {

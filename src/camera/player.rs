@@ -556,8 +556,8 @@ impl AddToGui for BlockHitInfo {
 }
 
 impl GuiModule for PlayerState {
-    fn title(&self) -> &str {
-        "Player state"
+    fn title(&self) -> Option<&str> {
+        Some("Player state")
     }
 
     fn add_contents(&mut self, ui: &mut egui::Ui) {

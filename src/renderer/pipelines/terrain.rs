@@ -2,18 +2,15 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingResource, BindingType, BlendState, Buffer, BufferBindingType,
     ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Device,
-    Face, FragmentState, FrontFace, MultisampleState, PipelineCompilationOptions,
-    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, RenderPass,
-    RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType, ShaderStages,
-    StencilState, TextureFormat, TextureSampleType, TextureView, TextureViewDimension, VertexState,
+    Face, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, PolygonMode,
+    PrimitiveState, PrimitiveTopology, RenderPass, RenderPipeline, RenderPipelineDescriptor,
+    Sampler, SamplerBindingType, ShaderStages, StencilState, TextureFormat, TextureSampleType,
+    TextureView, TextureViewDimension, VertexState,
 };
 
 use crate::{
     renderer::{
-        pipelines::{
-            GlobalsBinding,
-            shadow_mapping::{NUM_CASCADES, ShadowMapBinding},
-        },
+        pipelines::{GlobalsBinding, shadow_mapping::ShadowMapBinding},
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     shaders,

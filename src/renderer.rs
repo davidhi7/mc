@@ -1,4 +1,4 @@
-use egui::{ImageSource, Slider, load::SizedTexture};
+use egui::Slider;
 use std::time::Duration;
 use web_time::Instant;
 
@@ -104,10 +104,8 @@ impl SceneState {
             surface_format,
             texture_array,
             &indirect_buffer_manager,
+            player.perspective(),
         );
-
-        let depth_texture_id =
-            egui_state.register_native_texture(&world_renderer.shadow_pipeline.render_target_view);
 
         // todo reorder struct fields
         Self {
@@ -125,7 +123,6 @@ impl SceneState {
                     yaw_norm: 0.25,
                     pitch_norm: -0.25,
                 },
-                depth_texture_id,
             },
         }
     }
@@ -251,13 +248,16 @@ impl SceneState {
     }
 
     pub fn gui_modules(&mut self) -> Vec<&mut dyn GuiModule> {
-        vec![&mut self.player, &mut self.light_state]
+        vec![
+            &mut self.player,
+            &mut self.light_state,
+            &mut self.world_renderer.shadow_pipeline,
+        ]
     }
 }
 
 struct LightState {
     sun_yaw_pitch: YawPitch,
-    depth_texture_id: egui::TextureId,
 }
 
 impl LightState {
@@ -285,8 +285,8 @@ impl LightState {
 }
 
 impl GuiModule for LightState {
-    fn title(&self) -> &str {
-        "Light state"
+    fn title(&self) -> Option<&str> {
+        Some("Light state")
     }
 
     fn add_contents(&mut self, ui: &mut egui::Ui) {
@@ -303,10 +303,6 @@ impl GuiModule for LightState {
             ui.label("pitch");
             ui.add(Slider::new(&mut self.sun_yaw_pitch.pitch_norm, -0.5..=0.0));
         });
-        ui.image(ImageSource::Texture(SizedTexture {
-            id: self.depth_texture_id,
-            size: egui::Vec2 { x: 300.0, y: 300.0 },
-        }));
     }
 }
 
@@ -327,8 +323,9 @@ impl WorldRenderer {
         surface_format: TextureFormat,
         texture_array: TextureView,
         indirect_buffer_manager: &IndirectBufferManager<TerrainType>,
+        perspective: PerspectiveProj,
     ) -> Self {
-        let globals = GlobalsBinding::new(&device);
+        let globals = GlobalsBinding::new(&device, perspective);
         let terrain_binding = TerrainBinding::new(
             &device,
             &vertex_buffer::create_vertex_buffer(&device),
@@ -336,7 +333,8 @@ impl WorldRenderer {
             texture_array,
             &texture::create_sampler(&device),
         );
-        let shadow_pipeline = ShadowMappingPipeline::new(&device, &globals, &terrain_binding);
+        let shadow_pipeline =
+            ShadowMappingPipeline::new(&device, &queue, &globals, &terrain_binding);
 
         let terrain_pipeline = TerrainPipeline::new(
             &device,

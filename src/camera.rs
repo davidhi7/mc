@@ -223,7 +223,7 @@ impl ToMatrix for View {
     }
 }
 
-#[derive(Clone, Copy, Default, Zeroable, Pod)]
+#[derive(Debug, Clone, Copy, Default, Zeroable, Pod)]
 #[repr(C)]
 pub struct ViewProjectionMatrix([[f32; 4]; 4]);
 

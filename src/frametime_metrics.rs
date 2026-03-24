@@ -41,8 +41,8 @@ impl FrameTimeMetrics {
 }
 
 impl GuiModule for FrameTimeMetrics {
-    fn title(&self) -> &str {
-        "Frame times"
+    fn title(&self) -> Option<&str> {
+        Some("Frame times")
     }
 
     fn add_contents(&mut self, ui: &mut egui::Ui) {

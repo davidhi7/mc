@@ -1,17 +1,17 @@
 use std::array;
 
 use bytemuck::{Pod, Zeroable};
+use egui::Slider;
 use wgpu::{
     AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
-    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
-    Buffer, BufferBindingType, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder,
-    CompareFunction, DepthBiasState, DepthStencilState, Device, Extent3d, Face, FilterMode,
-    FragmentState, FrontFace, LoadOp, MultisampleState, Operations, PolygonMode, PrimitiveState,
-    PrimitiveTopology, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
-    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, SamplerBindingType,
-    SamplerBorderColor, SamplerDescriptor, ShaderStages, StencilState, StoreOp, Texture,
-    TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
-    TextureView, TextureViewDescriptor, TextureViewDimension, VertexState,
+    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer,
+    BufferBindingType, BufferUsages, CommandEncoder, CompareFunction, DepthBiasState,
+    DepthStencilState, Device, Extent3d, Face, FilterMode, FragmentState, FrontFace, LoadOp,
+    MultisampleState, Operations, PolygonMode, PrimitiveState, PrimitiveTopology, Queue,
+    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
+    RenderPipelineDescriptor, SamplerBindingType, SamplerDescriptor, ShaderStages, StencilState,
+    StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType,
+    TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexState,
     util::{BufferInitDescriptor, DeviceExt},
 };
 
@@ -23,14 +23,19 @@ use crate::{
         vertex_buffer::QuadInstance,
     },
     shaders,
+    ui::GuiModule,
+    world::chunk::CHUNK_WIDTH,
 };
 use glam::Vec3;
 
 // Implementation of casacaded shadow maps, based on https://developer.download.nvidia.com/SDK/10.5/opengl/src/cascaded_shadow_maps/doc/cascaded_shadow_maps.pdf
 pub const NUM_CASCADES: usize = 4;
-const LAMBDA: f32 = 1.0;
+// Interpolation factor between linear frustum slice depth (if 0.0) or logarithmic depth (if 1.0)
+const LAMBDA: f32 = 0.75;
 const SHADOW_MAP_WIDTH: u32 = 2048;
 const SHADOW_MAP_HEIGHT: u32 = SHADOW_MAP_WIDTH;
+
+const MAX_SHADOW_DISTANCE: f32 = (4 * CHUNK_WIDTH) as f32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -39,13 +44,45 @@ struct ShadowCascadeUniform {
     _padding: [u32; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Zeroable, Pod)]
+struct ShadowSettingsRaw {
+    bias_min: f32,
+    bias_max: f32,
+    // We use u32 because bool is not Pod
+    // All values != 0 represent true
+    pcf: u32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct ShadowSettings {
+    bias_min: f32,
+    bias_max: f32,
+    pcf: bool,
+}
+
+impl From<ShadowSettings> for ShadowSettingsRaw {
+    fn from(value: ShadowSettings) -> Self {
+        let ShadowSettings {
+            bias_min,
+            bias_max,
+            pcf,
+        } = value;
+        Self {
+            bias_min,
+            bias_max,
+            pcf: if pcf { 1 } else { 0 },
+        }
+    }
+}
+
 pub struct ShadowMapBinding {
     pub layout: BindGroupLayout,
     pub binding: BindGroup,
 }
 
 impl ShadowMapBinding {
-    fn new(device: &Device, shadow_maps: &Texture) -> Self {
+    fn new(device: &Device, shadow_maps: &Texture, bias_buffer: &Buffer) -> Self {
         let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("shadow map binding layout"),
             entries: &[
@@ -63,6 +100,16 @@ impl ShadowMapBinding {
                     binding: 1,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Sampler(SamplerBindingType::Comparison),
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
@@ -83,21 +130,24 @@ impl ShadowMapBinding {
                     resource: BindingResource::Sampler(&device.create_sampler(
                         &SamplerDescriptor {
                             label: Some("shadow map sampler"),
-                            // todo bets repeast value
-                            address_mode_u: AddressMode::ClampToBorder,
-                            address_mode_v: AddressMode::ClampToBorder,
-                            address_mode_w: AddressMode::ClampToBorder,
-                            border_color: Some(SamplerBorderColor::OpaqueWhite),
+                            // Important so PCF out-of-bounds access are sensible
+                            address_mode_u: AddressMode::ClampToEdge,
+                            address_mode_v: AddressMode::ClampToEdge,
+                            address_mode_w: AddressMode::ClampToEdge,
                             // Nearest produces pixelated shadows that might look good given a sufficient shadow map size and no light projection movement
                             // Linear adds PCF so smoother and less obvious flickering
                             mag_filter: FilterMode::Linear,
                             min_filter: FilterMode::Linear,
                             mipmap_filter: FilterMode::Nearest,
-                            // TODO ?
-                            compare: Some(CompareFunction::Less),
+                            // Tests if fragment's depth is less than or equal to depth of occluder
+                            compare: Some(CompareFunction::LessEqual),
                             ..Default::default()
                         },
                     )),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Buffer(bias_buffer.as_entire_buffer_binding()),
                 },
             ],
         });
@@ -108,22 +158,23 @@ impl ShadowMapBinding {
 
 pub struct ShadowMappingPipeline {
     pub binding: ShadowMapBinding,
+    queue: Queue,
     pipeline: RenderPipeline,
     shadow_maps: Texture,
-    // _cascade_buffes: Vec<Buffer>,
     cascade_bind_groups: Vec<BindGroup>,
-    pub render_target_view: TextureView,
-    pub render_target_view_srgb: TextureView,
+    settings_buffer: Buffer,
+    settings: ShadowSettings,
 }
 
 impl ShadowMappingPipeline {
     pub fn new(
         device: &Device,
+        queue: &Queue,
         globals_binding: &GlobalsBinding,
         terrain_binding: &TerrainBinding,
     ) -> Self {
         let shadow_maps = device.create_texture(&TextureDescriptor {
-            label: Some("shadow map texture"),
+            label: Some("shadow mapping depth texture"),
             size: Extent3d {
                 width: SHADOW_MAP_WIDTH,
                 height: SHADOW_MAP_HEIGHT,
@@ -135,25 +186,6 @@ impl ShadowMappingPipeline {
             format: TextureFormat::Depth32Float,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
-        });
-        let render_target = device.create_texture(&TextureDescriptor {
-            label: None,
-            size: Extent3d {
-                width: SHADOW_MAP_WIDTH,
-                height: SHADOW_MAP_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[TextureFormat::Rgba8UnormSrgb],
-        });
-        let render_target_view = render_target.create_view(&TextureViewDescriptor::default());
-        let render_target_view_srgb = render_target.create_view(&TextureViewDescriptor {
-            format: Some(TextureFormat::Rgba8UnormSrgb),
-            ..Default::default()
         });
 
         let cascade_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -212,7 +244,8 @@ impl ShadowMappingPipeline {
                 topology: PrimitiveTopology::TriangleStrip,
                 strip_index_format: None,
                 front_face: FrontFace::Cw,
-                // Use front face culling so shadows still work even if the front face of a mountain or similar are too far away to be rendered
+                // Use front face culling so shadows still work even if the front face of a mountain or similar are too far away to be rendered.
+                // Also this eliminates shadow acne on fragments outside the shadows, and acne on shadowed sides is irrelevant for us.
                 cull_mode: Some(Face::Front),
                 polygon_mode: PolygonMode::Fill,
                 unclipped_depth: false,
@@ -234,25 +267,31 @@ impl ShadowMappingPipeline {
                 module: &device.create_shader_module(shaders::SHADER_SHADOW_MAPPING),
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
-                // targets: &[Some(ColorTargetState {
-                //     format: TextureFormat::Rgba8UnormSrgb,
-                //     blend: Some(BlendState::REPLACE),
-                //     write_mask: ColorWrites::ALL,
-                // })],
                 targets: &[],
             }),
             multiview: None,
             cache: None,
         });
 
+        let settings = ShadowSettings {
+            bias_min: 0.00001,
+            bias_max: 0.00001,
+            pcf: false,
+        };
+        let settings_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::bytes_of(&ShadowSettingsRaw::from(settings)),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+
         Self {
-            binding: ShadowMapBinding::new(device, &shadow_maps),
+            binding: ShadowMapBinding::new(device, &shadow_maps, &settings_buffer),
+            queue: queue.clone(),
             pipeline,
             shadow_maps,
-            // _cascade_buffers: cascade_buffers,
             cascade_bind_groups,
-            render_target_view,
-            render_target_view_srgb,
+            settings_buffer,
+            settings,
         }
     }
 
@@ -272,15 +311,6 @@ impl ShadowMappingPipeline {
         }
         let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("shadow mapping render pass"),
-            // color_attachments: &[Some(RenderPassColorAttachment {
-            //     view: &self.render_target_view_srgb,
-            //     depth_slice: None,
-            //     resolve_target: None,
-            //     ops: Operations {
-            //         load: LoadOp::Clear(Color::BLACK),
-            //         store: StoreOp::Store,
-            //     },
-            // })],
             color_attachments: &[],
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: &self.shadow_maps.create_view(&TextureViewDescriptor {
@@ -290,7 +320,7 @@ impl ShadowMappingPipeline {
                 }),
                 depth_ops: Some(Operations {
                     load: LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+                    store: StoreOp::Store,
                 }),
                 stencil_ops: None,
             }),
@@ -307,13 +337,51 @@ impl ShadowMappingPipeline {
     }
 }
 
-// fn comput_cascade_bounds()
+impl GuiModule for ShadowMappingPipeline {
+    fn title(&self) -> Option<&str> {
+        Some("Shadow mapping")
+    }
+
+    fn add_contents(&mut self, ui: &mut egui::Ui) {
+        ui.label("bias min:");
+        ui.add(Slider::new(&mut self.settings.bias_min, -0.0001..=0.0001));
+        ui.label("bias max:");
+        ui.add(Slider::new(&mut self.settings.bias_max, -0.0001..=0.0001));
+        ui.checkbox(&mut self.settings.pcf, "pcf");
+        // todo only write if changed
+        self.queue.write_buffer(
+            &self.settings_buffer,
+            0,
+            bytemuck::bytes_of(&ShadowSettingsRaw::from(self.settings)),
+        );
+    }
+}
+
+/// Compute the upper z limits of all frustum slices in view space, so within (z_near, z_far].
+pub fn compute_frustum_slice_z_far(camera_projection: PerspectiveProj) -> [f32; NUM_CASCADES] {
+    array::from_fn(|n| {
+        let z_near = camera_projection.z_near;
+        let z_far = camera_projection
+            .z_far
+            .clamp(0.0, z_near + MAX_SHADOW_DISTANCE);
+
+        let cascade_end = (n as f32 + 1.0) / NUM_CASCADES as f32;
+
+        LAMBDA * z_near * (z_far / z_near).powf(cascade_end)
+            + (1.0 - LAMBDA) * (z_near + cascade_end * (z_far - z_near))
+    })
+}
 
 pub fn create_shadow_projections(
     light_view: View,
     camera_view: View,
     camera_projection: PerspectiveProj,
 ) -> [OrthographicProj; NUM_CASCADES] {
+    // The n-th frustum slice is between frustum_slice_bounds[n], frustum_slice_bounds[n + 1] (for n in 0..NUM_CASCADES)
+    // All values are in view space
+    let mut frustum_slice_bounds = [0.0; NUM_CASCADES + 1];
+    frustum_slice_bounds[1..].copy_from_slice(&compute_frustum_slice_z_far(camera_projection));
+
     array::from_fn(|n| {
         let View {
             eye, direction, up, ..
@@ -321,20 +389,11 @@ pub fn create_shadow_projections(
         let PerspectiveProj {
             fov_y_rad,
             aspect_ratio,
-            z_near,
-            z_far,
+            ..
         } = camera_projection;
 
-        let cascade_start = n as f32 / NUM_CASCADES as f32;
-        let cascade_end = (n as f32 + 1.0) / NUM_CASCADES as f32;
-
-        println!("{cascade_start} {cascade_end} {z_far}");
-
-        // some values between z_near and z_far indicating the z_near and z_far values of the sub frustum
-        let sub_frustum_near = LAMBDA * z_near * (z_far / z_near).powf(cascade_start)
-            + (1.0 - LAMBDA) * (z_near + cascade_start * (z_far - z_near));
-        let sub_frustum_far = LAMBDA * z_near * (z_far / z_near).powf(cascade_end)
-            + (1.0 - LAMBDA) * (z_near + cascade_end * (z_far - z_near));
+        let sub_frustum_near = frustum_slice_bounds[n];
+        let sub_frustum_far = frustum_slice_bounds[n + 1];
 
         let right = up.cross(direction);
         let tan_fov_y_near = f32::tan(fov_y_rad / 2.0) * sub_frustum_near;
@@ -371,17 +430,13 @@ pub fn create_shadow_projections(
             max = max.max(corner_light_space);
         }
 
-        println!("{min:?} {max:?}");
-
         OrthographicProj {
             left: min.x,
             right: max.x,
             bottom: min.y,
             top: max.y,
             // TODO sensible values
-            near: min.z - 1000.0,
-            // far doesn't need extension if light projections cover entire frustum?
-            // far: max.z + 1000.0,
+            near: min.z - 100.0,
             far: max.z,
         }
     })

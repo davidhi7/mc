@@ -12,7 +12,7 @@ pub trait AddToGui {
 }
 
 pub trait GuiModule {
-    fn title(&self) -> &str;
+    fn title(&self) -> Option<&str>;
     fn add_contents(&mut self, ui: &mut Ui);
 }
 
@@ -87,8 +87,13 @@ impl EguiState {
         let full_output = self.context.run(raw_input, |ctx| {
             egui::Window::new("Title").title_bar(false).show(ctx, |ui| {
                 for module in modules.iter_mut() {
-                    ui.heading(module.title());
-                    module.add_contents(ui);
+                    if module.title().is_some() {
+                        ui.collapsing(module.title().unwrap().to_string(), |ui| {
+                            module.add_contents(ui)
+                        });
+                    } else {
+                        module.add_contents(ui);
+                    }
                 }
             });
         });
