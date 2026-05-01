@@ -32,7 +32,7 @@ use crate::{
         },
     },
     texture,
-    ui::{EguiState, GuiModule},
+    ui::{ GuiModule},
     world::{
         blocks::{Block, BlockPhysicsType},
         chunk::{CHUNK_WIDTH, VERTICAL_CHUNK_COUNT},
@@ -66,8 +66,6 @@ impl SceneState {
     pub fn new(
         device: Device,
         queue: Queue,
-        // todo rm
-        egui_state: &mut EguiState,
         surface_size: PhysicalSize<u32>,
         surface_format: TextureFormat,
         texture_array: TextureView,
@@ -306,7 +304,7 @@ impl GuiModule for LightState {
     }
 }
 
-pub struct WorldRenderer {
+struct WorldRenderer {
     queue: Queue,
     globals: GlobalsBinding,
     crosshair_pipeline: CrosshairPipeline,
@@ -317,7 +315,7 @@ pub struct WorldRenderer {
 }
 
 impl WorldRenderer {
-    pub fn new(
+    fn new(
         device: Device,
         queue: Queue,
         surface_format: TextureFormat,
@@ -367,7 +365,7 @@ impl WorldRenderer {
         }
     }
 
-    pub fn update(
+    fn update(
         &mut self,
         extrapolated_view: View,
         perspective: PerspectiveProj,
@@ -403,7 +401,7 @@ impl WorldRenderer {
             .set_outlined_block(&self.queue, focused_block);
     }
 
-    pub fn render(
+    fn render(
         &self,
         encoder: &mut CommandEncoder,
         surface_view: &TextureView,

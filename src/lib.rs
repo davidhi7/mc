@@ -120,12 +120,11 @@ impl Graphics {
         log::debug!("Used surface view format: {:?}", surface_format_srgb);
 
         let size = window.inner_size();
-        let mut egui_state = EguiState::new(&window, &device, &queue, surface_format);
+        let egui_state = EguiState::new(&window, &device, &queue, surface_format);
 
         let scene_state = SceneState::new(
             device.clone(),
             queue.clone(),
-            &mut egui_state,
             size,
             surface_format_srgb,
             texture::load_textures(&device, &queue).await.unwrap(),

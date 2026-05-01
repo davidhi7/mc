@@ -1,5 +1,5 @@
 use core::f32;
-use std::f32::consts::PI;
+use std::{f32::consts::PI, fmt};
 
 use bytemuck::{Pod, Zeroable};
 use glam::{vec3, Mat4, Vec3};
@@ -23,6 +23,17 @@ impl CardinalDirection {
             0.75..1.25 => CardinalDirection::West,
             1.25..1.75 => CardinalDirection::South,
             _ => panic!("Invalid yaw value"),
+        }
+    }
+}
+
+impl fmt::Display for CardinalDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CardinalDirection::North => write!(f, "North"),
+            CardinalDirection::East => write!(f, "East"),
+            CardinalDirection::South => write!(f, "South"),
+            CardinalDirection::West => write!(f, "West"),
         }
     }
 }
