@@ -41,11 +41,11 @@ impl FrameTimeMetrics {
 }
 
 impl GuiModule for FrameTimeMetrics {
-    fn title(&self) -> &str {
-        "Frame times"
+    fn title(&self) -> Option<&str> {
+        Some("Frame times")
     }
 
-    fn add_contents(&self, ui: &mut egui::Ui) {
+    fn add_contents(&mut self, ui: &mut egui::Ui) {
         let frametime = self.last_sample_frametime_ms;
         ui.horizontal(|ui| {
             ui.label("Frame times:");

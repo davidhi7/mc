@@ -1,4 +1,4 @@
-use egui::{Context, Shadow, Ui, ViewportId, Visuals};
+use egui::{Context, Shadow, TextureId, Ui, ViewportId, Visuals};
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State;
 use wgpu::{
@@ -12,8 +12,8 @@ pub trait AddToGui {
 }
 
 pub trait GuiModule {
-    fn title(&self) -> &str;
-    fn add_contents(&self, ui: &mut Ui);
+    fn title(&self) -> Option<&str>;
+    fn add_contents(&mut self, ui: &mut Ui);
 }
 
 pub struct EguiState {
@@ -69,21 +69,31 @@ impl EguiState {
         self.context.wants_pointer_input()
     }
 
+    pub fn register_native_texture(&mut self, texture_view: &TextureView) -> TextureId {
+        self.renderer
+            .register_native_texture(&self.device, texture_view, wgpu::FilterMode::Nearest)
+    }
+
     pub fn render(
         &mut self,
         window: &Window,
         encoder: &mut CommandEncoder,
         target_view: &TextureView,
         surface_size: PhysicalSize<u32>,
-        modules: &[&dyn GuiModule],
+        mut modules: Vec<&mut dyn GuiModule>,
     ) -> Vec<CommandBuffer> {
         let raw_input = self.winit_state.take_egui_input(window);
 
         let full_output = self.context.run(raw_input, |ctx| {
             egui::Window::new("Title").title_bar(false).show(ctx, |ui| {
-                for module in modules {
-                    ui.heading(module.title());
-                    module.add_contents(ui);
+                for module in modules.iter_mut() {
+                    if module.title().is_some() {
+                        ui.collapsing(module.title().unwrap().to_string(), |ui| {
+                            module.add_contents(ui)
+                        });
+                    } else {
+                        module.add_contents(ui);
+                    }
                 }
             });
         });

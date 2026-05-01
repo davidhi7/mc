@@ -19,7 +19,7 @@ mod world;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use std::{iter, sync::Arc};
+use std::sync::Arc;
 use web_time::Instant;
 
 use wgpu::{
@@ -38,7 +38,10 @@ use winit::{
 };
 
 use crate::{
-    frametime_metrics::FrameTimeMetrics, input::InputState, renderer::SceneState, ui::EguiState,
+    frametime_metrics::FrameTimeMetrics,
+    input::InputState,
+    renderer::SceneState,
+    ui::{EguiState, GuiModule},
 };
 
 struct Graphics {
@@ -49,12 +52,13 @@ struct Graphics {
     // Format for surface cannot be sRGB in WebGPU
     surface_format: TextureFormat,
     // So add sRGB when creating texture views
-    surface_view_format: TextureFormat,
+    surface_format_srgb: TextureFormat,
     input_state: InputState,
     frametimes: FrameTimeMetrics,
     scene_state: SceneState,
     egui_state: EguiState,
     surface_size: PhysicalSize<u32>,
+    debug_state: DebugState,
 }
 
 impl Graphics {
@@ -109,25 +113,26 @@ impl Graphics {
             .find(|format| !format.is_srgb() && format.has_color_aspect())
             .expect("Should find at least one linear RGB surface format")
             .to_owned();
-        let surface_view_format = surface_format.add_srgb_suffix();
+        let surface_format_srgb = surface_format.add_srgb_suffix();
 
         log::debug!("Available surface formats: {:?}", caps.formats);
         log::debug!("Used surface format: {:?}", surface_format);
-        log::debug!("Used surface view format: {:?}", surface_view_format);
+        log::debug!("Used surface view format: {:?}", surface_format_srgb);
 
         let size = window.inner_size();
+        let mut egui_state = EguiState::new(&window, &device, &queue, surface_format);
 
         let scene_state = SceneState::new(
             device.clone(),
             queue.clone(),
+            &mut egui_state,
             size,
-            surface_view_format,
+            surface_format_srgb,
             texture::load_textures(&device, &queue).await.unwrap(),
         );
 
         let frametimes = FrameTimeMetrics::new(1000);
 
-        let egui_state = EguiState::new(&window, &device, &queue, surface_view_format);
         let surface_size = window.inner_size();
 
         let state = Graphics {
@@ -136,12 +141,13 @@ impl Graphics {
             queue,
             surface,
             surface_format,
-            surface_view_format,
+            surface_format_srgb,
             input_state: Default::default(),
             frametimes,
             scene_state,
             egui_state,
             surface_size,
+            debug_state: DebugState::DebugDisabled,
         };
 
         state.configure_surface(size);
@@ -164,7 +170,7 @@ impl Graphics {
             present_mode: PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
             alpha_mode: CompositeAlphaMode::Auto,
-            view_formats: vec![self.surface_view_format],
+            view_formats: vec![self.surface_format_srgb],
         };
 
         self.surface.configure(&self.device, &surface_config);
@@ -177,28 +183,45 @@ impl Graphics {
 
         match self.surface.get_current_texture() {
             Ok(surface_texture) => {
+                let mut command_buffers = Vec::new();
                 let mut encoder = self
                     .device
                     .create_command_encoder(&CommandEncoderDescriptor {
                         label: Some("render command encoder"),
                     });
 
-                let surface_view = surface_texture.texture.create_view(&TextureViewDescriptor {
-                    format: Some(self.surface_view_format),
-                    ..Default::default()
-                });
+                let surface_view_srgb =
+                    surface_texture.texture.create_view(&TextureViewDescriptor {
+                        format: Some(self.surface_format_srgb),
+                        ..Default::default()
+                    });
 
-                self.scene_state.render(&mut encoder, &surface_view);
+                self.scene_state.render(&mut encoder, &surface_view_srgb);
 
-                self.egui_state.render(
-                    &self.window,
-                    &mut encoder,
-                    &surface_view,
-                    self.surface_size,
-                    &[&self.frametimes, &self.scene_state],
-                );
+                if let DebugState::DebugEnabled(_) = self.debug_state {
+                    // egui prefers non-srgb surfaces
+                    let surface_view =
+                        surface_texture.texture.create_view(&TextureViewDescriptor {
+                            format: Some(self.surface_format),
+                            ..Default::default()
+                        });
 
-                self.queue.submit(iter::once(encoder.finish()));
+                    let mut modules: Vec<&mut dyn GuiModule> =
+                        vec![&mut self.debug_state, &mut self.frametimes];
+                    modules.extend(self.scene_state.gui_modules());
+                    let egui_command_buffers = self.egui_state.render(
+                        &self.window,
+                        &mut encoder,
+                        &surface_view,
+                        self.surface_size,
+                        modules,
+                    );
+
+                    command_buffers.extend(egui_command_buffers);
+                }
+
+                command_buffers.push(encoder.finish());
+                self.queue.submit(command_buffers);
 
                 surface_texture.present();
             }
@@ -225,6 +248,40 @@ impl Graphics {
 
         self.frametimes.push(frametime_start.elapsed());
         self.frametimes.maybe_update_sample();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DebugState {
+    DebugEnabled(MouseState),
+    DebugDisabled,
+}
+
+impl DebugState {
+    fn mouse_passed_through(&self) -> bool {
+        match self {
+            DebugState::DebugEnabled(MouseState::PassedThrough) => true,
+            DebugState::DebugDisabled => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MouseState {
+    PassedThrough,
+    Detached,
+}
+
+impl GuiModule for DebugState {
+    fn title(&self) -> Option<&str> {
+        None
+    }
+
+    fn add_contents(&mut self, ui: &mut egui::Ui) {
+        if let DebugState::DebugEnabled(MouseState::Detached) = self {
+            ui.strong("Mouse input detached from game.\nPress ESC to revert.");
+        }
     }
 }
 
@@ -276,8 +333,6 @@ impl ApplicationHandler<Graphics> for App {
                 window_attributes = window_attributes.with_title("mc");
             }
 
-            // window.set_cursor_visible(false);
-
             let window = Arc::new(
                 event_loop
                     .create_window(window_attributes)
@@ -324,9 +379,11 @@ impl ApplicationHandler<Graphics> for App {
             return;
         };
 
-        if let DeviceEvent::MouseMotion { delta } = event
-            && !gfx.egui_state.wants_pointer_input()
-        {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            if !gfx.debug_state.mouse_passed_through() || gfx.egui_state.wants_pointer_input() {
+                return;
+            }
+
             gfx.input_state.increment_mouse_movement(delta);
         }
     }
@@ -359,27 +416,54 @@ impl ApplicationHandler<Graphics> for App {
                 gfx.resize(size);
             }
             WindowEvent::CursorEntered { .. } => {
-                gfx.window
-                    .set_cursor_grab(CursorGrabMode::Locked)
-                    .or_else(|_e| gfx.window.set_cursor_grab(CursorGrabMode::Confined))
-                    .unwrap();
+                if gfx.debug_state.mouse_passed_through() {
+                    lock_mouse(&gfx.window);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => match event {
                 KeyEvent {
                     physical_key: PhysicalKey::Code(KeyCode::Escape),
+                    state: ElementState::Released,
                     ..
                 } => {
-                    if let Err(err) = gfx.window.set_cursor_grab(CursorGrabMode::None) {
-                        log::warn!("Failed to release cursor: {err:?}");
+                    let DebugState::DebugEnabled(ref mut mouse_state) = gfx.debug_state else {
+                        return;
+                    };
+
+                    if let MouseState::PassedThrough = mouse_state {
+                        unlock_mouse(&gfx.window);
+                        *mouse_state = MouseState::Detached;
+                    } else {
+                        lock_mouse(&gfx.window);
+                        *mouse_state = MouseState::PassedThrough;
                     };
                 }
+                KeyEvent {
+                    physical_key: PhysicalKey::Code(KeyCode::F3),
+                    state: ElementState::Released,
+                    ..
+                } => match gfx.debug_state {
+                    DebugState::DebugEnabled(mouse_state) => {
+                        if let MouseState::Detached = mouse_state {
+                            lock_mouse(&gfx.window);
+                        }
+                        gfx.debug_state = DebugState::DebugDisabled
+                    }
+                    DebugState::DebugDisabled => {
+                        gfx.debug_state = DebugState::DebugEnabled(MouseState::PassedThrough)
+                    }
+                },
                 _ => gfx.input_state.handle_key_event(event),
             },
             WindowEvent::MouseInput {
                 state: button_state,
                 button,
                 ..
-            } => gfx.input_state.handle_mouse_event(button, button_state),
+            } => {
+                if gfx.debug_state.mouse_passed_through() {
+                    gfx.input_state.handle_mouse_event(button, button_state);
+                }
+            }
             _ => (),
         }
     }
@@ -416,4 +500,21 @@ fn run(event_loop: EventLoop<Graphics>, app: App) {
     wasm_bindgen_futures::spawn_local(async move {
         event_loop.spawn_app(app);
     });
+}
+
+fn lock_mouse(window: &Window) {
+    if let Err(err) = window
+        .set_cursor_grab(CursorGrabMode::Locked)
+        .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Confined))
+    {
+        log::warn!("Failed to lock cursor: {err:?}");
+    }
+    window.set_cursor_visible(false);
+}
+
+fn unlock_mouse(window: &Window) {
+    if let Err(err) = window.set_cursor_grab(CursorGrabMode::None) {
+        log::warn!("Failed to unlock cursor: {err:?}");
+    }
+    window.set_cursor_visible(true);
 }

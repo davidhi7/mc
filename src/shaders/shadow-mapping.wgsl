@@ -1,7 +1,10 @@
+const NUM_CASCADES = 4u;
+
 struct Globals {
     view_proj: mat4x4f,
-    light_view_projs: array<mat4x4f, 4>,
+    light_view_projs: array<mat4x4f, NUM_CASCADES>,
     light_direction: vec3f,
+    cascades_far_distances: vec4f
 };
 
 struct Vertex {
@@ -18,18 +21,27 @@ var<uniform> vertices: array<Vertex, 48>;
 @group(1) @binding(1)
 var<storage> chunks: array<vec3i>;
 
+// proposal for texture binding arrays in WebGPU: https://github.com/gpuweb/gpuweb/blob/main/proposals/sized-binding-arrays.md
+// Already present in WGPU and desktop graphics apis
+// var textures: binding_array<texture_2d<f32>>;
+@group(2) @binding(0)
+var textures: texture_2d_array<f32>;
+
 @group(2) @binding(1)
 var texture_sampler: sampler;
 
+@group(3) @binding(0)
+var<uniform> shadow_cascade: u32;
+
 struct InstanceInput {
     @location(0) attributes: u32,
+    @location(1) ao_attributes: u32,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coordinates: vec2<f32>,
     @location(1) @interpolate(flat) tex_index: u32,
-    @location(2) @interpolate(flat) direction: u32,
 };
 
 @vertex
@@ -37,7 +49,7 @@ fn vs_main(
     instance: InstanceInput,
     @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
-    let drawID = vertex_index >> 2;
+    let chunk_index = vertex_index >> 2;
     let real_vertex_index = vertex_index % 4;
 
     let chunk_relative_coords = vec3i(
@@ -49,18 +61,23 @@ fn vs_main(
     let tex_index = (instance.attributes >> 15) & 0xFF;
     let direction = (instance.attributes >> 23) & 0x7;
 
-    let vertex = vertices[2 * direction * 4 + real_vertex_index];
-    let global_position = vec3f(32 * chunks[drawID] + chunk_relative_coords) + vertex.position;
+    var quad_index = 2u * direction;
+
+    let vertex = vertices[quad_index * 4 + real_vertex_index];
+    let global_position = vec3f(32 * chunks[chunk_index] + chunk_relative_coords) + vertex.position;
 
     var out: VertexOutput;
-    out.clip_position = globals.view_proj * vec4f(global_position, 1);
+    out.clip_position = globals.light_view_projs[shadow_cascade] * vec4f(global_position, 1);
     out.tex_coordinates = vertex.tex_coordinates;
     out.tex_index = tex_index;
-    out.direction = direction;
     return out;
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4f(29.0 / 255.0, 63.0 / 255.0, 117.0 / 255.0, 0.8);
+fn fs_main(in: VertexOutput) {
+    var frag_color = textureSample(textures, texture_sampler, in.tex_coordinates, in.tex_index);
+
+    if frag_color.w < 0.1 {
+        discard;
+    }
 }

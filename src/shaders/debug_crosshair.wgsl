@@ -2,6 +2,7 @@ const line_length: f32 = 0.03;
 
 struct Globals {
     view_proj: mat4x4<f32>,
+    light_view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0)

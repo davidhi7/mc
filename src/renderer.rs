@@ -1,7 +1,8 @@
+use egui::Slider;
 use std::time::Duration;
 use web_time::Instant;
 
-use glam::{IVec3, Vec3, vec3};
+use glam::{vec3, IVec3, Vec3};
 use smallvec::SmallVec;
 use wgpu::{
     Color, CommandEncoder, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue,
@@ -13,26 +14,30 @@ use winit::{dpi::PhysicalSize, event::MouseButton, keyboard::KeyCode};
 
 use crate::{
     camera::{
-        Perspective, View,
         block_ray_caster::BlockHitInfo,
         player::{self, PlayerState},
+        yaw_pitch_to_direction, OrthographicProj, PerspectiveProj, Projection, View,
+        ViewProjectionMatrix, YawPitch,
     },
     input::InputState,
     renderer::{
         indirect_buffer_manager::IndirectBufferManager,
         pipelines::{
-            GlobalsBinding, block_outlines::BlockOutlinePipeline,
-            debug_crosshair::CrosshairPipeline, frustum_culling::FrustumCullingComputePass,
-            terrain::TerrainPipeline,
+            block_outlines::BlockOutlinePipeline,
+            debug_crosshair::CrosshairPipeline,
+            frustum_culling::{CullingPass, FrustumCullingComputePass},
+            shadow_mapping::{self, ShadowMappingPipeline, NUM_CASCADES},
+            terrain::{TerrainBinding, TerrainPipeline},
+            GlobalsBinding,
         },
     },
     texture,
-    ui::{AddToGui, GuiModule},
+    ui::{EguiState, GuiModule},
     world::{
-        World,
         blocks::{Block, BlockPhysicsType},
-        chunk::VERTICAL_CHUNK_COUNT,
+        chunk::{CHUNK_WIDTH, VERTICAL_CHUNK_COUNT},
         world_loader::{TerrainType, WorldLoader},
+        World,
     },
 };
 
@@ -42,7 +47,7 @@ mod pipelines;
 
 pub mod vertex_buffer;
 
-const CHUNK_RENDER_DISTANCE: u32 = 4;
+const CHUNK_RENDER_DISTANCE: u32 = 8;
 
 pub struct SceneState {
     device: Device,
@@ -54,24 +59,28 @@ pub struct SceneState {
     player: PlayerState,
     update_loop: FixedTimestepLoop,
     indirect_buffer_manager: IndirectBufferManager<TerrainType>,
+    light_state: LightState,
 }
 
 impl SceneState {
     pub fn new(
         device: Device,
         queue: Queue,
+        // todo rm
+        egui_state: &mut EguiState,
         surface_size: PhysicalSize<u32>,
         surface_format: TextureFormat,
         texture_array: TextureView,
     ) -> Self {
         let player = PlayerState::new(
-            Perspective {
+            PerspectiveProj {
                 fov_y_rad: f32::to_radians(90.0),
                 aspect_ratio: surface_size.width as f32 / surface_size.height as f32,
                 z_near: 0.1,
-                z_far: 1000.0,
+                // TODO not correct,one can look diagonally
+                z_far: ((CHUNK_RENDER_DISTANCE + 1) * CHUNK_WIDTH as u32) as f32,
             },
-            vec3(177.0, 128., 142.1),
+            vec3(0.0, 100.0, 0.0),
             Vec3::Z,
         );
 
@@ -95,7 +104,7 @@ impl SceneState {
             surface_format,
             texture_array,
             &indirect_buffer_manager,
-            &player,
+            player.perspective(),
         );
 
         // todo reorder struct fields
@@ -109,6 +118,12 @@ impl SceneState {
             world_loader,
             update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(player::TPS.recip())),
             indirect_buffer_manager,
+            light_state: LightState {
+                sun_yaw_pitch: YawPitch {
+                    yaw_norm: 0.25,
+                    pitch_norm: -0.25,
+                },
+            },
         }
     }
 
@@ -199,6 +214,7 @@ impl SceneState {
                 .looked_at_blocks()
                 .solid_block
                 .map(|block| block.coords),
+            &self.light_state,
         );
 
         if input_state.pull_is_pressed(KeyCode::KeyR) {
@@ -230,57 +246,62 @@ impl SceneState {
             &self.indirect_buffer_manager,
         );
     }
-}
 
-impl AddToGui for BlockHitInfo {
-    fn add_to_ui(&self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.monospace(format!("{:?}", self.block));
-            ui.label("at");
-            ui.monospace(format!("{:?}", self.coords));
-        });
+    pub fn gui_modules(&mut self) -> Vec<&mut dyn GuiModule> {
+        vec![
+            &mut self.player,
+            &mut self.light_state,
+            &mut self.world_renderer.shadow_pipeline,
+        ]
     }
 }
 
-impl GuiModule for SceneState {
-    fn title(&self) -> &str {
-        "Player state"
+struct LightState {
+    sun_yaw_pitch: YawPitch,
+}
+
+impl LightState {
+    fn direction(&self) -> Vec3 {
+        yaw_pitch_to_direction(self.sun_yaw_pitch)
     }
 
-    fn add_contents(&self, ui: &mut egui::Ui) {
+    fn view_projection(
+        &self,
+        camera_view: View,
+        camera_projection: PerspectiveProj,
+    ) -> (View, [OrthographicProj; NUM_CASCADES]) {
+        let view = View::new(
+            vec3(0.0, 0.0, 0.0),
+            self.direction(),
+            self.direction()
+                .cross(Vec3::Y)
+                .normalize()
+                .cross(self.direction()),
+        );
+        let projection =
+            shadow_mapping::create_shadow_projections(view, camera_view, camera_projection);
+        (view, projection)
+    }
+}
+
+impl GuiModule for LightState {
+    fn title(&self) -> Option<&str> {
+        Some("Light state")
+    }
+
+    fn add_contents(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let Vec3 { x, y, z } = self.player.eye();
-            ui.label("eye:");
-            ui.monospace(format!("{x:.2} / {y:.2} / {z:.2}"));
+            let Vec3 { x, y, z } = yaw_pitch_to_direction(self.sun_yaw_pitch);
+            ui.label("light direction");
+            ui.monospace(format!("{x:+.2} {y:+.2} {z:+.2}"));
         });
         ui.horizontal(|ui| {
-            let Vec3 { x, y, z } = self.player.direction();
-            ui.label("direction:");
-            ui.monospace(format!("{x:+.2} / {y:+.2} / {z:+.2}"));
-            ui.label("facing");
-            ui.monospace(format!("{:?}", self.player.cardinal_direction()));
+            ui.label("yaw");
+            ui.add(Slider::new(&mut self.sun_yaw_pitch.yaw_norm, 0.0..=2.0));
         });
         ui.horizontal(|ui| {
-            ui.label("focused block:");
-            match self.player.looked_at_blocks().solid_block {
-                Some(info) => {
-                    info.add_to_ui(ui);
-                }
-                None => {
-                    ui.monospace("None");
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("focused liquid:");
-            match self.player.looked_at_blocks().liquid_block {
-                Some(info) => {
-                    info.add_to_ui(ui);
-                }
-                None => {
-                    ui.monospace("None");
-                }
-            }
+            ui.label("pitch");
+            ui.add(Slider::new(&mut self.sun_yaw_pitch.pitch_norm, -0.5..=0.0));
         });
     }
 }
@@ -292,6 +313,7 @@ pub struct WorldRenderer {
     terrain_pipeline: TerrainPipeline,
     frustum_culling_pass: FrustumCullingComputePass,
     block_outline_pipeline: BlockOutlinePipeline,
+    shadow_pipeline: ShadowMappingPipeline,
 }
 
 impl WorldRenderer {
@@ -301,18 +323,25 @@ impl WorldRenderer {
         surface_format: TextureFormat,
         texture_array: TextureView,
         indirect_buffer_manager: &IndirectBufferManager<TerrainType>,
-        player: &PlayerState,
+        perspective: PerspectiveProj,
     ) -> Self {
-        let globals = GlobalsBinding::new(&device);
-
-        let terrain_pipeline = TerrainPipeline::new(
+        let globals = GlobalsBinding::new(&device, perspective);
+        let terrain_binding = TerrainBinding::new(
             &device,
-            &globals,
             &vertex_buffer::create_vertex_buffer(&device),
             indirect_buffer_manager.uniform_buffer(),
             texture_array,
             &texture::create_sampler(&device),
+        );
+        let shadow_pipeline =
+            ShadowMappingPipeline::new(&device, &queue, &globals, &terrain_binding);
+
+        let terrain_pipeline = TerrainPipeline::new(
+            &device,
+            &globals,
+            terrain_binding,
             surface_format,
+            &shadow_pipeline.binding,
         );
 
         let crosshair_pipeline = CrosshairPipeline::new(&device, &globals, surface_format);
@@ -323,8 +352,6 @@ impl WorldRenderer {
             indirect_buffer_manager.indirect_buffer(),
             indirect_buffer_manager.chunks_per_bucket() as u32,
             2 * indirect_buffer_manager.chunks_per_bucket() as u32,
-            player.view(),
-            player.perspective(),
         );
 
         let block_outline_pipeline = BlockOutlinePipeline::new(&device, &globals, surface_format);
@@ -336,19 +363,41 @@ impl WorldRenderer {
             terrain_pipeline,
             frustum_culling_pass,
             block_outline_pipeline,
+            shadow_pipeline,
         }
     }
 
     pub fn update(
         &mut self,
         extrapolated_view: View,
-        perspective: Perspective,
+        perspective: PerspectiveProj,
         focused_block: Option<IVec3>,
+        light_state: &LightState,
     ) {
-        self.globals
-            .update(&self.queue, extrapolated_view, perspective);
-        self.frustum_culling_pass
-            .update_camera(&self.queue, extrapolated_view, perspective);
+        let (light_view, light_projections) =
+            light_state.view_projection(extrapolated_view, perspective);
+        self.globals.update(
+            &self.queue,
+            ViewProjectionMatrix::new(extrapolated_view, Projection::Perspective(perspective)),
+            light_projections.map(|projection| {
+                ViewProjectionMatrix::new(light_view, Projection::Orthographic(projection))
+            }),
+            light_state.direction(),
+        );
+        self.frustum_culling_pass.write_planes(
+            &self.queue,
+            CullingPass::MainPass,
+            extrapolated_view,
+            perspective,
+        );
+        for (cascade, projection) in light_projections.into_iter().enumerate() {
+            self.frustum_culling_pass.write_planes(
+                &self.queue,
+                CullingPass::ShadowMapping { cascade },
+                light_view,
+                projection,
+            );
+        }
 
         self.block_outline_pipeline
             .set_outlined_block(&self.queue, focused_block);
@@ -361,8 +410,23 @@ impl WorldRenderer {
         depth_texture_view: &TextureView,
         indirect_buffer_manager: &IndirectBufferManager<TerrainType>,
     ) {
-        self.frustum_culling_pass.run(encoder);
+        for cascade in (0..NUM_CASCADES).rev() {
+            self.frustum_culling_pass
+                .run(encoder, CullingPass::ShadowMapping { cascade });
+            self.shadow_pipeline.render(
+                encoder,
+                &self.globals,
+                &self.terrain_pipeline.binding,
+                indirect_buffer_manager.vertex_buffer(),
+                indirect_buffer_manager.indirect_buffer(),
+                indirect_buffer_manager.indirect_buffer_offset(TerrainType::Solid),
+                indirect_buffer_manager.draw_count(TerrainType::Solid) as u32,
+                cascade,
+            );
+        }
 
+        self.frustum_culling_pass
+            .run(encoder, CullingPass::MainPass);
         let mut render_pass: RenderPass<'_> = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("scene render pass"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -396,6 +460,7 @@ impl WorldRenderer {
             self.terrain_pipeline.render_terrain(
                 &mut render_pass,
                 &self.globals,
+                &self.shadow_pipeline.binding,
                 indirect_buffer_manager.vertex_buffer(),
                 indirect_buffer_manager.indirect_buffer(),
                 indirect_buffer_manager.indirect_buffer_offset(TerrainType::Solid),

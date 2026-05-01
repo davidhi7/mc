@@ -2,37 +2,37 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingResource, BindingType, BlendState, Buffer, BufferBindingType,
     ColorTargetState, ColorWrites, CompareFunction, DepthBiasState, DepthStencilState, Device,
-    Face, FragmentState, FrontFace, MultisampleState, PipelineCompilationOptions,
-    PipelineLayoutDescriptor, PolygonMode, PrimitiveState, PrimitiveTopology, RenderPass,
-    RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType, ShaderStages,
-    StencilState, TextureFormat, TextureSampleType, TextureView, TextureViewDimension, VertexState,
+    Face, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, PolygonMode,
+    PrimitiveState, PrimitiveTopology, RenderPass, RenderPipeline, RenderPipelineDescriptor,
+    Sampler, SamplerBindingType, ShaderStages, StencilState, TextureFormat, TextureSampleType,
+    TextureView, TextureViewDimension, VertexState,
 };
 
 use crate::{
     renderer::{
-        pipelines::GlobalsBinding,
+        pipelines::{GlobalsBinding, shadow_mapping::ShadowMapBinding},
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     shaders,
 };
 
-struct TerrainTexturesBinding {
-    layout: BindGroupLayout,
-    binding: BindGroup,
+pub struct TerrainTexturesBinding {
+    pub layout: BindGroupLayout,
+    pub binding: BindGroup,
 }
 
-struct TerrainBuffersBinding {
-    layout: BindGroupLayout,
-    binding: BindGroup,
+pub struct TerrainBuffersBinding {
+    pub layout: BindGroupLayout,
+    pub binding: BindGroup,
 }
 
-struct TerrainBinding {
-    buffers: TerrainBuffersBinding,
-    textures: TerrainTexturesBinding,
+pub struct TerrainBinding {
+    pub buffers: TerrainBuffersBinding,
+    pub textures: TerrainTexturesBinding,
 }
 
 impl TerrainBinding {
-    fn new(
+    pub fn new(
         device: &Device,
         vertex_buffer: &Buffer,
         chunk_buffer: &Buffer,
@@ -135,7 +135,7 @@ impl TerrainBinding {
 }
 
 pub struct TerrainPipeline {
-    binding: TerrainBinding,
+    pub binding: TerrainBinding,
     terrain_pipeline: RenderPipeline,
     water_pipeline: RenderPipeline,
 }
@@ -144,15 +144,10 @@ impl TerrainPipeline {
     pub fn new(
         device: &Device,
         globals_binding: &GlobalsBinding,
-        vertex_buffer: &Buffer,
-        chunk_buffer: &Buffer,
-        texture_array: TextureView,
-        sampler: &Sampler,
+        binding: TerrainBinding,
         surface_format: TextureFormat,
+        shadow_map_binding: &ShadowMapBinding,
     ) -> Self {
-        let binding =
-            TerrainBinding::new(device, vertex_buffer, chunk_buffer, texture_array, sampler);
-
         let terrain_shader = device.create_shader_module(shaders::SHADER_TERRAIN);
 
         let water_shader = device.create_shader_module(shaders::SHADER_WATER);
@@ -165,6 +160,7 @@ impl TerrainPipeline {
                     &globals_binding.layout,
                     &binding.buffers.layout,
                     &binding.textures.layout,
+                    &shadow_map_binding.layout,
                 ],
                 push_constant_ranges: &[],
             })),
@@ -172,10 +168,7 @@ impl TerrainPipeline {
                 module: &terrain_shader,
                 entry_point: Some("vs_main"),
                 buffers: &[QuadInstance::desc()],
-                compilation_options: PipelineCompilationOptions {
-                    constants: &[],
-                    zero_initialize_workgroup_memory: false,
-                },
+                compilation_options: Default::default(),
             },
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleStrip,
@@ -206,10 +199,7 @@ impl TerrainPipeline {
                     blend: Some(BlendState::REPLACE),
                     write_mask: ColorWrites::ALL,
                 })],
-                compilation_options: PipelineCompilationOptions {
-                    constants: &[],
-                    zero_initialize_workgroup_memory: false,
-                },
+                compilation_options: Default::default(),
             }),
             multiview: None,
             cache: None,
@@ -230,10 +220,7 @@ impl TerrainPipeline {
                 module: &water_shader,
                 entry_point: Some("vs_main"),
                 buffers: &[TransparentQuadInstance::desc()],
-                compilation_options: PipelineCompilationOptions {
-                    constants: &[],
-                    zero_initialize_workgroup_memory: false,
-                },
+                compilation_options: Default::default(),
             },
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleStrip,
@@ -264,10 +251,7 @@ impl TerrainPipeline {
                     blend: Some(BlendState::ALPHA_BLENDING),
                     write_mask: ColorWrites::ALL,
                 })],
-                compilation_options: PipelineCompilationOptions {
-                    constants: &[],
-                    zero_initialize_workgroup_memory: false,
-                },
+                compilation_options: Default::default(),
             }),
             multiview: None,
             cache: None,
@@ -284,6 +268,7 @@ impl TerrainPipeline {
         &self,
         render_pass: &mut RenderPass,
         globals: &GlobalsBinding,
+        shadow_map_binding: &ShadowMapBinding,
         vertex_buffer: &Buffer,
         indirect_buffer: &Buffer,
         indirect_offset: u64,
@@ -294,6 +279,7 @@ impl TerrainPipeline {
         render_pass.set_bind_group(0, &globals.binding, &[]);
         render_pass.set_bind_group(1, Some(&self.binding.buffers.binding), &[]);
         render_pass.set_bind_group(2, Some(&self.binding.textures.binding), &[]);
+        render_pass.set_bind_group(3, Some(&shadow_map_binding.binding), &[]);
         render_pass.multi_draw_indirect(indirect_buffer, indirect_offset, indirect_count);
     }
 
