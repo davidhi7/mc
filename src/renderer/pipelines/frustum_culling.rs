@@ -1,7 +1,11 @@
 use std::mem::size_of;
 
 use wgpu::{
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferUsages, CommandEncoder, ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device, PipelineCompilationOptions, PipelineLayoutDescriptor, Queue, ShaderStages, util::{BufferInitDescriptor, DeviceExt}
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
+    BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferUsages,
+    CommandEncoder, ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device,
+    PipelineCompilationOptions, PipelineLayoutDescriptor, Queue, ShaderStages,
+    util::{BufferInitDescriptor, DeviceExt},
 };
 
 use crate::{
@@ -145,13 +149,12 @@ impl CullingComputePass {
         indirect_buffer_array: &IndirectBufferArray,
     ) -> CullingComputePass {
         let perspectives = CullingPass::all().len() as u64;
-        let frustum_buffer =
-            device.create_buffer(&BufferDescriptor {
-                label: Some("frustum culling frustum buffer"),
-                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-                size: perspectives * size_of::<CameraPlanes>() as u64,
-                mapped_at_creation: false,
-            });
+        let frustum_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("frustum culling frustum buffer"),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            size: perspectives * size_of::<CameraPlanes>() as u64,
+            mapped_at_creation: false,
+        });
 
         let descriptor_count_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("descriptor count buffer"),
@@ -171,27 +174,32 @@ impl CullingComputePass {
 
         let shader = device.create_shader_module(shaders::SHADER_FRUSTUM_CULLING);
 
-        let pipeline =
-            device.create_compute_pipeline(&ComputePipelineDescriptor {
-                label: Some("culling pipeline"),
-                layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
-                    label: Some("culling pipeline layout"),
-                    bind_group_layouts: &[&culling_data_binding.layout, &indirect_buffer_binding.layout],
-                    push_constant_ranges: &[],
-                })),
-                module: &shader,
-                entry_point: Some("run"),
-                compilation_options: PipelineCompilationOptions {
-                    constants: &[
-                        // todo some are not used
-                        ("PASS_COUNT", indirect_buffer_array.pass_count() as f64),
-                        ("BUCKET_COUNT", indirect_buffer_array.bucket_count() as f64),
-                        ("INDIRECT_BUFFER_SLOTS", indirect_buffer_array.indirect_buffer_slots() as f64),
-                    ],
-                    ..Default::default()
-                },
-                cache: None,
-            });
+        let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: Some("culling pipeline"),
+            layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some("culling pipeline layout"),
+                bind_group_layouts: &[
+                    &culling_data_binding.layout,
+                    &indirect_buffer_binding.layout,
+                ],
+                push_constant_ranges: &[],
+            })),
+            module: &shader,
+            entry_point: Some("run"),
+            compilation_options: PipelineCompilationOptions {
+                constants: &[
+                    // todo some are not used
+                    ("PASS_COUNT", indirect_buffer_array.pass_count() as f64),
+                    ("BUCKET_COUNT", indirect_buffer_array.bucket_count() as f64),
+                    (
+                        "INDIRECT_BUFFER_SLOTS",
+                        indirect_buffer_array.indirect_buffer_slots() as f64,
+                    ),
+                ],
+                ..Default::default()
+            },
+            cache: None,
+        });
 
         Self {
             frustum_buffer,
@@ -216,7 +224,13 @@ impl CullingComputePass {
         );
     }
 
-    pub fn run(&self, queue: &Queue, encoder: &mut CommandEncoder, indirect_buffer_array: &IndirectBufferArray, descriptor_count: u32) {
+    pub fn run(
+        &self,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        indirect_buffer_array: &IndirectBufferArray,
+        descriptor_count: u32,
+    ) {
         // TODO is this already done during last iteration's readback?
         // TODO write count of descriptors to buffer
         indirect_buffer_array.clear_counts(encoder);
@@ -225,7 +239,11 @@ impl CullingComputePass {
             timestamp_writes: None,
         });
         println!("{descriptor_count}");
-        queue.write_buffer(&self.descriptor_count_buffer, 0, &descriptor_count.to_ne_bytes());
+        queue.write_buffer(
+            &self.descriptor_count_buffer,
+            0,
+            &descriptor_count.to_ne_bytes(),
+        );
 
         cpass.set_pipeline(&self.pipeline);
         cpass.set_bind_group(0, &self.culling_data_binding.binding, &[]);

@@ -1,8 +1,15 @@
 use std::{mem::size_of, sync::mpsc};
 
-use wgpu::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferUsages, CommandEncoder, Device, PollType, Queue, ShaderStages, util::DownloadBuffer, wgt::{BufferDescriptor, DrawIndirectArgs}};
+use wgpu::{
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
+    BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferUsages, CommandEncoder,
+    Device, PollType, Queue, ShaderStages,
+    wgt::{BufferDescriptor, DrawIndirectArgs},
+};
 
-use crate::renderer::{indirect_buffer_manager::TerrainBuckets, pipelines::frustum_culling::CullingPass};
+use crate::renderer::{
+    indirect_buffer_manager::TerrainBuckets, pipelines::frustum_culling::CullingPass,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PassId(pub u64);
@@ -29,7 +36,7 @@ impl TerrainBuckets {
 
 pub enum RenderingStrategy {
     GpuCount,
-    CpuCount
+    CpuCount,
 }
 
 pub struct IndirectBufferBinding {
@@ -94,11 +101,16 @@ pub struct IndirectBufferArray {
     pub indirect_buffer: Buffer,
     pub counts_buffer: Buffer,
     counts_readback_buffer: Buffer,
-    counts_state: Box<[u32]>
+    counts_state: Box<[u32]>,
 }
 
 impl IndirectBufferArray {
-    pub fn new(device: &Device, bucket_count: u64, pass_count: u64, indirect_buffer_slots: u64) -> Self {
+    pub fn new(
+        device: &Device,
+        bucket_count: u64,
+        pass_count: u64,
+        indirect_buffer_slots: u64,
+    ) -> Self {
         let counts_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("counts array buffer"),
             size: bucket_count * pass_count * size_of::<u32>() as u64,
@@ -114,7 +126,10 @@ impl IndirectBufferArray {
         });
         let indirect_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("indirect array buffer"),
-            size: bucket_count * pass_count * indirect_buffer_slots * size_of::<DrawIndirectArgs>() as u64,
+            size: bucket_count
+                * pass_count
+                * indirect_buffer_slots
+                * size_of::<DrawIndirectArgs>() as u64,
             usage: BufferUsages::INDIRECT | BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -125,20 +140,30 @@ impl IndirectBufferArray {
             indirect_buffer,
             counts_buffer,
             counts_readback_buffer,
-            counts_state: vec![0u32; (bucket_count * pass_count) as usize].into_boxed_slice()
+            counts_state: vec![0u32; (bucket_count * pass_count) as usize].into_boxed_slice(),
         }
     }
 
-    pub fn bucket_count(&self) -> u64 { self.bucket_count }
-    pub fn pass_count(&self) -> u64 { self.pass_count }
-    pub fn indirect_buffer_slots(&self) -> u64 { self.indirect_buffer_slots }
+    pub fn bucket_count(&self) -> u64 {
+        self.bucket_count
+    }
+    pub fn pass_count(&self) -> u64 {
+        self.pass_count
+    }
+    pub fn indirect_buffer_slots(&self) -> u64 {
+        self.indirect_buffer_slots
+    }
 
     pub fn indirect_offset(&self, pass: PassId, bucket: BucketId) -> u64 {
-        (pass.0 * self.bucket_count + bucket.0) * self.indirect_buffer_slots * size_of::<DrawIndirectArgs>() as u64
+        (pass.0 * self.bucket_count + bucket.0)
+            * self.indirect_buffer_slots
+            * size_of::<DrawIndirectArgs>() as u64
     }
 
     pub fn counts_offset(&self, pass: PassId, bucket: BucketId) -> u64 {
-        (pass.0 * self.bucket_count + bucket.0) * self.indirect_buffer_slots * size_of::<u32>() as u64
+        (pass.0 * self.bucket_count + bucket.0)
+            * self.indirect_buffer_slots
+            * size_of::<u32>() as u64
     }
 
     pub fn count(&self, pass: PassId, bucket: BucketId) -> u32 {
@@ -161,19 +186,30 @@ impl IndirectBufferArray {
             0,
             self.counts_buffer.size(),
         );
-        encoder.map_buffer_on_submit(&self.counts_readback_buffer, wgpu::MapMode::Read, .., move |result| {
-            if result.is_err() {
-                log::error!("Failed to readback counts buffer");
-                panic!();
-            }
-            let mapped = counts_readback_buffer.get_mapped_range(..);
-            tx.send(bytemuck::cast_slice(&mapped).into()).expect("Failed to send buffer contents");
-            drop(mapped);
-            counts_readback_buffer.unmap();
-        });
+        encoder.map_buffer_on_submit(
+            &self.counts_readback_buffer,
+            wgpu::MapMode::Read,
+            ..,
+            move |result| {
+                if result.is_err() {
+                    log::error!("Failed to readback counts buffer");
+                    panic!();
+                }
+                let mapped = counts_readback_buffer.get_mapped_range(..);
+                tx.send(bytemuck::cast_slice(&mapped).into())
+                    .expect("Failed to send buffer contents");
+                drop(mapped);
+                counts_readback_buffer.unmap();
+            },
+        );
 
         let submission_index = queue.submit(std::iter::once(encoder.finish()));
-        device.poll(PollType::Wait { submission_index: Some(submission_index), timeout: None }).expect("Failed to poll device");
+        device
+            .poll(PollType::Wait {
+                submission_index: Some(submission_index),
+                timeout: None,
+            })
+            .expect("Failed to poll device");
 
         self.counts_state = rx.recv().expect("Failed to receive buffer contents");
         println!("counts: {:?}", self.counts_state);

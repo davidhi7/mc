@@ -2,7 +2,7 @@ use core::f32;
 use std::{f32::consts::PI, fmt};
 
 use bytemuck::{Pod, Zeroable};
-use glam::{vec3, Mat4, Vec3};
+use glam::{Mat4, Vec3, vec3};
 
 pub mod block_ray_caster;
 pub mod player;

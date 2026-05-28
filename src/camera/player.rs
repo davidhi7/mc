@@ -574,7 +574,9 @@ impl GuiModule for PlayerState {
             let Vec3 { x, y, z } = self.direction();
             let cardinal_direction = self.cardinal_direction();
             ui.label("direction:");
-            ui.monospace(format!("{x:+.2} {y:+.2} {z:+.2} (facing {cardinal_direction})"));
+            ui.monospace(format!(
+                "{x:+.2} {y:+.2} {z:+.2} (facing {cardinal_direction})"
+            ));
         });
         ui.horizontal(|ui| {
             ui.label("focused block:");

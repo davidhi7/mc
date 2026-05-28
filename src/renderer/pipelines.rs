@@ -61,18 +61,16 @@ impl DrawCountSource<'_> {
     }
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
+#[repr(C)]
 struct Globals {
     view_proj: ViewProjectionMatrix,
     light_view_projections: [ViewProjectionMatrix; NUM_CASCADES],
     light_direction: Vec3,
     _padding: u32,
-    /// Represented as vecXf, which mandates that NUM_CASCADES is within 2..=4
     cascades_far_distances: [f32; NUM_CASCADES],
 }
 
-/// Binding for ubiquitous data, currently only the view projection matrix.
 pub struct GlobalsBinding {
     state: Globals,
     globals_buffer: Buffer,

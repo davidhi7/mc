@@ -11,7 +11,7 @@ use wgpu::{Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Queue
 
 use crate::renderer::buffers;
 use crate::renderer::indirect_buffer_manager::{
-    BUCKET_COUNT, ChunkHandle, IndirectBufferUpdatePass, OffsetSize, TerrainBuckets
+    BUCKET_COUNT, ChunkHandle, IndirectBufferUpdatePass, OffsetSize, TerrainBuckets,
 };
 use crate::renderer::vertex_buffer::INSTANCE_ALIGNMENT;
 use crate::world::blocks::Block;
@@ -20,21 +20,18 @@ use crate::world::world_gen::{ChunkGenResult, WorldGenSettings};
 use crate::world::world_loader::executor::{Executor, Job, ThreadPoolExecutor};
 use crate::world::world_loader::rolling_grid::RollingGrid;
 use crate::{
-    renderer::
-        indirect_buffer_manager::IndirectBufferManager
-    ,
+    renderer::indirect_buffer_manager::IndirectBufferManager,
     world::{
         self, World,
         chunk::{ChunkStack, ChunkUVW, ChunkUW},
     },
 };
 
-use enum_map::{EnumMap};
+use enum_map::EnumMap;
 
 mod executor;
 mod rolling_grid;
 mod worker;
-
 
 struct DrawnChunkState {
     #[expect(dead_code)]
@@ -204,11 +201,7 @@ impl WorldLoader {
     }
 
     /// Relocate the grid, dispatch jobs for chunks that moved into the render distance and drop old chunks.
-    fn update_grid(
-        &mut self,
-        new_center: ChunkUVW,
-        update_pass: &mut IndirectBufferUpdatePass,
-    ) {
+    fn update_grid(&mut self, new_center: ChunkUVW, update_pass: &mut IndirectBufferUpdatePass) {
         self.grid.reposition(
             new_center.into(),
             &mut self.grid_ctx,
@@ -247,11 +240,8 @@ impl WorldLoader {
 
                     let (buffer, segments) = pack_meshes_into_buffer(&device, meshes, uvw);
 
-                    let chunk_handle = update_pass.prepare_insert_region(
-                        buffer.clone(),
-                        segments,
-                        uvw,
-                    );
+                    let chunk_handle =
+                        update_pass.prepare_insert_region(buffer.clone(), segments, uvw);
 
                     *state = ChunkState::BufferedAndDrawn(DrawnChunkState {
                         buffer,
@@ -297,10 +287,10 @@ impl WorldLoader {
 
         let new_handle = match old_handle {
             Some(handle) => {
-                update_pass.prepare_replace_chunk(handle, buffer.clone(), segments); handle},
-            None =>
-                update_pass.prepare_insert_region(buffer.clone(), segments, uvw)
-            ,
+                update_pass.prepare_replace_chunk(handle, buffer.clone(), segments);
+                handle
+            }
+            None => update_pass.prepare_insert_region(buffer.clone(), segments, uvw),
         };
 
         *self
@@ -422,15 +412,20 @@ fn update_rolling_grid(world: &World) -> impl Fn(&mut ChunkGridContext, ChunkUVW
     }
 }
 
-fn pack_meshes_into_buffer(device: &Device, meshes: EnumMap<TerrainBuckets, Option<Box<[u8]>>>, uvw: ChunkUVW) -> (Buffer, [Option<OffsetSize>; BUCKET_COUNT]) {
+fn pack_meshes_into_buffer(
+    device: &Device,
+    meshes: EnumMap<TerrainBuckets, Option<Box<[u8]>>>,
+    uvw: ChunkUVW,
+) -> (Buffer, [Option<OffsetSize>; BUCKET_COUNT]) {
     // todo dedup logic
-    let buffer_size = meshes.values().flatten().fold(0, |accum_size, mesh| buffers::align_up(accum_size, INSTANCE_ALIGNMENT) + mesh.len() as u64);
+    let buffer_size = meshes.values().flatten().fold(0, |accum_size, mesh| {
+        buffers::align_up(accum_size, INSTANCE_ALIGNMENT) + mesh.len() as u64
+    });
     let buffer = device.create_buffer(&BufferDescriptor {
         label: Some(&format!("chunk mesh {uvw:?}")),
         size: buffer_size,
         usage: BufferUsages::COPY_SRC,
         mapped_at_creation: true,
-
     });
 
     let mut offset = 0;
@@ -447,7 +442,8 @@ fn pack_meshes_into_buffer(device: &Device, meshes: EnumMap<TerrainBuckets, Opti
             size: mesh.len() as u64,
         };
 
-        let mut mapped = buffer.get_mapped_range_mut(offset_size.offset..(offset_size.offset + offset_size.size));
+        let mut mapped = buffer
+            .get_mapped_range_mut(offset_size.offset..(offset_size.offset + offset_size.size));
         mapped.copy_from_slice(mesh);
         offset += mesh.len() as u64;
         Some(offset_size)

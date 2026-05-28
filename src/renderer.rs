@@ -2,40 +2,53 @@ use egui::Slider;
 use std::time::Duration;
 use web_time::Instant;
 
-use glam::{vec3, IVec3, Vec3};
+use glam::{IVec3, Vec3, vec3};
 use smallvec::SmallVec;
 use wgpu::{
-    Color, CommandEncoder, CommandEncoderDescriptor, Device,
-    Extent3d, LoadOp, Operations, Queue, RenderPass, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, Texture, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
+    Color, CommandEncoder, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp,
+    Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    TextureViewDescriptor,
 };
 use winit::{dpi::PhysicalSize, event::MouseButton, keyboard::KeyCode};
 
 use crate::{
     camera::{
-        OrthographicProj, PerspectiveProj, Projection, View, ViewProjectionMatrix, YawPitch, block_ray_caster::BlockHitInfo, player::{self, PlayerState}, yaw_pitch_to_direction
+        OrthographicProj, PerspectiveProj, Projection, View, ViewProjectionMatrix, YawPitch,
+        block_ray_caster::BlockHitInfo,
+        player::{self, PlayerState},
+        yaw_pitch_to_direction,
     },
     input::InputState,
     renderer::{
-        indirect_buffer_array::IndirectBufferArray, indirect_buffer_manager::{ IndirectBufferManager, TerrainBuckets}, pipelines::{
-            DrawCountSource, GlobalsBinding, block_outlines::BlockOutlinePipeline, debug_crosshair::CrosshairPipeline, frustum_culling::{CullingComputePass, CullingPass}, shadow_mapping::{self, NUM_CASCADES, ShadowMappingPipeline}, terrain::{TerrainBinding, TerrainPipeline}
-        }
+        indirect_buffer_array::IndirectBufferArray,
+        indirect_buffer_manager::{IndirectBufferManager, TerrainBuckets},
+        pipelines::{
+            DrawCountSource, GlobalsBinding,
+            block_outlines::BlockOutlinePipeline,
+            debug_crosshair::CrosshairPipeline,
+            frustum_culling::{CullingComputePass, CullingPass},
+            shadow_mapping::{self, NUM_CASCADES, ShadowMappingPipeline},
+            terrain::{TerrainBinding, TerrainPipeline},
+        },
     },
     texture,
     ui::GuiModule,
     world::{
-        World, blocks::{Block, BlockPhysicsType}, chunk::{CHUNK_WIDTH, VERTICAL_CHUNK_COUNT}, world_loader::WorldLoader
+        World,
+        blocks::{Block, BlockPhysicsType},
+        chunk::{CHUNK_WIDTH, VERTICAL_CHUNK_COUNT},
+        world_loader::WorldLoader,
     },
 };
 
 pub mod buffers;
-pub mod indirect_buffer_manager;
 mod indirect_buffer_array;
+pub mod indirect_buffer_manager;
 mod pipelines;
 pub mod vertex_buffer;
 
-const CHUNK_RENDER_DISTANCE: u32 = 8;
+const CHUNK_RENDER_DISTANCE: u32 = 1;
 
 pub struct SceneState {
     device: Device,
@@ -83,7 +96,12 @@ impl SceneState {
         let indirect_buffer_manager =
             IndirectBufferManager::new(&device, "terrain".into(), count_chunks);
 
-        let indirect_buffer_array = IndirectBufferArray::new(&device, TerrainBuckets::all().len() as u64, shadow_mapping::NUM_CASCADES as u64 + 1, count_chunks);
+        let indirect_buffer_array = IndirectBufferArray::new(
+            &device,
+            TerrainBuckets::all().len() as u64,
+            shadow_mapping::NUM_CASCADES as u64 + 1,
+            count_chunks,
+        );
 
         let (depth_texture, depth_texture_view) =
             SceneState::create_depth_texture(&device, surface_size.width, surface_size.height);
@@ -357,7 +375,7 @@ impl WorldRenderer {
             &device,
             indirect_buffer_manager.descriptor_buffer(),
             indirect_buffer_manager.uniform_buffer(),
-            indirect_buffer_array
+            indirect_buffer_array,
         );
 
         let block_outline_pipeline = BlockOutlinePipeline::new(&device, &globals, surface_format);
@@ -425,7 +443,15 @@ impl WorldRenderer {
             // self.render_with_gpu_count(encoder, surface_view, depth_texture_view, indirect_buffer_manager);
             todo!();
         } else {
-            self.render_with_cpu_readback(device, queue, encoder, surface_view, depth_texture_view, indirect_buffer_manager, indirect_buffer_array);
+            self.render_with_cpu_readback(
+                device,
+                queue,
+                encoder,
+                surface_view,
+                depth_texture_view,
+                indirect_buffer_manager,
+                indirect_buffer_array,
+            );
         }
     }
 
@@ -515,12 +541,20 @@ impl WorldRenderer {
         surface_view: &TextureView,
         depth_texture_view: &TextureView,
         indirect_buffer_manager: &IndirectBufferManager,
-        indirect_buffer_array: &mut IndirectBufferArray
+        indirect_buffer_array: &mut IndirectBufferArray,
     ) {
         let mut culling_encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("count readback encoder"),
         });
-        self.culling_pass.run(&queue, &mut culling_encoder, indirect_buffer_array, indirect_buffer_manager.descriptor_count().try_into().unwrap());
+        self.culling_pass.run(
+            &queue,
+            &mut culling_encoder,
+            indirect_buffer_array,
+            indirect_buffer_manager
+                .descriptor_count()
+                .try_into()
+                .unwrap(),
+        );
         indirect_buffer_array.readback_counts(device, queue, culling_encoder);
 
         // Todo why rev?
@@ -534,14 +568,17 @@ impl WorldRenderer {
                 indirect_buffer_manager.vertex_buffer(),
                 &indirect_buffer_array.indirect_buffer,
                 indirect_buffer_array.indirect_offset(pass, bucket),
-                DrawCountSource::Cpu { count: indirect_buffer_array.count(pass, bucket) },
+                DrawCountSource::Cpu {
+                    count: indirect_buffer_array.count(pass, bucket),
+                },
                 cascade,
             );
         }
 
         let pass = CullingPass::MainPass.offset();
         let solid_count = indirect_buffer_array.count(pass, TerrainBuckets::Solid.offset());
-        let transparent_count = indirect_buffer_array.count(pass, TerrainBuckets::Transparent.offset());
+        let transparent_count =
+            indirect_buffer_array.count(pass, TerrainBuckets::Transparent.offset());
 
         let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("scene render pass"),
@@ -587,10 +624,14 @@ impl WorldRenderer {
             indirect_buffer_manager.vertex_buffer(),
             &indirect_buffer_array.indirect_buffer,
             indirect_buffer_array.indirect_offset(pass, TerrainBuckets::Transparent.offset()),
-            DrawCountSource::Cpu { count: transparent_count },
+            DrawCountSource::Cpu {
+                count: transparent_count,
+            },
         );
-        self.block_outline_pipeline.render(&mut render_pass, &self.globals);
-        self.crosshair_pipeline.render(&mut render_pass, &self.globals);
+        self.block_outline_pipeline
+            .render(&mut render_pass, &self.globals);
+        self.crosshair_pipeline
+            .render(&mut render_pass, &self.globals);
     }
 }
 

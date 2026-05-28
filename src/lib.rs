@@ -23,10 +23,10 @@ use std::sync::Arc;
 use web_time::Instant;
 
 use wgpu::{
-    CompositeAlphaMode, Device, DeviceDescriptor, ExperimentalFeatures, Features, Instance,
-    InstanceDescriptor, Limits, MemoryHints, PowerPreference, PresentMode, Queue,
-    RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceError, TextureFormat,
-    TextureUsages, TextureViewDescriptor, Trace, CommandEncoderDescriptor,
+    CommandEncoderDescriptor, CompositeAlphaMode, Device, DeviceDescriptor, ExperimentalFeatures,
+    Features, Instance, InstanceDescriptor, Limits, MemoryHints, PowerPreference, PresentMode,
+    Queue, RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceError, TextureFormat,
+    TextureUsages, TextureViewDescriptor, Trace,
 };
 use winit::{
     application::ApplicationHandler,
@@ -201,8 +201,12 @@ impl Graphics {
                         ..Default::default()
                     });
 
-                self.scene_state
-                    .render(&self.device, &self.queue, &mut encoder, &surface_view_srgb);
+                self.scene_state.render(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &surface_view_srgb,
+                );
 
                 if let DebugState::DebugEnabled(_) = self.debug_state {
                     // egui prefers non-srgb surfaces

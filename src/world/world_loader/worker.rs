@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use enum_map::EnumMap;
 
-use crate::{renderer::indirect_buffer_manager::TerrainBuckets, world::{
-    chunk::{ChunkMeshingContext, ChunkUVW},
-    world_gen::{self},
-    world_loader::{
-        ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, ExecutorContext,
+use crate::{
+    renderer::indirect_buffer_manager::TerrainBuckets,
+    world::{
+        chunk::{ChunkMeshingContext, ChunkUVW},
+        world_gen::{self},
+        world_loader::{
+            ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, ExecutorContext,
+        },
     },
-}};
+};
 
 pub fn create_job(
     job: ChunkJob,
