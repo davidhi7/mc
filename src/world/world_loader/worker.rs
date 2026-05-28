@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use enum_map::EnumMap;
 
-use crate::world::{
+use crate::{renderer::indirect_buffer_manager::TerrainBuckets, world::{
     chunk::{ChunkMeshingContext, ChunkUVW},
     world_gen::{self},
     world_loader::{
-        ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, ExecutorContext, TerrainType,
+        ChunkJob, ChunkJobResult, ChunkJobResultType, ChunkJobType, ExecutorContext,
     },
-};
+}};
 
 pub fn create_job(
     job: ChunkJob,
@@ -22,10 +22,10 @@ pub fn create_job(
                     result: ChunkJobResultType::Cancelled,
                 };
             }
-            let buffers = create_mesh(&chunk_context, uvw);
+            let meshes = create_mesh(&chunk_context, uvw);
             ChunkJobResult {
                 job_id,
-                result: ChunkJobResultType::Mesh { uvw, buffers },
+                result: ChunkJobResultType::Mesh { uvw, meshes },
             }
         }),
         ChunkJobType::Generate { uw } => Box::new(move |ctx| {
@@ -48,7 +48,7 @@ pub fn create_job(
 pub fn create_mesh(
     ctx: &ChunkMeshingContext,
     uvw: ChunkUVW,
-) -> EnumMap<TerrainType, Option<Box<[u8]>>> {
+) -> EnumMap<TerrainBuckets, Option<Box<[u8]>>> {
     // if (uvw.u + uvw.w) & 1 == 0 {
     //     return Default::default();
     // }
@@ -56,11 +56,11 @@ pub fn create_mesh(
     let mut buffers = EnumMap::default();
 
     if !solid_instances.is_empty() {
-        buffers[TerrainType::Solid] = Some(solid_instances.into_boxed_slice());
+        buffers[TerrainBuckets::Solid] = Some(solid_instances.into_boxed_slice());
     }
 
     if !transparent_instances.is_empty() {
-        buffers[TerrainType::Transparent] = Some(transparent_instances.into_boxed_slice());
+        buffers[TerrainBuckets::Transparent] = Some(transparent_instances.into_boxed_slice());
     }
 
     buffers

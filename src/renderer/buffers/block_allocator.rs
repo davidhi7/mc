@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use crate::renderer::buffers::{AllocationError, AsBytes, WriteBuffer};
 
 #[derive(Clone, Copy, Debug)]
-pub struct BlockHandle<T>(pub u64, pub PhantomData<T>);
+pub struct BlockHandle<T>(pub u64, PhantomData<T>);
 
 #[derive(Clone, Copy, Debug)]
 pub struct CountedBlockHandle<T>(pub u64, PhantomData<T>);

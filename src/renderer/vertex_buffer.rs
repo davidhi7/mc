@@ -10,8 +10,6 @@ use wgpu::{
 
 use crate::world::blocks::Direction;
 
-pub const QUAD_VERTEX_COUNT: u32 = 4;
-
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
     pub position: Vec3,
@@ -71,7 +69,7 @@ pub struct QuadInstance {
     pub ao_attributes: u32,
 }
 impl QuadInstance {
-    pub fn desc() -> VertexBufferLayout<'static> {
+    pub const fn desc() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
             array_stride: 2 * mem::size_of::<u32>() as BufferAddress,
             step_mode: VertexStepMode::Instance,
@@ -99,11 +97,11 @@ pub struct TransparentQuadInstance {
     /// * `5-10`: y coordinate inside the cunk
     /// * `10-15`: z coordinate inside the cunk
     /// * `15-23`: texture id
-    /// * `23-26`: direction (`crate::world::blocks::Direction`)
+    /// * `23-26`: direction [`crate::world::blocks::Direction`]
     pub attributes: u32,
 }
 impl TransparentQuadInstance {
-    pub fn desc() -> VertexBufferLayout<'static> {
+    pub const fn desc() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
             array_stride: mem::size_of::<u32>() as BufferAddress,
             step_mode: VertexStepMode::Instance,
@@ -115,6 +113,12 @@ impl TransparentQuadInstance {
         }
     }
 }
+
+pub const INSTANCE_ALIGNMENT: u64 = {
+    let a = mem::size_of::<TransparentQuadInstance>();
+    let b = mem::size_of::<QuadInstance>();
+    if a > b { a } else { b }
+} as u64;
 
 pub fn create_vertex_buffer(device: &Device) -> Buffer {
     let mut quad_variants: Vec<Vertex> = Vec::with_capacity(4 * 2 * 6);

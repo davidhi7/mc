@@ -26,7 +26,7 @@ use wgpu::{
     CompositeAlphaMode, Device, DeviceDescriptor, ExperimentalFeatures, Features, Instance,
     InstanceDescriptor, Limits, MemoryHints, PowerPreference, PresentMode, Queue,
     RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceError, TextureFormat,
-    TextureUsages, TextureViewDescriptor, Trace, wgt::CommandEncoderDescriptor,
+    TextureUsages, TextureViewDescriptor, Trace, CommandEncoderDescriptor,
 };
 use winit::{
     application::ApplicationHandler,
@@ -122,12 +122,18 @@ impl Graphics {
         let size = window.inner_size();
         let egui_state = EguiState::new(&window, &device, &queue, surface_format);
 
+        let supports_mdi_count = device
+            .features()
+            .contains(Features::MULTI_DRAW_INDIRECT_COUNT);
+        log::info!("MULTI_DRAW_INDIRECT_COUNT: {supports_mdi_count}");
+
         let scene_state = SceneState::new(
             device.clone(),
             queue.clone(),
             size,
             surface_format_srgb,
             texture::load_textures(&device, &queue).await.unwrap(),
+            supports_mdi_count,
         );
 
         let frametimes = FrameTimeMetrics::new(1000);
@@ -195,7 +201,8 @@ impl Graphics {
                         ..Default::default()
                     });
 
-                self.scene_state.render(&mut encoder, &surface_view_srgb);
+                self.scene_state
+                    .render(&self.device, &self.queue, &mut encoder, &surface_view_srgb);
 
                 if let DebugState::DebugEnabled(_) = self.debug_state {
                     // egui prefers non-srgb surfaces

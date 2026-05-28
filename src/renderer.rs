@@ -5,46 +5,34 @@ use web_time::Instant;
 use glam::{vec3, IVec3, Vec3};
 use smallvec::SmallVec;
 use wgpu::{
-    Color, CommandEncoder, CommandEncoderDescriptor, Device, Extent3d, LoadOp, Operations, Queue,
-    RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
-    StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
-    TextureView, TextureViewDescriptor,
+    Color, CommandEncoder, CommandEncoderDescriptor, Device,
+    Extent3d, LoadOp, Operations, Queue, RenderPass, RenderPassColorAttachment,
+    RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, Texture, TextureDescriptor,
+    TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
 };
 use winit::{dpi::PhysicalSize, event::MouseButton, keyboard::KeyCode};
 
 use crate::{
     camera::{
-        block_ray_caster::BlockHitInfo,
-        player::{self, PlayerState},
-        yaw_pitch_to_direction, OrthographicProj, PerspectiveProj, Projection, View,
-        ViewProjectionMatrix, YawPitch,
+        OrthographicProj, PerspectiveProj, Projection, View, ViewProjectionMatrix, YawPitch, block_ray_caster::BlockHitInfo, player::{self, PlayerState}, yaw_pitch_to_direction
     },
     input::InputState,
     renderer::{
-        indirect_buffer_manager::IndirectBufferManager,
-        pipelines::{
-            block_outlines::BlockOutlinePipeline,
-            debug_crosshair::CrosshairPipeline,
-            frustum_culling::{CullingPass, FrustumCullingComputePass},
-            shadow_mapping::{self, ShadowMappingPipeline, NUM_CASCADES},
-            terrain::{TerrainBinding, TerrainPipeline},
-            GlobalsBinding,
-        },
+        indirect_buffer_array::IndirectBufferArray, indirect_buffer_manager::{ IndirectBufferManager, TerrainBuckets}, pipelines::{
+            DrawCountSource, GlobalsBinding, block_outlines::BlockOutlinePipeline, debug_crosshair::CrosshairPipeline, frustum_culling::{CullingComputePass, CullingPass}, shadow_mapping::{self, NUM_CASCADES, ShadowMappingPipeline}, terrain::{TerrainBinding, TerrainPipeline}
+        }
     },
     texture,
-    ui::{ GuiModule},
+    ui::GuiModule,
     world::{
-        blocks::{Block, BlockPhysicsType},
-        chunk::{CHUNK_WIDTH, VERTICAL_CHUNK_COUNT},
-        world_loader::{TerrainType, WorldLoader},
-        World,
+        World, blocks::{Block, BlockPhysicsType}, chunk::{CHUNK_WIDTH, VERTICAL_CHUNK_COUNT}, world_loader::WorldLoader
     },
 };
 
 pub mod buffers;
 pub mod indirect_buffer_manager;
+mod indirect_buffer_array;
 mod pipelines;
-
 pub mod vertex_buffer;
 
 const CHUNK_RENDER_DISTANCE: u32 = 8;
@@ -58,7 +46,8 @@ pub struct SceneState {
     world_loader: WorldLoader,
     player: PlayerState,
     update_loop: FixedTimestepLoop,
-    indirect_buffer_manager: IndirectBufferManager<TerrainType>,
+    indirect_buffer_manager: IndirectBufferManager,
+    indirect_buffer_array: IndirectBufferArray,
     light_state: LightState,
 }
 
@@ -69,6 +58,7 @@ impl SceneState {
         surface_size: PhysicalSize<u32>,
         surface_format: TextureFormat,
         texture_array: TextureView,
+        supports_mdi_count: bool,
     ) -> Self {
         let player = PlayerState::new(
             PerspectiveProj {
@@ -85,13 +75,15 @@ impl SceneState {
         let world = World::new();
         let world_loader = WorldLoader::new(world, player.eye(), CHUNK_RENDER_DISTANCE);
 
-        let chunks_per_bucket = (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
+        let count_chunks = (2 * CHUNK_RENDER_DISTANCE as u64 + 1).pow(2)
             * u64::min(
                 CHUNK_RENDER_DISTANCE as u64 * 2 + 1,
                 VERTICAL_CHUNK_COUNT as u64,
             );
         let indirect_buffer_manager =
-            IndirectBufferManager::new(&device, "terrain".into(), chunks_per_bucket);
+            IndirectBufferManager::new(&device, "terrain".into(), count_chunks);
+
+        let indirect_buffer_array = IndirectBufferArray::new(&device, TerrainBuckets::all().len() as u64, shadow_mapping::NUM_CASCADES as u64 + 1, count_chunks);
 
         let (depth_texture, depth_texture_view) =
             SceneState::create_depth_texture(&device, surface_size.width, surface_size.height);
@@ -102,7 +94,9 @@ impl SceneState {
             surface_format,
             texture_array,
             &indirect_buffer_manager,
+            &indirect_buffer_array,
             player.perspective(),
+            supports_mdi_count,
         );
 
         // todo reorder struct fields
@@ -116,6 +110,7 @@ impl SceneState {
             world_loader,
             update_loop: FixedTimestepLoop::new(Duration::from_secs_f32(player::TPS.recip())),
             indirect_buffer_manager,
+            indirect_buffer_array,
             light_state: LightState {
                 sun_yaw_pitch: YawPitch {
                     yaw_norm: 0.25,
@@ -236,12 +231,22 @@ impl SceneState {
         }
     }
 
-    pub fn render(&self, encoder: &mut CommandEncoder, surface_view: &TextureView) {
+    // todo take commandencoder if we already take device+queue?
+    pub fn render(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        surface_view: &TextureView,
+    ) {
         self.world_renderer.render(
+            device,
+            queue,
             encoder,
             surface_view,
             &self.depth_texture_view,
             &self.indirect_buffer_manager,
+            &mut self.indirect_buffer_array,
         );
     }
 
@@ -254,6 +259,7 @@ impl SceneState {
     }
 }
 
+// todo move to pipeline module?
 struct LightState {
     sun_yaw_pitch: YawPitch,
 }
@@ -309,9 +315,10 @@ struct WorldRenderer {
     globals: GlobalsBinding,
     crosshair_pipeline: CrosshairPipeline,
     terrain_pipeline: TerrainPipeline,
-    frustum_culling_pass: FrustumCullingComputePass,
+    culling_pass: CullingComputePass,
     block_outline_pipeline: BlockOutlinePipeline,
     shadow_pipeline: ShadowMappingPipeline,
+    supports_mdi_count: bool,
 }
 
 impl WorldRenderer {
@@ -320,8 +327,10 @@ impl WorldRenderer {
         queue: Queue,
         surface_format: TextureFormat,
         texture_array: TextureView,
-        indirect_buffer_manager: &IndirectBufferManager<TerrainType>,
+        indirect_buffer_manager: &IndirectBufferManager,
+        indirect_buffer_array: &IndirectBufferArray,
         perspective: PerspectiveProj,
+        supports_mdi_count: bool,
     ) -> Self {
         let globals = GlobalsBinding::new(&device, perspective);
         let terrain_binding = TerrainBinding::new(
@@ -344,12 +353,11 @@ impl WorldRenderer {
 
         let crosshair_pipeline = CrosshairPipeline::new(&device, &globals, surface_format);
 
-        let frustum_culling_pass = FrustumCullingComputePass::new(
+        let culling_pass = CullingComputePass::new(
             &device,
+            indirect_buffer_manager.descriptor_buffer(),
             indirect_buffer_manager.uniform_buffer(),
-            indirect_buffer_manager.indirect_buffer(),
-            indirect_buffer_manager.chunks_per_bucket() as u32,
-            2 * indirect_buffer_manager.chunks_per_bucket() as u32,
+            indirect_buffer_array
         );
 
         let block_outline_pipeline = BlockOutlinePipeline::new(&device, &globals, surface_format);
@@ -359,9 +367,10 @@ impl WorldRenderer {
             globals,
             crosshair_pipeline,
             terrain_pipeline,
-            frustum_culling_pass,
+            culling_pass,
             block_outline_pipeline,
             shadow_pipeline,
+            supports_mdi_count,
         }
     }
 
@@ -382,14 +391,15 @@ impl WorldRenderer {
             }),
             light_state.direction(),
         );
-        self.frustum_culling_pass.write_planes(
+        // todo maybe write in a single operation
+        self.culling_pass.write_planes(
             &self.queue,
             CullingPass::MainPass,
             extrapolated_view,
             perspective,
         );
         for (cascade, projection) in light_projections.into_iter().enumerate() {
-            self.frustum_culling_pass.write_planes(
+            self.culling_pass.write_planes(
                 &self.queue,
                 CullingPass::ShadowMapping { cascade },
                 light_view,
@@ -403,29 +413,137 @@ impl WorldRenderer {
 
     fn render(
         &self,
+        device: &Device,
+        queue: &Queue,
         encoder: &mut CommandEncoder,
         surface_view: &TextureView,
         depth_texture_view: &TextureView,
-        indirect_buffer_manager: &IndirectBufferManager<TerrainType>,
+        indirect_buffer_manager: &IndirectBufferManager,
+        indirect_buffer_array: &mut IndirectBufferArray,
     ) {
+        if self.supports_mdi_count {
+            // self.render_with_gpu_count(encoder, surface_view, depth_texture_view, indirect_buffer_manager);
+            todo!();
+        } else {
+            self.render_with_cpu_readback(device, queue, encoder, surface_view, depth_texture_view, indirect_buffer_manager, indirect_buffer_array);
+        }
+    }
+
+    fn render_with_gpu_count(
+        &self,
+        encoder: &mut CommandEncoder,
+        surface_view: &TextureView,
+        depth_texture_view: &TextureView,
+        indirect_buffer_manager: &IndirectBufferManager,
+    ) {
+        // let max_count = indirect_buffer_manager.chunks_per_bucket() as u32;
+        // let bucket_info = BucketRenderInfo::compute(indirect_buffer_manager);
+
+        // // Shadow passes: cull and render solid terrain for each cascade
+        // for cascade in (0..NUM_CASCADES).rev() {
+        //     self.queue.write_buffer(
+        //         indirect_buffer_manager.counter_buffer(),
+        //         bucket_info.solid.counter_offset,
+        //         &0u32.to_ne_bytes(),
+        //     );
+        //     self.dispatch_culling(encoder, CullingPass::ShadowMapping { cascade }, &bucket_info.solid, indirect_buffer_manager);
+        //     self.shadow_pipeline.render(
+        //         encoder,
+        //         &self.globals,
+        //         &self.terrain_pipeline.binding,
+        //         indirect_buffer_manager.vertex_buffer(),
+        //         indirect_buffer_manager.indirect_buffer(),
+        //         bucket_info.solid.indirect_offset,
+        //         DrawCountSource::GpuBuffer {
+        //             count_buffer: indirect_buffer_manager.counter_buffer(),
+        //             count_buffer_offset: bucket_info.solid.counter_offset,
+        //             max_count,
+        //         },
+        //         cascade,
+        //     );
+        // }
+
+        // // Main pass: clear both counters, dispatch both buckets
+        // self.queue.write_buffer(
+        //     indirect_buffer_manager.counter_buffer(),
+        //     bucket_info.solid.counter_offset,
+        //     &0u32.to_ne_bytes(),
+        // );
+        // self.queue.write_buffer(
+        //     indirect_buffer_manager.counter_buffer(),
+        //     bucket_info.transparent.counter_offset,
+        //     &0u32.to_ne_bytes(),
+        // );
+        // self.dispatch_culling(encoder, CullingPass::MainPass, &bucket_info.solid, indirect_buffer_manager);
+        // self.dispatch_culling(encoder, CullingPass::MainPass, &bucket_info.transparent, indirect_buffer_manager);
+
+        // let mut render_pass = Self::begin_scene_render_pass(encoder, surface_view, depth_texture_view);
+        // self.terrain_pipeline.render_terrain(
+        //     &mut render_pass,
+        //     &self.globals,
+        //     &self.shadow_pipeline.binding,
+        //     indirect_buffer_manager.vertex_buffer(),
+        //     indirect_buffer_manager.indirect_buffer(),
+        //     bucket_info.solid.indirect_offset,
+        //     DrawCountSource::GpuBuffer {
+        //         count_buffer: indirect_buffer_manager.counter_buffer(),
+        //         count_buffer_offset: bucket_info.solid.counter_offset,
+        //         max_count,
+        //     },
+        // );
+        // self.terrain_pipeline.render_water(
+        //     &mut render_pass,
+        //     &self.globals,
+        //     indirect_buffer_manager.vertex_buffer(),
+        //     indirect_buffer_manager.indirect_buffer(),
+        //     bucket_info.transparent.indirect_offset,
+        //     DrawCountSource::GpuBuffer {
+        //         count_buffer: indirect_buffer_manager.counter_buffer(),
+        //         count_buffer_offset: bucket_info.transparent.counter_offset,
+        //         max_count,
+        //     },
+        // );
+        // self.block_outline_pipeline.render(&mut render_pass, &self.globals);
+        // self.crosshair_pipeline.render(&mut render_pass, &self.globals);
+    }
+
+    fn render_with_cpu_readback(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        surface_view: &TextureView,
+        depth_texture_view: &TextureView,
+        indirect_buffer_manager: &IndirectBufferManager,
+        indirect_buffer_array: &mut IndirectBufferArray
+    ) {
+        let mut culling_encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("count readback encoder"),
+        });
+        self.culling_pass.run(&queue, &mut culling_encoder, indirect_buffer_array, indirect_buffer_manager.descriptor_count().try_into().unwrap());
+        indirect_buffer_array.readback_counts(device, queue, culling_encoder);
+
+        // Todo why rev?
         for cascade in (0..NUM_CASCADES).rev() {
-            self.frustum_culling_pass
-                .run(encoder, CullingPass::ShadowMapping { cascade });
+            let pass = CullingPass::shadow(cascade).offset();
+            let bucket = TerrainBuckets::Solid.offset();
             self.shadow_pipeline.render(
                 encoder,
                 &self.globals,
                 &self.terrain_pipeline.binding,
                 indirect_buffer_manager.vertex_buffer(),
-                indirect_buffer_manager.indirect_buffer(),
-                indirect_buffer_manager.indirect_buffer_offset(TerrainType::Solid),
-                indirect_buffer_manager.draw_count(TerrainType::Solid) as u32,
+                &indirect_buffer_array.indirect_buffer,
+                indirect_buffer_array.indirect_offset(pass, bucket),
+                DrawCountSource::Cpu { count: indirect_buffer_array.count(pass, bucket) },
                 cascade,
             );
         }
 
-        self.frustum_culling_pass
-            .run(encoder, CullingPass::MainPass);
-        let mut render_pass: RenderPass<'_> = encoder.begin_render_pass(&RenderPassDescriptor {
+        let pass = CullingPass::MainPass.offset();
+        let solid_count = indirect_buffer_array.count(pass, TerrainBuckets::Solid.offset());
+        let transparent_count = indirect_buffer_array.count(pass, TerrainBuckets::Transparent.offset());
+
+        let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("scene render pass"),
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: surface_view,
@@ -454,33 +572,25 @@ impl WorldRenderer {
             occlusion_query_set: None,
         });
 
-        if indirect_buffer_manager.draw_count(TerrainType::Solid) > 0 {
-            self.terrain_pipeline.render_terrain(
-                &mut render_pass,
-                &self.globals,
-                &self.shadow_pipeline.binding,
-                indirect_buffer_manager.vertex_buffer(),
-                indirect_buffer_manager.indirect_buffer(),
-                indirect_buffer_manager.indirect_buffer_offset(TerrainType::Solid),
-                indirect_buffer_manager.draw_count(TerrainType::Solid) as u32,
-            );
-        }
-
-        if indirect_buffer_manager.draw_count(TerrainType::Transparent) > 0 {
-            self.terrain_pipeline.render_water(
-                &mut render_pass,
-                &self.globals,
-                indirect_buffer_manager.vertex_buffer(),
-                indirect_buffer_manager.indirect_buffer(),
-                indirect_buffer_manager.indirect_buffer_offset(TerrainType::Transparent),
-                indirect_buffer_manager.draw_count(TerrainType::Transparent) as u32,
-            );
-        }
-
-        self.block_outline_pipeline
-            .render(&mut render_pass, &self.globals);
-        self.crosshair_pipeline
-            .render(&mut render_pass, &self.globals);
+        self.terrain_pipeline.render_terrain(
+            &mut render_pass,
+            &self.globals,
+            &self.shadow_pipeline.binding,
+            indirect_buffer_manager.vertex_buffer(),
+            &indirect_buffer_array.indirect_buffer,
+            indirect_buffer_array.indirect_offset(pass, TerrainBuckets::Solid.offset()),
+            DrawCountSource::Cpu { count: solid_count },
+        );
+        self.terrain_pipeline.render_water(
+            &mut render_pass,
+            &self.globals,
+            indirect_buffer_manager.vertex_buffer(),
+            &indirect_buffer_array.indirect_buffer,
+            indirect_buffer_array.indirect_offset(pass, TerrainBuckets::Transparent.offset()),
+            DrawCountSource::Cpu { count: transparent_count },
+        );
+        self.block_outline_pipeline.render(&mut render_pass, &self.globals);
+        self.crosshair_pipeline.render(&mut render_pass, &self.globals);
     }
 }
 

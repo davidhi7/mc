@@ -10,7 +10,7 @@ use wgpu::{
 
 use crate::{
     renderer::{
-        pipelines::{GlobalsBinding, shadow_mapping::ShadowMapBinding},
+        pipelines::{DrawCountSource, GlobalsBinding, shadow_mapping::ShadowMapBinding},
         vertex_buffer::{QuadInstance, TransparentQuadInstance},
     },
     shaders,
@@ -272,7 +272,7 @@ impl TerrainPipeline {
         vertex_buffer: &Buffer,
         indirect_buffer: &Buffer,
         indirect_offset: u64,
-        indirect_count: u32,
+        draw_count: DrawCountSource,
     ) {
         render_pass.set_pipeline(&self.terrain_pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -280,7 +280,7 @@ impl TerrainPipeline {
         render_pass.set_bind_group(1, Some(&self.binding.buffers.binding), &[]);
         render_pass.set_bind_group(2, Some(&self.binding.textures.binding), &[]);
         render_pass.set_bind_group(3, Some(&shadow_map_binding.binding), &[]);
-        render_pass.multi_draw_indirect(indirect_buffer, indirect_offset, indirect_count);
+        draw_count.draw(render_pass, indirect_buffer, indirect_offset);
     }
 
     pub fn render_water(
@@ -290,13 +290,13 @@ impl TerrainPipeline {
         vertex_buffer: &Buffer,
         indirect_buffer: &Buffer,
         indirect_offset: u64,
-        indirect_count: u32,
+        draw_count: DrawCountSource,
     ) {
         render_pass.set_pipeline(&self.water_pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_bind_group(0, &globals.binding, &[]);
         render_pass.set_bind_group(1, Some(&self.binding.buffers.binding), &[]);
         render_pass.set_bind_group(2, Some(&self.binding.textures.binding), &[]);
-        render_pass.multi_draw_indirect(indirect_buffer, indirect_offset, indirect_count);
+        draw_count.draw(render_pass, indirect_buffer, indirect_offset);
     }
 }

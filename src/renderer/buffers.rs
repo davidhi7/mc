@@ -70,7 +70,7 @@ impl<'a> BufferMemoryTarget<'a> {
         self
     }
 
-    /// Upper limit for write operations. All write operations must not write beyong `offset + data.len() < limit`
+    /// Upper limit for write operations. All write operations must not write beyond `offset + data.len() < limit`.
     /// This limit is shifted according to the global offset, if set.
     pub fn with_limit(mut self, limit: u64) -> Self {
         self.limit = Some(limit);

@@ -1,26 +1,33 @@
-use std::collections::HashMap;
+use std::mem::size_of;
 
 use wgpu::{
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferUsages,
-    CommandEncoder, ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device,
-    PipelineLayoutDescriptor, Queue, ShaderStages,
-    util::{BufferInitDescriptor, DeviceExt},
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferDescriptor, BufferUsages, CommandEncoder, ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, Device, PipelineCompilationOptions, PipelineLayoutDescriptor, Queue, ShaderStages, util::{BufferInitDescriptor, DeviceExt}
 };
 
 use crate::{
     camera::{CameraPlanes, ToPlanes, View},
-    renderer::pipelines::shadow_mapping::NUM_CASCADES,
+    renderer::{
+        indirect_buffer_array::{IndirectBufferArray, IndirectBufferBinding},
+        pipelines::shadow_mapping::NUM_CASCADES,
+    },
     shaders,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CullingPass {
+    // todo evaluate type
     ShadowMapping { cascade: usize },
     MainPass,
 }
 
 impl CullingPass {
+    pub fn shadow(cascade: usize) -> Self {
+        if cascade >= NUM_CASCADES {
+            panic!("Invalid cascade {cascade}")
+        }
+        CullingPass::ShadowMapping { cascade }
+    }
+
     fn all() -> Vec<CullingPass> {
         let mut values = Vec::with_capacity(NUM_CASCADES + 1);
         for i in 0..NUM_CASCADES {
@@ -34,17 +41,16 @@ impl CullingPass {
 
 struct CullingDataBinding {
     layout: BindGroupLayout,
-    bindings: HashMap<CullingPass, BindGroup>,
+    binding: BindGroup,
 }
 
 impl CullingDataBinding {
     fn new(
         device: &Device,
-        uniform_buffer: &Buffer,
-        draw_buffer: &Buffer,
-        uniform_count: u32,
-        draw_count: u32,
-        frustum_buffers: &HashMap<CullingPass, Buffer>,
+        frustum_buffer: &Buffer,
+        descriptor_count_buffer: &Buffer,
+        chunk_descriptor_buffer: &Buffer,
+        chunk_uniform_buffer: &Buffer,
     ) -> Self {
         let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("frustum culling data layout"),
@@ -60,7 +66,7 @@ impl CullingDataBinding {
                     },
                     count: None,
                 },
-                // Uniform and indirect draw count buffer
+                // Chunk descriptor count buffer
                 BindGroupLayoutEntry {
                     binding: 1,
                     visibility: ShaderStages::COMPUTE,
@@ -71,23 +77,23 @@ impl CullingDataBinding {
                     },
                     count: None,
                 },
-                // Uniform buffer
+                // Chunk descriptor buffer
                 BindGroupLayoutEntry {
                     binding: 2,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: false },
+                        ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
                     count: None,
                 },
-                // Indirect draw buffer
+                // Chunk uniform buffer
                 BindGroupLayoutEntry {
                     binding: 3,
                     visibility: ShaderStages::COMPUTE,
                     ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: false },
+                        ty: BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -96,117 +102,103 @@ impl CullingDataBinding {
             ],
         });
 
-        let bounds_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("culling bounds buffer"),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            contents: bytemuck::cast_slice(&[uniform_count, draw_count]),
+        let binding = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("culling data binding"),
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: frustum_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: descriptor_count_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: chunk_descriptor_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: chunk_uniform_buffer.as_entire_binding(),
+                },
+            ],
         });
 
-        let mut bindings = HashMap::new();
-        for pass in CullingPass::all() {
-            let binding = device.create_bind_group(&BindGroupDescriptor {
-                label: Some("frustum culling data binding"),
-                layout: &layout,
-                entries: &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: frustum_buffers[&pass].as_entire_binding(),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: bounds_buffer.as_entire_binding(),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    BindGroupEntry {
-                        binding: 3,
-                        resource: draw_buffer.as_entire_binding(),
-                    },
-                ],
-            });
-            bindings.insert(pass, binding);
-        }
-
-        Self { layout, bindings }
+        Self { layout, binding }
     }
 }
 
-pub struct FrustumCullingComputePass {
-    frustum_buffers: HashMap<CullingPass, Buffer>,
+pub struct CullingComputePass {
+    frustum_buffer: Buffer,
+    descriptor_count_buffer: Buffer,
     culling_data_binding: CullingDataBinding,
-    visibility_check_pipeline: ComputePipeline,
-    visibility_writeback_pipeline: ComputePipeline,
-    uniform_count: u32,
-    draw_count: u32,
+    indirect_buffer_binding: IndirectBufferBinding,
+    pipeline: ComputePipeline,
 }
 
-impl FrustumCullingComputePass {
+impl CullingComputePass {
     pub fn new(
         device: &Device,
-        uniform_buffer: &Buffer,
-        indirect_draw_buffer: &Buffer,
-        uniform_count: u32,
-        draw_count: u32,
-    ) -> FrustumCullingComputePass {
-        let mut frustum_buffers = HashMap::new();
-        for pass in CullingPass::all() {
-            let buffer = device.create_buffer(&BufferDescriptor {
-                label: Some(&format!("frustum culling frustum buffer {pass:?}")),
+        chunk_descriptor_buffer: &Buffer,
+        chunk_uniform_buffer: &Buffer,
+        indirect_buffer_array: &IndirectBufferArray,
+    ) -> CullingComputePass {
+        let perspectives = CullingPass::all().len() as u64;
+        let frustum_buffer =
+            device.create_buffer(&BufferDescriptor {
+                label: Some("frustum culling frustum buffer"),
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-                size: std::mem::size_of::<CameraPlanes>() as u64,
+                size: perspectives * size_of::<CameraPlanes>() as u64,
                 mapped_at_creation: false,
             });
-            frustum_buffers.insert(pass, buffer);
-        }
+
+        let descriptor_count_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("descriptor count buffer"),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            contents: &0u32.to_ne_bytes(),
+        });
 
         let culling_data_binding = CullingDataBinding::new(
             device,
-            uniform_buffer,
-            indirect_draw_buffer,
-            uniform_count,
-            draw_count,
-            &frustum_buffers,
+            &frustum_buffer,
+            &descriptor_count_buffer,
+            chunk_descriptor_buffer,
+            chunk_uniform_buffer,
         );
+
+        let indirect_buffer_binding = IndirectBufferBinding::new(device, indirect_buffer_array);
 
         let shader = device.create_shader_module(shaders::SHADER_FRUSTUM_CULLING);
 
-        let visibility_check_pipeline =
+        let pipeline =
             device.create_compute_pipeline(&ComputePipelineDescriptor {
-                label: Some("chunk visibility check pipeline"),
+                label: Some("culling pipeline"),
                 layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
-                    label: Some("chunk visibility check pipeline layout"),
-                    bind_group_layouts: &[&culling_data_binding.layout],
+                    label: Some("culling pipeline layout"),
+                    bind_group_layouts: &[&culling_data_binding.layout, &indirect_buffer_binding.layout],
                     push_constant_ranges: &[],
                 })),
                 module: &shader,
-                entry_point: Some("compute_chunk_visibility"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
-
-        let visibility_writeback_pipeline =
-            device.create_compute_pipeline(&ComputePipelineDescriptor {
-                label: Some("chunk visibility writeback pipeline"),
-                layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
-                    label: Some("chunk visibility writeback pipeline layout"),
-                    bind_group_layouts: &[&culling_data_binding.layout],
-                    push_constant_ranges: &[],
-                })),
-                module: &shader,
-                entry_point: Some("write_chunk_data"),
-                compilation_options: Default::default(),
+                entry_point: Some("run"),
+                compilation_options: PipelineCompilationOptions {
+                    constants: &[
+                        // todo some are not used
+                        ("PASS_COUNT", indirect_buffer_array.pass_count() as f64),
+                        ("BUCKET_COUNT", indirect_buffer_array.bucket_count() as f64),
+                        ("INDIRECT_BUFFER_SLOTS", indirect_buffer_array.indirect_buffer_slots() as f64),
+                    ],
+                    ..Default::default()
+                },
                 cache: None,
             });
 
         Self {
+            frustum_buffer,
+            descriptor_count_buffer,
             culling_data_binding,
-            visibility_check_pipeline,
-            visibility_writeback_pipeline,
-            uniform_count,
-            draw_count,
-            frustum_buffers,
+            indirect_buffer_binding,
+            pipeline,
         }
     }
 
@@ -218,23 +210,26 @@ impl FrustumCullingComputePass {
         projection: impl ToPlanes,
     ) {
         queue.write_buffer(
-            &self.frustum_buffers[&pass],
-            0,
+            &self.frustum_buffer,
+            pass.offset().0 * size_of::<CameraPlanes>() as u64,
             bytemuck::bytes_of(&projection.planes(view)),
         );
     }
 
-    pub fn run(&self, encoder: &mut CommandEncoder, pass: CullingPass) {
+    pub fn run(&self, queue: &Queue, encoder: &mut CommandEncoder, indirect_buffer_array: &IndirectBufferArray, descriptor_count: u32) {
+        // TODO is this already done during last iteration's readback?
+        // TODO write count of descriptors to buffer
+        indirect_buffer_array.clear_counts(encoder);
         let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some("culling compute pass"),
             timestamp_writes: None,
         });
-        cpass.set_bind_group(0, &self.culling_data_binding.bindings[&pass], &[]);
+        println!("{descriptor_count}");
+        queue.write_buffer(&self.descriptor_count_buffer, 0, &descriptor_count.to_ne_bytes());
 
-        cpass.set_pipeline(&self.visibility_check_pipeline);
-        cpass.dispatch_workgroups(self.uniform_count.div_ceil(64), 1, 1);
-
-        cpass.set_pipeline(&self.visibility_writeback_pipeline);
-        cpass.dispatch_workgroups(self.draw_count.div_ceil(64), 1, 1);
+        cpass.set_pipeline(&self.pipeline);
+        cpass.set_bind_group(0, &self.culling_data_binding.binding, &[]);
+        cpass.set_bind_group(1, &self.indirect_buffer_binding.binding, &[]);
+        cpass.dispatch_workgroups(descriptor_count.div_ceil(64).into(), 1, 1);
     }
 }

@@ -303,7 +303,7 @@ impl ShadowMappingPipeline {
         vertex_buffer: &Buffer,
         indirect_buffer: &Buffer,
         indirect_offset: u64,
-        indirect_count: u32,
+        draw_count: super::DrawCountSource,
         cascade: usize,
     ) {
         if cascade >= NUM_CASCADES {
@@ -333,7 +333,7 @@ impl ShadowMappingPipeline {
         render_pass.set_bind_group(1, Some(&terrain_binding.buffers.binding), &[]);
         render_pass.set_bind_group(2, Some(&terrain_binding.textures.binding), &[]);
         render_pass.set_bind_group(3, Some(&self.cascade_bind_groups[cascade]), &[]);
-        render_pass.multi_draw_indirect(indirect_buffer, indirect_offset, indirect_count);
+        draw_count.draw(&mut render_pass, indirect_buffer, indirect_offset);
     }
 }
 

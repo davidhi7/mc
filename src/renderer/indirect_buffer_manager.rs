@@ -1,49 +1,112 @@
 use core::panic;
+use std::array;
 use std::collections::HashMap;
 use std::hash::Hash;
 
 use std::fmt::Debug;
-use std::marker::PhantomData;
+use std::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
+use enum_map::Enum;
 use glam::IVec3;
 use itertools::Itertools;
-use wgpu::util::DrawIndirectArgs;
 use wgpu::{Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Queue};
-
-use enum_map::{EnumArray, EnumMap};
 
 use crate::logging::ReadableBytes;
 use crate::renderer::buffers::block_allocator::{
-    BlockAllocator, BlockHandle, CountedBlockAllocator, CountedBlockHandle,
+    BlockAllocator, BlockHandle,
 };
 use crate::renderer::buffers::pool_allocator::{PoolAllocator, SegmentHandle};
 use crate::renderer::buffers::{AllocationError, BufferMemoryTarget};
-use crate::renderer::vertex_buffer::QUAD_VERTEX_COUNT;
+use crate::renderer::vertex_buffer::{INSTANCE_ALIGNMENT, QuadInstance, TransparentQuadInstance};
 use crate::world::chunk::ChunkUVW;
 
-/// Trait representing values that act as a bucket identifier for a class of draw calls.
-// EnumArray<T> is implemented if T derives Enum
-#[expect(private_bounds)]
-pub trait DrawCallBucket:
-    Copy
-    + Debug
-    + Hash
-    + Eq
-    + Ord
-    + EnumArray<u64>
-    + EnumArray<IndirectBufferConfig>
-    + EnumArray<HashMap<ChunkUniform, DrawCallData<Self>>>
-{
-    /// Size of a single instance, in bytes.
-    fn instance_size(self) -> u64;
+pub const BUCKET_COUNT: usize = 2;
+
+// todo move to different crate?
+#[derive(Clone, Copy)]
+pub struct OffsetSize {
+    pub offset: u64,
+    pub size: u64
+}
+
+#[derive(Clone, Copy)]
+pub struct OffsetCount {
+    pub offset: u64,
+    pub count: u64,
+    pub instance_size: u64
+}
+
+#[derive(Clone, Copy)]
+enum AllocationRequest {
+    Bytes(OffsetSize),
+    Count(OffsetCount)
+}
+
+impl AllocationRequest {
+    fn offset(self) -> u64 {
+        match self {
+            AllocationRequest::Bytes(offset_size) => offset_size.offset,
+            AllocationRequest::Count(offset_count) => offset_count.offset,
+        }
+    }
+
+    fn size(self) -> u64 {
+        match self {
+            AllocationRequest::Bytes(offset_size) => offset_size.size,
+            AllocationRequest::Count(offset_count) => offset_count.count * offset_count.instance_size,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Enum)]
+pub enum TerrainBuckets {
+    Solid,
+    Transparent,
+}
+
+impl TerrainBuckets {
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Solid,
+            Self::Transparent
+        ]
+    }
+
+    pub const fn instance_size(self) -> u64 {
+        match self {
+            TerrainBuckets::Solid => QuadInstance::desc().array_stride,
+            TerrainBuckets::Transparent => TransparentQuadInstance::desc().array_stride,
+        }
+    }
+}
+
+/// GPU-side descriptor for a chunk to be drawn. The GPU compute shader reads these
+/// and writes `DrawIndirectArgs` into indirect draw buffers for chunks that survive culling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Zeroable, Pod)]
+#[repr(C)]
+pub struct ChunkDescriptor {
+    /// One entry per chunk bucket
+    // todo correct size
+    pub entries: [ChunkDescriptorEntry; BUCKET_COUNT],
+    /// Index into the chunk uniforms buffer
+    pub uniform_index: u32,
+    pub _padding: [u32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Zeroable, Pod)]
+#[repr(C)]
+pub struct ChunkDescriptorEntry {
+    /// Byte offset into the vertex buffer where this chunk's instances begin.
+    pub first_instance: u32,
+    /// Number of quad instances in this chunk+bucket.
+    pub instance_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Zeroable, Pod)]
 #[repr(C)]
 pub struct ChunkUniform {
     uvw: IVec3,
-    // padding is used for temporary state in compute shaders but not meant to be read by the CPU
     _padding: i32,
 }
 
@@ -56,154 +119,87 @@ impl From<ChunkUVW> for ChunkUniform {
     }
 }
 
-/// Identifier for a draw call, consisting of a chunk uniform and a bucket.
-/// evaluate what traits are needed
+/// CPU-side handle for a chunk to be drawn.
+// TODO: evaluate what traits are needed
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DrawCallHandle<Bucket> {
-    pub bucket: Bucket,
+pub struct ChunkHandle {
     pub uniform: ChunkUniform,
 }
 
-/// All data associated with a draw call.
-pub struct DrawCallData<Bucket: DrawCallBucket> {
-    indirect_buffer_handle: IndirectBufferHandle<Bucket>,
-    vertex_buffer_handle: SegmentHandle,
-    uniform_buffer_handle: CountedBlockHandle<ChunkUniform>,
-    instance_count: u32,
+/// CPU-side data for a chunk to be drawn.
+// multiple vertex buffer handles?
+struct Chunk {
+    descriptor_buffer_handle: BlockHandle<ChunkDescriptor>,
+    uniform_buffer_handle: BlockHandle<ChunkUniform>,
+    vertex_buffer_handles: [Option<SegmentHandle>; BUCKET_COUNT],
 }
 
 /// Data for a prepared but not yet written draw call.
-struct DrawCallCreationArgs<Bucket> {
-    bucket: Bucket,
+struct ChunkCreationArgs {
     uniform: ChunkUniform,
     vertex_buffer: Buffer,
-    instance_count: u32,
+    segments: [Option<OffsetSize>; BUCKET_COUNT],
 }
 
 /// Data for a draw call that is prepared to be updated, that is the vertex buffer contents are to be replaced.
-struct DrawCallUpdateArgs<Bucket> {
-    draw_call: DrawCallHandle<Bucket>,
+struct ChunkUpdateArgs {
+    handle: ChunkHandle,
     vertex_buffer: Buffer,
-    instance_count: u32,
+    segments: [Option<OffsetSize>; BUCKET_COUNT],
 }
 
-/// Indirect buffer allocator and metadata for one bucket type.
-struct IndirectBufferConfig {
-    allocator: BlockAllocator<DrawIndirectArgs>,
-    draw_count: u64,
+// todo comment
+/// Descriptor buffer allocator and metadata for one bucket type.
+struct DescriptorAllocator {
+    /// Storage buffer with per-chunk [`ChunkDescriptor`] values.
+    descriptor_buffer: Buffer,
+    /// Storage buffer with per-chunk [`ChunkUniform`] values.
+    uniform_buffer: Buffer,
+    descriptor_allocator: BlockAllocator<ChunkDescriptor>,
+    uniform_allocator: BlockAllocator<ChunkUniform>,
+    max_chunk_count: u64,
+    descriptor_count: u64
 }
 
-/// Bucket and block handle for accessing indirect buffer slots.
-struct IndirectBufferHandle<Bucket: DrawCallBucket> {
-    bucket: Bucket,
-    handle: BlockHandle<DrawIndirectArgs>,
-}
-
-/// Utility struct that manages allocations to an indirect buffer, aware of multiple draw call classes (bucket).
-struct IndirectBufferAllocator<Bucket: DrawCallBucket> {
-    chunks_per_bucket: u64,
-    allocators: EnumMap<Bucket, IndirectBufferConfig>,
-    /// Indirect buffer, containing all draw calls.
-    /// Contains one slot for every chunk and bucket combination.
-    /// Stores [`wgpu::util::DrawIndirectArgs`] instances.
-    buffer: Buffer,
-}
-
-impl<Bucket: DrawCallBucket> IndirectBufferAllocator<Bucket> {
-    fn new(chunks_per_bucket: u64, buffer: Buffer) -> Self {
-        Self {
-            chunks_per_bucket,
-            allocators: EnumMap::from_fn(|_| IndirectBufferConfig {
-                allocator: BlockAllocator::new(chunks_per_bucket),
-                draw_count: 0,
-            }),
-            buffer,
+impl DescriptorAllocator {
+    fn reserve_block(&mut self) -> Result<(BlockHandle<ChunkDescriptor>, BlockHandle<ChunkUniform>), AllocationError> {
+        let descriptor_block = self.descriptor_allocator.first_free_block()?;
+        let uniform_block = self.uniform_allocator.first_free_block()?;
+        // todo sync into one operation?
+        if descriptor_block.0 != uniform_block.0 {
+            log::warn!("Chunk and uniform buffer block index mismatch!");
         }
+
+        Ok((descriptor_block, uniform_block))
     }
 
-    /// Allocate the first free block for the given bucket and increments the draw count by one. Returns error if no free bucket is available.
-    fn allocate_first_free_block(
-        &mut self,
-        bucket: Bucket,
-        queue: &Queue,
-        command_encoder: &mut CommandEncoder,
-        data: &DrawIndirectArgs,
-    ) -> Result<IndirectBufferHandle<Bucket>, AllocationError> {
-        let target = &mut BufferMemoryTarget::new(&self.buffer, queue, command_encoder)
-            .with_global_offset(self.offset(bucket))
-            .with_limit(self.bytes_per_bucket());
-
-        let allocator = &mut self.allocators[bucket];
-        let first_free_block = allocator.allocator.first_free_block()?;
-
-        allocator
-            .allocator
-            .allocate_block(target, first_free_block, data)?;
-        allocator.draw_count += 1;
-
-        Ok(IndirectBufferHandle {
-            bucket,
-            handle: first_free_block,
-        })
-    }
-
-    /// Writes data into given block, does not increment draw count. Returns error if the handle is invalid.
-    fn overwrite_block(
+    fn write_block(
         &mut self,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
-        handle: &IndirectBufferHandle<Bucket>,
-        data: &DrawIndirectArgs,
+        chunk: &Chunk,
+        descriptor: &ChunkDescriptor,
+        uniform: &ChunkUniform,
     ) -> Result<(), AllocationError> {
-        let target = &mut BufferMemoryTarget::new(&self.buffer, queue, command_encoder)
-            .with_global_offset(self.offset(handle.bucket))
-            .with_limit(self.bytes_per_bucket());
-
-        self.allocators[handle.bucket]
-            .allocator
-            .overwrite_block(target, handle.handle, data)
+        self.descriptor_count += 1;
+        // todo allocate or reserveblcok
+        self.descriptor_allocator
+            .allocate_block(&mut BufferMemoryTarget::new(&self.descriptor_buffer, queue, command_encoder), chunk.descriptor_buffer_handle, descriptor)?;
+        self.uniform_allocator
+            .allocate_block(&mut BufferMemoryTarget::new(&self.uniform_buffer, queue, command_encoder), chunk.uniform_buffer_handle, uniform)?;
+        Ok(())
     }
 
-    /// Allocate the first free block for the given bucket and increments the draw count by one. Returns error if no free bucket is available.
-    fn deallocate_last_block(&mut self, bucket: Bucket) {
-        let allocator = &mut self.allocators[bucket];
-        assert!(
-            allocator.draw_count > 0,
-            "Tried to deallocate last block while no block is allocated"
-        );
-
-        allocator
-            .allocator
-            .deallocate_block(BlockHandle(allocator.draw_count - 1, PhantomData))
-            .expect("Last block should always be allocated if draw count is greater than 0");
-        allocator.draw_count -= 1;
+    fn deallocate(&mut self, chunk: &Chunk) -> Result<(), AllocationError> {
+        self.descriptor_count -= 1;
+        self.descriptor_allocator.deallocate_block(chunk.descriptor_buffer_handle)?;
+        self.uniform_allocator.deallocate_block(chunk.uniform_buffer_handle)?;
+        Ok(())
     }
 
     fn clear(&mut self) {
-        for allocator in self.allocators.values_mut() {
-            allocator.draw_count = 0;
-            allocator.allocator.clear();
-        }
-    }
-
-    /// Count of active draw calls
-    fn draw_count(&self, bucket: Bucket) -> u64 {
-        self.allocators[bucket].draw_count
-    }
-
-    /// Size of indirect buffer segment for one bucket type, in bytes.
-    fn bytes_per_bucket(&self) -> u64 {
-        self.chunks_per_bucket * std::mem::size_of::<DrawIndirectArgs>() as u64
-    }
-
-    /// Offset measured in draw calls.
-    fn offset_draw_calls(&self, bucket: Bucket) -> u64 {
-        self.chunks_per_bucket * bucket.into_usize() as u64
-    }
-
-    /// Offset measured in bytes.
-    fn offset(&self, bucket: Bucket) -> u64 {
-        self.offset_draw_calls(bucket) * std::mem::size_of::<DrawIndirectArgs>() as u64
+        self.descriptor_allocator.clear();
+        self.uniform_allocator.clear();
     }
 }
 
@@ -214,125 +210,119 @@ struct VertexBufferInsertionTask {
     source_buffer: Buffer,
 }
 
-pub struct IndirectBufferManager<Bucket: DrawCallBucket> {
+pub struct IndirectBufferManager {
+    /// Label appended to all buffers created by this instance.
     buffer_label: String,
+    /// Indirect buffer, rebuilt each frame by the GPU compute shader.
+    // todo
+    // indirect_buffer: Buffer,
+    /// Atomic counter buffer for GPU-driven indirect buffer creation.
+    /// One u32 per bucket, cleared before each culling dispatch.
+    // todo
+    // counter_buffer: Buffer,
+    descriptor_allocator: DescriptorAllocator,
     /// Vertex/instance buffer. Contains all draw call geometry data.
     vertex_buffer: Buffer,
-    /// Storage buffer with per-draw call uniform values.
-    /// Contains one slot for every chunk.
-    /// Stores [`ChunkUniform`] instances.
-    uniform_buffer: Buffer,
-    indirect_buffer_allocator: IndirectBufferAllocator<Bucket>,
     vertex_buffer_allocator: PoolAllocator,
-    uniform_buffer_allocator: CountedBlockAllocator<ChunkUniform>,
-    draw_calls: EnumMap<Bucket, HashMap<ChunkUniform, DrawCallData<Bucket>>>,
-    uniforms: HashMap<ChunkUniform, CountedBlockHandle<ChunkUniform>>,
+    chunks: HashMap<ChunkHandle, Chunk>,
 }
 
-impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
-    pub fn new(device: &Device, buffer_label: String, chunks_per_bucket: u64) -> Self {
+// todo why static?
+impl IndirectBufferManager {
+    pub fn new(device: &Device, buffer_label: String, chunks_count: u64) -> Self {
         // Start with 1MiB
         let vertex_buffer_size = 1024u64.pow(2);
 
-        let indirect_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some(&format!("indirect buffer {buffer_label}")),
-            size: chunks_per_bucket
-                * Bucket::LENGTH as u64
-                * std::mem::size_of::<DrawIndirectArgs>() as u64,
-            usage: BufferUsages::INDIRECT | BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // let indirect_buffer = device.create_buffer(&BufferDescriptor {
+        //     label: Some(&format!("indirect buffer {buffer_label}")),
+        //     size: chunks_per_bucket
+        //         * Buckets::LENGTH as u64
+        //         * std::mem::size_of::<DrawIndirectArgs>() as u64,
+        //     usage: BufferUsages::INDIRECT | BufferUsages::STORAGE,
+        //     mapped_at_creation: false,
+        // });
         let vertex_buffer = device.create_buffer(&BufferDescriptor {
             label: Some(&format!("vertex buffer {buffer_label}")),
             size: vertex_buffer_size,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let uniform_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some(&format!("uniform buffer {buffer_label}")),
-            size: chunks_per_bucket * std::mem::size_of::<ChunkUniform>() as u64,
+        let vertex_buffer_allocator = PoolAllocator::new(vertex_buffer_size);
+        let chunk_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some(&format!("descriptor buffer {buffer_label}")),
+            size: chunks_count
+                * size_of::<ChunkDescriptor>() as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let uniform_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some(&format!("uniform buffer {buffer_label}")),
+            size: chunks_count * size_of::<ChunkUniform>() as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let chunk_allocator = BlockAllocator::new(chunks_count);
+        let uniform_allocator = BlockAllocator::new(chunks_count);
 
         Self {
             buffer_label,
             vertex_buffer,
-            uniform_buffer,
-            indirect_buffer_allocator: IndirectBufferAllocator::new(
-                chunks_per_bucket,
-                indirect_buffer,
-            ),
-            vertex_buffer_allocator: PoolAllocator::new(vertex_buffer_size),
-            uniform_buffer_allocator: CountedBlockAllocator::new(chunks_per_bucket),
-            draw_calls: EnumMap::default(),
-            uniforms: HashMap::default(),
+            vertex_buffer_allocator,
+            descriptor_allocator: DescriptorAllocator { descriptor_buffer: chunk_buffer, uniform_buffer, descriptor_allocator: chunk_allocator, uniform_allocator, max_chunk_count: chunks_count, descriptor_count: 0 },
+            chunks: HashMap::default(),
         }
     }
 
-    /// Insert region.
-    ///
-    /// This involves:
-    /// - Allocating the vertex buffer contents
-    /// - Allocating the uniform if not already existing
-    /// - Allocating the indirect draw call
-    ///
-    /// If the draw call is followed by other draw calls of the same bucket, the last draw call is moved into the now free slot to guarantee a continuous sequence of active draw calls.
-    fn insert_region(
+    /// Insert new chunk for drawing.
+    fn insert_chunk(
         &mut self,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
-        existing_buffer_handle: Option<IndirectBufferHandle<Bucket>>,
-        DrawCallCreationArgs {
-            bucket,
+        overwrite_chunk: Option<ChunkHandle>,
+        ChunkCreationArgs {
             uniform,
             vertex_buffer,
-            instance_count,
-        }: DrawCallCreationArgs<Bucket>,
-    ) -> VertexBufferInsertionTask {
-        let insertion_task = self.reserve_from_vertex_buffer(bucket, vertex_buffer, instance_count);
+            segments,
+        }: ChunkCreationArgs,
+    ) -> [Option<VertexBufferInsertionTask>; BUCKET_COUNT] {
+        let insertion_tasks = segments.map(|offset_size| {
+            let Some(offset_size) = offset_size else {
+                return None;
+            };
+            Some(self.reserve_from_vertex_buffer(vertex_buffer.clone(), AllocationRequest::Bytes(offset_size), INSTANCE_ALIGNMENT))
+        });
 
-        let uniform_buffer_handle = self
-            .find_or_allocate_uniform(uniform, queue, command_encoder)
-            .expect("Chunk uniform allocation failed");
-
-        let draw_indirect_args = Self::construct_draw_indirect_args(
-            bucket,
-            insertion_task.vertex_buffer_segment,
-            uniform_buffer_handle,
-            instance_count,
-        );
-
-        let indirect_buffer_handle = match existing_buffer_handle {
-            Some(handle) => {
-                self.indirect_buffer_allocator
-                    .overwrite_block(queue, command_encoder, &handle, &draw_indirect_args)
-                    .expect("Invalid indirect buffer handle provided");
-                handle
+        let (descriptor_handle, uniform_handle) = match overwrite_chunk {
+            None => self.descriptor_allocator.reserve_block().expect("Descriptor/uniform allocation failed"),
+            Some(chunk_handle) => {
+                // todo is removing correct here?
+                let chunk = self.chunks.remove(&chunk_handle).expect("Invalid chunk handle provided for overwriting");
+                (chunk.descriptor_buffer_handle, chunk.uniform_buffer_handle)
             }
-            None => self
-                .indirect_buffer_allocator
-                .allocate_first_free_block(bucket, queue, command_encoder, &draw_indirect_args)
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "Not enough indirect buffer space available for {} regions in bucket {:?}",
-                        self.draw_count(bucket) + 1,
-                        bucket
-                    )
-                }),
         };
 
-        self.draw_calls[bucket].insert(
+        let chunk = Chunk {
+            descriptor_buffer_handle: descriptor_handle,
+            uniform_buffer_handle: uniform_handle,
+            vertex_buffer_handles: insertion_tasks.iter().map(|insertion| insertion.as_ref().map(|some| some.vertex_buffer_segment)).collect::<Vec<_>>().try_into().expect("TODO"),
+        };
+        let chunk_handle = ChunkHandle {
             uniform,
-            DrawCallData {
-                indirect_buffer_handle,
-                vertex_buffer_handle: insertion_task.vertex_buffer_segment,
-                uniform_buffer_handle,
-                instance_count,
-            },
+        };
+
+        let descriptor = Self::construct_descriptor(
+            chunk.vertex_buffer_handles,
+            &uniform_handle
         );
 
-        insertion_task
+        self.descriptor_allocator.write_block(queue, command_encoder, &chunk, &descriptor, &uniform).unwrap();
+
+        self.chunks.insert(
+            chunk_handle,
+            chunk
+        );
+
+        insertion_tasks
     }
 
     /// Drop region.
@@ -340,171 +330,146 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
     /// This involves:
     /// - Deallocating the vertex buffer contents
     /// - Deallocating the uniform buffer contents if they are not used for another region
-    /// - Deallocating the indirect draw call
+    /// - Deallocating the descriptor buffer entry
     ///
-    /// If the draw call is followed by other draw calls of the same bucket, the last draw call is moved into the now free slot to guarantee a continuous sequence of active draw calls.
+    /// If the draw call is followed by other draw calls of the same bucket, the last descriptor is moved into the now free slot to guarantee a continuous sequence of active descriptors.
     fn drop_region(
         &mut self,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
-        handle: DrawCallHandle<Bucket>,
+        handle: ChunkHandle,
     ) {
-        let draw_call_data = self.draw_calls[handle.bucket]
-            .remove(&handle.uniform)
-            .expect("Attempted to drop invalid draw call");
+        let chunk = self.chunks
+            .remove(&handle)
+            .expect("Attempted to drop invalid chunk");
 
-        self.vertex_buffer_allocator
-            .deallocate(draw_call_data.vertex_buffer_handle)
-            .expect("Invalid vertex buffer handle associated to dropped draw call");
+        for handle in chunk.vertex_buffer_handles {
+            if let Some(handle) = handle {
+                self.vertex_buffer_allocator.deallocate(handle).expect("Invalid vertex buffer handle associated to dropped chunk");
+            }
+        }
+        self.descriptor_allocator.deallocate(&chunk).expect("Invalid chunk buffer handles associated to dropped chunk");
 
-        self.decrement_uniform(handle.uniform)
-            .expect("Invalid uniform buffer handle associated to dropped draw call");
-
-        // If the draw call doesn't own the last indirect/uniform buffer slot, fill the slot with another active draw call of the same bucket
-        if draw_call_data.indirect_buffer_handle.handle.0
-            != self.indirect_buffer_allocator.draw_count(handle.bucket) - 1
+        // If the draw call doesn't own the last descriptor buffer slot, fill the slot with another active draw call of the same bucket
+        if chunk.descriptor_buffer_handle.0
+            != self.descriptor_allocator.descriptor_count - 1
         {
             // Perform swap-and-remove
-            // Find draw call in the same bucket with highest indirect buffer slot
-            let (_, last_draw_call_data) = self.draw_calls[handle.bucket]
+            // Find chunk in the same bucket with highest descriptor buffer slot
+            let (last_chunk_key, last_chunk) = self.chunks
                 .iter_mut()
-                .max_by_key(|(_, data)| data.indirect_buffer_handle.handle.0)
-                .expect("There should be at least one active draw call remaining");
+                .max_by_key(|(_, data)| data.descriptor_buffer_handle.0)
+                .expect("There should be at least one active chunk remaining");
 
-            // Move last draw call to new empty slot
-            self.indirect_buffer_allocator
-                .overwrite_block(
+            // Move last descriptor to the now empty slot
+            self.descriptor_allocator
+                .write_block(
                     queue,
                     command_encoder,
-                    &draw_call_data.indirect_buffer_handle,
-                    &Self::construct_draw_indirect_args(
-                        handle.bucket,
-                        last_draw_call_data.vertex_buffer_handle,
-                        last_draw_call_data.uniform_buffer_handle,
-                        last_draw_call_data.instance_count,
+                    &chunk,
+                    &Self::construct_descriptor(
+                        chunk.vertex_buffer_handles,
+                        &chunk.uniform_buffer_handle
                     ),
+                    &last_chunk_key.uniform
                 )
-                .expect("Existing indirect buffer handle should still be valid");
+                .expect("Existing descriptor buffer handle should still be valid");
 
-            last_draw_call_data.indirect_buffer_handle = draw_call_data.indirect_buffer_handle;
+            last_chunk.descriptor_buffer_handle = chunk.descriptor_buffer_handle;
+            last_chunk.uniform_buffer_handle = chunk.uniform_buffer_handle;
         }
-
-        self.indirect_buffer_allocator
-            .deallocate_last_block(handle.bucket);
     }
 
     fn reserve_from_vertex_buffer(
         &mut self,
-        bucket: Bucket,
         source_buffer: Buffer,
-        instance_count: u32,
+        allocation: AllocationRequest,
+        alignment: u64
     ) -> VertexBufferInsertionTask {
-        let mut vertex_buffer_resize = None;
-        let vertex_buffer_segment = match self.vertex_buffer_allocator.reserve_segment(
-            instance_count as u64 * bucket.instance_size(),
-            bucket.instance_size(),
+        match self.vertex_buffer_allocator.reserve_segment(
+            allocation.size(),
+            alignment,
         ) {
-            Ok(segment) => segment,
+            Ok(vertex_buffer_segment) => VertexBufferInsertionTask {
+                vertex_buffer_resize: None,
+                vertex_buffer_segment,
+                source_buffer,
+            },
             Err(_) => {
                 let old_size = self.vertex_buffer_allocator.size();
                 let new_size = u64::max(
                     old_size * 3 / 2,
-                    old_size + instance_count as u64 * bucket.instance_size(),
+                    old_size + allocation.size(),
                 );
-                vertex_buffer_resize = Some(new_size);
                 self.vertex_buffer_allocator.grow(new_size);
-                self.vertex_buffer_allocator
+                let vertex_buffer_segment = self.vertex_buffer_allocator
                     .reserve_segment(
-                        instance_count as u64 * bucket.instance_size(),
-                        bucket.instance_size(),
+                        allocation.size(),
+                        alignment
                     )
-                    .expect("Segment reservation failed even after growing the buffer")
+                    .expect("Segment reservation failed even after growing the buffer");
+                VertexBufferInsertionTask { vertex_buffer_resize: Some(new_size), vertex_buffer_segment, source_buffer }
             }
-        };
-
-        VertexBufferInsertionTask {
-            vertex_buffer_resize,
-            vertex_buffer_segment,
-            source_buffer,
         }
-    }
-
-    fn find_or_allocate_uniform(
-        &mut self,
-        uniform: ChunkUniform,
-        queue: &Queue,
-        command_encoder: &mut CommandEncoder,
-    ) -> Result<CountedBlockHandle<ChunkUniform>, AllocationError> {
-        if let Some(&handle) = self.uniforms.get(&uniform) {
-            self.uniform_buffer_allocator.increment_counter(handle)?;
-            Ok(handle)
-        } else {
-            let handle = self.uniform_buffer_allocator.allocate_first_free_block(
-                &mut BufferMemoryTarget::new(&self.uniform_buffer, queue, command_encoder),
-                &uniform,
-            )?;
-            self.uniforms.insert(uniform, handle);
-            Ok(handle)
-        }
-    }
-
-    fn decrement_uniform(&mut self, uniform: ChunkUniform) -> Result<(), AllocationError> {
-        let handle = self
-            .uniforms
-            .get(&uniform)
-            .expect("Uniform not currently stored in buffer");
-        if self
-            .uniform_buffer_allocator
-            .decrement_counter(*handle)?
-            .is_none()
-        {
-            self.uniforms.remove(&uniform);
-        }
-
-        Ok(())
     }
 
     fn replace_region_vertex_data(
         &mut self,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
-        DrawCallUpdateArgs {
-            draw_call,
+        ChunkUpdateArgs {
+            handle,
             vertex_buffer,
-            instance_count,
-        }: DrawCallUpdateArgs<Bucket>,
-    ) -> VertexBufferInsertionTask {
-        let insertion_task =
-            self.reserve_from_vertex_buffer(draw_call.bucket, vertex_buffer, instance_count);
-
-        let draw_call_data = self.draw_calls[draw_call.bucket]
-            .get_mut(&draw_call.uniform)
+            segments,
+        }: ChunkUpdateArgs,
+    ) -> [Option<VertexBufferInsertionTask>; BUCKET_COUNT] {
+        let chunk = self.chunks
+            .get_mut(&handle)
             .expect("Invalid draw call provided for replace");
 
-        self.vertex_buffer_allocator
-            .deallocate(draw_call_data.vertex_buffer_handle)
-            .expect("Invalid handle provided");
+        for old_segment in chunk.vertex_buffer_handles.into_iter().flatten() {
+            self.vertex_buffer_allocator
+                .deallocate(old_segment)
+                .expect("Invalid handle provided");
+        }
 
-        self.indirect_buffer_allocator
-            .overwrite_block(
+        drop(chunk);
+
+        let insertion_tasks = segments.map(|offset_count| {
+            let Some(offset_size) = offset_count else {
+                return None;
+            };
+            // todo clone needed here?
+            Some(self.reserve_from_vertex_buffer(vertex_buffer.clone(), AllocationRequest::Bytes(offset_size), INSTANCE_ALIGNMENT))
+        });
+
+        // todo ugly double borrow
+        let chunk = self.chunks
+            .get_mut(&handle)
+            .expect("Invalid draw call provided for replace");
+
+        // todo ugly
+        let segments = insertion_tasks.iter().map(|insertion| insertion.as_ref().map(|some| some.vertex_buffer_segment)).collect::<Vec<_>>().try_into().expect("TODO");
+
+        let descriptor = Self::construct_descriptor(segments, &chunk.uniform_buffer_handle);
+
+
+        self.descriptor_allocator
+            .write_block(
                 queue,
                 command_encoder,
-                &draw_call_data.indirect_buffer_handle,
-                &Self::construct_draw_indirect_args(
-                    draw_call.bucket,
-                    insertion_task.vertex_buffer_segment,
-                    draw_call_data.uniform_buffer_handle,
-                    instance_count,
-                ),
+                &chunk,
+                &descriptor,
+                &handle.uniform
             )
-            .expect("Invalid indirect buffer handle provided");
+            .expect("Invalid descriptor buffer handle provided");
 
-        draw_call_data.vertex_buffer_handle = insertion_task.vertex_buffer_segment;
+        chunk.vertex_buffer_handles = segments;
 
-        insertion_task
+        insertion_tasks
     }
 
-    pub fn create_update_pass(&mut self) -> IndirectBufferUpdatePass<'_, Bucket> {
+    pub fn create_update_pass(&mut self) -> IndirectBufferUpdatePass<'_> {
         IndirectBufferUpdatePass {
             owner: self,
             new_draws: Vec::new(),
@@ -514,11 +479,9 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
     }
 
     pub fn clear(&mut self) {
-        self.draw_calls.clear();
-        self.uniforms.clear();
-        self.indirect_buffer_allocator.clear();
+        self.chunks.clear();
+        self.descriptor_allocator.clear();
         self.vertex_buffer_allocator.clear();
-        self.uniform_buffer_allocator.clear();
     }
 
     fn submit(
@@ -526,81 +489,62 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
         device: &Device,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
-        mut new_draws: Vec<DrawCallCreationArgs<Bucket>>,
-        mut dropped_draws: Vec<DrawCallHandle<Bucket>>,
-        updated_draws: Vec<DrawCallUpdateArgs<Bucket>>,
+        new_draws: Vec<ChunkCreationArgs>,
+        dropped_draws: Vec<ChunkHandle>,
+        updated_draws: Vec<ChunkUpdateArgs>,
     ) {
-        new_draws.sort_unstable_by_key(|draw_call| draw_call.bucket);
-        dropped_draws.sort_unstable_by_key(|draw_call| draw_call.bucket);
-
         let mut vertex_buffer_resize = None;
         let mut vertex_buffer_insertions = Vec::new();
 
         let mut handle_insertion_result =
-            |VertexBufferInsertionTask {
-                 vertex_buffer_resize: resize_required,
-                 vertex_buffer_segment,
-                 source_buffer,
-             }: VertexBufferInsertionTask| {
-                if resize_required.is_some() {
-                    vertex_buffer_resize = resize_required;
+            |insertion: VertexBufferInsertionTask| {
+                if insertion.vertex_buffer_resize.is_some() {
+                    vertex_buffer_resize = insertion.vertex_buffer_resize;
                 }
-                vertex_buffer_insertions.push((source_buffer, vertex_buffer_segment));
+                vertex_buffer_insertions.push((insertion.source_buffer, insertion.vertex_buffer_segment));
             };
 
         for updated_draw in updated_draws {
-            handle_insertion_result(self.replace_region_vertex_data(
+            for new_insertion in self.replace_region_vertex_data(
                 queue,
                 command_encoder,
                 updated_draw,
-            ));
+            ).into_iter().flatten() {
+                handle_insertion_result(new_insertion);
+            }
         }
 
-        // Try to match as many old with new draw calls with the same bucket, so we can prevent unneccessary indirect buffer draw call moves
         for entry in new_draws.into_iter().zip_longest(dropped_draws) {
             match entry {
-                itertools::EitherOrBoth::Both(new_drawcall, old_handle) => {
-                    if new_drawcall.bucket == old_handle.bucket {
-                        let draw_call_data = self.draw_calls[old_handle.bucket]
-                            .remove(&old_handle.uniform)
-                            .expect("Invalid or inactive draw call handle provided for drop");
+                itertools::EitherOrBoth::Both(new_chunk, old_handle) => {
+                    let chunk = self.chunks
+                        .remove(&old_handle)
+                        .expect("Invalid or inactive draw call handle provided for drop");
 
-                        let DrawCallData {
-                            indirect_buffer_handle,
-                            vertex_buffer_handle,
-                            uniform_buffer_handle,
-                            ..
-                        } = draw_call_data;
-
+                    for handle in chunk.vertex_buffer_handles.into_iter().flatten() {
                         self.vertex_buffer_allocator
-                            .deallocate(vertex_buffer_handle)
+                            .deallocate(handle)
                             .expect("Invalid vertex buffer handle associated to dropped draw call");
-                        self.uniform_buffer_allocator
-                            .decrement_counter(uniform_buffer_handle)
-                            .expect(
-                                "Invalid uniform buffer handle associated to dropped draw call",
-                            );
-
-                        let output = self.insert_region(
-                            queue,
-                            command_encoder,
-                            Some(indirect_buffer_handle),
-                            new_drawcall,
-                        );
-                        handle_insertion_result(output);
-                    } else {
-                        self.drop_region(queue, command_encoder, old_handle);
-                        let output = self.insert_region(queue, command_encoder, None, new_drawcall);
-                        handle_insertion_result(output);
                     }
-                }
-                itertools::EitherOrBoth::Left(new_args) => {
-                    handle_insertion_result(self.insert_region(
+
+                    for new_insertion in self.insert_chunk(
                         queue,
                         command_encoder,
-                        None,
-                        new_args,
-                    ));
+                        Some(old_handle),
+                        new_chunk,
+                    ).into_iter().flatten() {
+                        handle_insertion_result(new_insertion);
+                    };
+                }
+                itertools::EitherOrBoth::Left(new_args) => {
+                    for new_insertion in self.insert_chunk(
+                                            queue,
+                                            command_encoder,
+                                            None,
+                                            new_args,
+                                        ).into_iter().flatten() {
+                        handle_insertion_result(new_insertion);
+                    }
                 }
                 itertools::EitherOrBoth::Right(old) => {
                     self.drop_region(queue, command_encoder, old)
@@ -640,101 +584,116 @@ impl<Bucket: DrawCallBucket> IndirectBufferManager<Bucket> {
     }
 
     pub fn uniform_buffer(&self) -> &Buffer {
-        &self.uniform_buffer
+        &self.descriptor_allocator.uniform_buffer
     }
 
-    pub fn indirect_buffer(&self) -> &Buffer {
-        &self.indirect_buffer_allocator.buffer
+    // pub fn indirect_buffer(&self) -> &Buffer {
+    //     &self.indirect_buffer
+    // }
+
+    pub fn descriptor_buffer(&self) -> &Buffer {
+        &self.descriptor_allocator.descriptor_buffer
     }
 
-    /// Offset measured in bytes.
-    pub fn indirect_buffer_offset(&self, bucket: Bucket) -> u64 {
-        self.indirect_buffer_allocator.offset(bucket)
+    // pub fn counter_buffer(&self) -> &Buffer {
+    //     &self.counter_buffer
+    // }
+
+    // /// Offset of the indirect buffer region for the given bucket, in bytes.
+    // pub fn indirect_buffer_offset(&self, bucket: Bucket) -> u64 {
+    //     self.descriptor_buffer_allocator.chunks_per_bucket
+    //         * bucket.into_usize() as u64
+    //         * std::mem::size_of::<DrawIndirectArgs>() as u64
+    // }
+
+    // /// Counter buffer offset for the given bucket, in bytes.
+    // pub fn counter_buffer_offset(&self, bucket: Bucket) -> u64 {
+    //     bucket.into_usize() as u64 * std::mem::size_of::<u32>() as u64
+    // }
+
+    pub fn descriptor_count(&self) -> u64 {
+        self.descriptor_allocator.descriptor_count
     }
 
-    /// Count of active draw calls
-    pub fn draw_count(&self, bucket: Bucket) -> u64 {
-        self.indirect_buffer_allocator.draw_count(bucket)
+    pub fn max_descriptor_count(&self) -> u64 {
+        self.descriptor_allocator.descriptor_count
     }
 
-    /// Maximum number of chunks per bucket
-    pub fn chunks_per_bucket(&self) -> u64 {
-        self.indirect_buffer_allocator.chunks_per_bucket
-    }
-
-    fn construct_draw_indirect_args<T>(
-        bucket: Bucket,
-        vertex_buffer_segment: SegmentHandle,
-        uniform_buffer_handle: CountedBlockHandle<T>,
-        instance_count: u32,
-    ) -> DrawIndirectArgs {
-        DrawIndirectArgs {
-            vertex_count: QUAD_VERTEX_COUNT,
-            instance_count,
-            first_vertex: QUAD_VERTEX_COUNT * uniform_buffer_handle.0 as u32,
-            first_instance: (vertex_buffer_segment.offset / bucket.instance_size()) as u32,
+    fn construct_descriptor(
+        vb_segments: [Option<SegmentHandle>; BUCKET_COUNT],
+        uniform_handle: &BlockHandle<ChunkUniform>
+    ) -> ChunkDescriptor {
+        let entries  = array::from_fn(|i| {
+            let segment = vb_segments[i];
+            let instance_size = TerrainBuckets::all()[i].instance_size();
+            match segment {
+                Some(segment) => ChunkDescriptorEntry {
+                    first_instance: (segment.offset / instance_size).try_into().unwrap(),
+                    instance_count: (segment.size / instance_size).try_into().unwrap(),
+                },
+                None => ChunkDescriptorEntry {
+                    first_instance: 0,
+                    instance_count: 0,
+                },
+            }
+        });
+        ChunkDescriptor {
+            entries,
+            uniform_index: uniform_handle.0.try_into().unwrap(),
+            _padding: Default::default()
         }
     }
 }
 
-pub struct IndirectBufferUpdatePass<'a, Bucket: DrawCallBucket> {
-    owner: &'a mut IndirectBufferManager<Bucket>,
-    new_draws: Vec<DrawCallCreationArgs<Bucket>>,
-    dropped_draws: Vec<DrawCallHandle<Bucket>>,
-    updated_draws: Vec<DrawCallUpdateArgs<Bucket>>,
+pub struct IndirectBufferUpdatePass<'a> {
+    owner: &'a mut IndirectBufferManager,
+    new_draws: Vec<ChunkCreationArgs>,
+    dropped_draws: Vec<ChunkHandle>,
+    updated_draws: Vec<ChunkUpdateArgs>,
 }
 
-impl<'a, Bucket: DrawCallBucket> IndirectBufferUpdatePass<'a, Bucket> {
-    /// Prepare inserting a new region.
-    /// This function panics if there currently exsists a region with the same chunk uniform and bucket,
-    /// even if this region has been prepared to be dropped within this update pass.
+impl<'a> IndirectBufferUpdatePass<'a> {
     pub fn prepare_insert_region(
         &mut self,
-        bucket: Bucket,
         vertex_buffer: Buffer,
-        instance_count: u32,
+        segments: [Option<OffsetSize>; BUCKET_COUNT],
         uniform: impl Into<ChunkUniform>,
-    ) -> DrawCallHandle<Bucket> {
+    ) -> ChunkHandle {
         let uniform = uniform.into();
-        let handle = DrawCallHandle { uniform, bucket };
-        if self.owner.draw_calls[handle.bucket].contains_key(&handle.uniform) {
-            panic!("Region prepared for insertion conflicts with an already existing region");
+        let handle = ChunkHandle { uniform };
+        if self.owner.chunks.contains_key(&handle) {
+            log::warn!("Chunk prepared for insertion conflicts with already loaded chunk");
         }
 
-        self.new_draws.push(DrawCallCreationArgs {
-            bucket,
-            vertex_buffer,
-            instance_count,
+        self.new_draws.push(ChunkCreationArgs {
             uniform,
+            vertex_buffer,
+            segments
         });
 
         handle
     }
 
-    /// Prepare to drop a region.
-    pub fn prepare_drop_region(&mut self, handle: DrawCallHandle<Bucket>) {
-        if !self.owner.draw_calls[handle.bucket].contains_key(&handle.uniform) {
-            panic!("Invalid draw call prepared for drop");
+    pub fn prepare_drop_chunk(&mut self, handle: ChunkHandle) {
+        if !self.owner.chunks.contains_key(&handle) {
+            log::warn!("Not currently loaded chunk prepared for drop");
         };
         self.dropped_draws.push(handle);
     }
 
-    /// Prepare to update a region.
-    /// An update invoklves deallocating old and allocating the new contents.
-    /// If the draw call is currently inactive, no data is dropped in the first step.
-    pub fn prepare_replace_region(
+    pub fn prepare_replace_chunk(
         &mut self,
-        handle: DrawCallHandle<Bucket>,
+        handle: ChunkHandle,
         vertex_buffer: Buffer,
-        instance_count: u32,
+        segments: [Option<OffsetSize>; BUCKET_COUNT],
     ) {
-        if !self.owner.draw_calls[handle.bucket].contains_key(&handle.uniform) {
-            panic!("Invalid draw call prepared for replace");
+        if !self.owner.chunks.contains_key(&handle) {
+            log::warn!("Invalid draw call prepared for replace");
         };
-        self.updated_draws.push(DrawCallUpdateArgs {
-            draw_call: handle,
+        self.updated_draws.push(ChunkUpdateArgs {
+            handle,
             vertex_buffer,
-            instance_count,
+            segments,
         });
     }
 

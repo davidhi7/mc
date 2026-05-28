@@ -1,3 +1,4 @@
+use std::array;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -6,53 +7,40 @@ use glam::{IVec2, IVec3, Vec3, Vec3Swizzles};
 use itertools::Itertools;
 use smallvec::SmallVec;
 use thiserror::Error;
-use wgpu::util::DeviceExt;
-use wgpu::{Buffer, BufferUsages, CommandEncoder, Device, Queue};
+use wgpu::{Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Queue};
 
+use crate::renderer::buffers;
 use crate::renderer::indirect_buffer_manager::{
-    DrawCallBucket, DrawCallHandle, IndirectBufferUpdatePass,
+    BUCKET_COUNT, ChunkHandle, IndirectBufferUpdatePass, OffsetSize, TerrainBuckets
 };
+use crate::renderer::vertex_buffer::INSTANCE_ALIGNMENT;
 use crate::world::blocks::Block;
 use crate::world::chunk::ChunkMeshingContext;
 use crate::world::world_gen::{ChunkGenResult, WorldGenSettings};
 use crate::world::world_loader::executor::{Executor, Job, ThreadPoolExecutor};
 use crate::world::world_loader::rolling_grid::RollingGrid;
 use crate::{
-    renderer::{
-        indirect_buffer_manager::IndirectBufferManager,
-        vertex_buffer::{QuadInstance, TransparentQuadInstance},
-    },
+    renderer::
+        indirect_buffer_manager::IndirectBufferManager
+    ,
     world::{
         self, World,
         chunk::{ChunkStack, ChunkUVW, ChunkUW},
     },
 };
 
-use enum_map::{Enum, EnumMap};
+use enum_map::{EnumMap};
 
 mod executor;
 mod rolling_grid;
 mod worker;
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Enum)]
-pub enum TerrainType {
-    Solid,
-    Transparent,
-}
-
-impl DrawCallBucket for TerrainType {
-    fn instance_size(self) -> u64 {
-        match self {
-            TerrainType::Solid => QuadInstance::desc().array_stride,
-            TerrainType::Transparent => TransparentQuadInstance::desc().array_stride,
-        }
-    }
-}
 
 struct DrawnChunkState {
     #[expect(dead_code)]
-    buffers: EnumMap<TerrainType, Option<Buffer>>,
-    draw_calls: EnumMap<TerrainType, Option<DrawCallHandle<TerrainType>>>,
+    buffer: Buffer,
+    segments: [Option<OffsetSize>; BUCKET_COUNT],
+    handle: ChunkHandle,
 }
 
 enum ChunkState {
@@ -94,7 +82,7 @@ struct ChunkJob {
 enum ChunkJobResultType {
     Mesh {
         uvw: ChunkUVW,
-        buffers: EnumMap<TerrainType, Option<Box<[u8]>>>,
+        meshes: EnumMap<TerrainBuckets, Option<Box<[u8]>>>,
     },
     Generate {
         chunk_gen: ChunkGenResult,
@@ -169,7 +157,7 @@ impl WorldLoader {
         device: &Device,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
-        indirect_buffer: &mut IndirectBufferManager<TerrainType>,
+        indirect_buffer: &mut IndirectBufferManager,
         new_position: Vec3,
         replaced_blocks: SmallVec<[(IVec3, Block); 1]>,
     ) {
@@ -219,7 +207,7 @@ impl WorldLoader {
     fn update_grid(
         &mut self,
         new_center: ChunkUVW,
-        update_pass: &mut IndirectBufferUpdatePass<TerrainType>,
+        update_pass: &mut IndirectBufferUpdatePass,
     ) {
         self.grid.reposition(
             new_center.into(),
@@ -230,11 +218,7 @@ impl WorldLoader {
                     return;
                 };
 
-                for (_, draw_call) in state.draw_calls.into_iter() {
-                    if let Some(draw_call) = draw_call {
-                        update_pass.prepare_drop_region(draw_call);
-                    }
-                }
+                update_pass.prepare_drop_chunk(state.handle);
             },
         );
     }
@@ -243,7 +227,7 @@ impl WorldLoader {
     fn complete_finished_jobs(
         &mut self,
         device: Device,
-        update_pass: &mut IndirectBufferUpdatePass<TerrainType>,
+        update_pass: &mut IndirectBufferUpdatePass,
     ) -> Vec<ChunkUW> {
         let mut chunks_for_meshing = Vec::new();
         for ChunkJobResult { job_id, result } in
@@ -254,44 +238,25 @@ impl WorldLoader {
             }
 
             match result {
-                ChunkJobResultType::Mesh { uvw, buffers } => {
+                ChunkJobResultType::Mesh { uvw, meshes } => {
                     self.grid_ctx.ongoing_chunk_meshing.remove(&uvw);
-                    let actual_buffers = EnumMap::default();
-
                     let Some(state) = self.grid.at_mut(uvw) else {
                         // Chunk is no longer in render distance
                         continue;
                     };
 
-                    let mut draw_calls = EnumMap::default();
+                    let (buffer, segments) = pack_meshes_into_buffer(&device, meshes, uvw);
 
-                    for (terrain_type, buffer) in buffers.iter() {
-                        let Some(buffer) = buffer else {
-                            continue;
-                        };
-
-                        let actual_buffer =
-                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("test"),
-                                contents: buffer,
-                                usage: BufferUsages::COPY_SRC,
-                            });
-
-                        let draw_call = update_pass.prepare_insert_region(
-                            terrain_type,
-                            actual_buffer.clone(),
-                            (actual_buffer.size() / terrain_type.instance_size())
-                                .try_into()
-                                .unwrap(),
-                            uvw,
-                        );
-
-                        draw_calls[terrain_type] = Some(draw_call);
-                    }
+                    let chunk_handle = update_pass.prepare_insert_region(
+                        buffer.clone(),
+                        segments,
+                        uvw,
+                    );
 
                     *state = ChunkState::BufferedAndDrawn(DrawnChunkState {
-                        draw_calls,
-                        buffers: actual_buffers,
+                        buffer,
+                        segments,
+                        handle: chunk_handle,
                     });
                 }
                 ChunkJobResultType::Generate { chunk_gen } => {
@@ -307,11 +272,11 @@ impl WorldLoader {
         chunks_for_meshing
     }
 
-    /// Recreate mesh and update draw calls for the chunk at the given coordinates.
+    /// Recreate mesh and update chunk buffer for the chunk at the given coordinates.
     fn reload_chunk(
         &mut self,
         device: &Device,
-        update_pass: &mut IndirectBufferUpdatePass<TerrainType>,
+        update_pass: &mut IndirectBufferUpdatePass,
         uvw: ChunkUVW,
     ) {
         let chunk_state = self
@@ -319,72 +284,33 @@ impl WorldLoader {
             .replace(uvw, ChunkState::BufferingInProcess)
             .expect("Chunk isn't within render distance");
 
-        let old_draw_calls =
-            if let ChunkState::BufferedAndDrawn(DrawnChunkState { draw_calls, .. }) = chunk_state {
-                draw_calls
+        let old_handle =
+            if let ChunkState::BufferedAndDrawn(DrawnChunkState { handle, .. }) = chunk_state {
+                Some(handle)
             } else {
-                EnumMap::default()
+                None
             };
 
-        let buffers =
+        let meshes =
             worker::create_mesh(&ChunkMeshingContext::create(&self.world, uvw.to_uw()), uvw);
-        let mut actual_buffers = EnumMap::default();
+        let (buffer, segments) = pack_meshes_into_buffer(&device, meshes, uvw);
 
-        let mut new_draw_calls = EnumMap::default();
-        for ((terrain_type, old_draw_call), (_, buffer)) in
-            old_draw_calls.into_iter().zip_eq(buffers.iter())
-        {
-            match (old_draw_call, buffer) {
-                (None, Some(buffer)) => {
-                    let actual_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: None,
-                            contents: buffer,
-                            usage: BufferUsages::COPY_SRC,
-                        });
-                    let draw_call = update_pass.prepare_insert_region(
-                        terrain_type,
-                        actual_buffer.to_owned(),
-                        (actual_buffer.size() / terrain_type.instance_size())
-                            .try_into()
-                            .unwrap(),
-                        uvw,
-                    );
-                    actual_buffers[terrain_type] = Some(actual_buffer);
-                    new_draw_calls[terrain_type] = Some(draw_call);
-                }
-                (Some(old_draw_call), None) => {
-                    update_pass.prepare_drop_region(old_draw_call);
-                }
-                (Some(old_draw_call), Some(new_buffer)) => {
-                    let actual_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: None,
-                            contents: new_buffer,
-                            usage: BufferUsages::COPY_SRC,
-                        });
-                    update_pass.prepare_replace_region(
-                        old_draw_call,
-                        // TODO drop to_owned everywhere
-                        actual_buffer.to_owned(),
-                        (actual_buffer.size() / terrain_type.instance_size())
-                            .try_into()
-                            .unwrap(),
-                    );
-                    actual_buffers[terrain_type] = Some(actual_buffer);
-                    new_draw_calls[terrain_type] = Some(old_draw_call);
-                }
-                (None, None) => (),
-            }
-        }
+        let new_handle = match old_handle {
+            Some(handle) => {
+                update_pass.prepare_replace_chunk(handle, buffer.clone(), segments); handle},
+            None =>
+                update_pass.prepare_insert_region(buffer.clone(), segments, uvw)
+            ,
+        };
 
         *self
             .grid
             .at_mut(uvw)
             .expect("Chunk is not within render distance") =
             ChunkState::BufferedAndDrawn(DrawnChunkState {
-                buffers: actual_buffers,
-                draw_calls: new_draw_calls,
+                buffer,
+                handle: new_handle,
+                segments,
             });
     }
 
@@ -418,7 +344,7 @@ impl WorldLoader {
             .dispatch(jobs.into_boxed_slice(), self.executor_ctx.clone());
     }
 
-    pub fn reload_world(&mut self, indirect_buffer: &mut IndirectBufferManager<TerrainType>) {
+    pub fn reload_world(&mut self, indirect_buffer: &mut IndirectBufferManager) {
         self.world.clear();
         indirect_buffer.clear();
 
@@ -496,6 +422,41 @@ fn update_rolling_grid(world: &World) -> impl Fn(&mut ChunkGridContext, ChunkUVW
     }
 }
 
+fn pack_meshes_into_buffer(device: &Device, meshes: EnumMap<TerrainBuckets, Option<Box<[u8]>>>, uvw: ChunkUVW) -> (Buffer, [Option<OffsetSize>; BUCKET_COUNT]) {
+    // todo dedup logic
+    let buffer_size = meshes.values().flatten().fold(0, |accum_size, mesh| buffers::align_up(accum_size, INSTANCE_ALIGNMENT) + mesh.len() as u64);
+    let buffer = device.create_buffer(&BufferDescriptor {
+        label: Some(&format!("chunk mesh {uvw:?}")),
+        size: buffer_size,
+        usage: BufferUsages::COPY_SRC,
+        mapped_at_creation: true,
+
+    });
+
+    let mut offset = 0;
+    let segments = array::from_fn(|i| {
+        let (terrain_type, mesh) = meshes.iter().nth(i).unwrap();
+        let Some(mesh) = mesh else {
+            return None;
+        };
+
+        offset = buffers::align_up(offset, INSTANCE_ALIGNMENT);
+
+        let offset_size = OffsetSize {
+            offset,
+            size: mesh.len() as u64,
+        };
+
+        let mut mapped = buffer.get_mapped_range_mut(offset_size.offset..(offset_size.offset + offset_size.size));
+        mapped.copy_from_slice(mesh);
+        offset += mesh.len() as u64;
+        Some(offset_size)
+    });
+    buffer.unmap();
+
+    (buffer, segments)
+}
+
 #[derive(Error, Debug)]
 enum SettingsLoadingError {
     #[error(transparent)]
@@ -520,11 +481,11 @@ fn load_worldgen_settings() -> Result<WorldGenSettings, SettingsLoadingError> {
 mod tests {
     use enum_map::Enum;
 
-    use crate::world::world_loader::TerrainType;
+    use crate::renderer::indirect_buffer_manager::TerrainBuckets;
 
     #[test]
     fn test_draw_call_bucket_get_usize() {
-        assert_eq!(TerrainType::Solid.into_usize(), 0);
-        assert_eq!(TerrainType::Transparent.into_usize(), 1);
+        assert_eq!(TerrainBuckets::Solid.into_usize(), 0);
+        assert_eq!(TerrainBuckets::Transparent.into_usize(), 1);
     }
 }

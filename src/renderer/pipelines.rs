@@ -3,7 +3,7 @@ use glam::Vec3;
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferUsages, Device, Queue,
-    ShaderStages,
+    RenderPass, ShaderStages,
     util::{BufferInitDescriptor, DeviceExt},
 };
 
@@ -17,6 +17,49 @@ pub mod debug_crosshair;
 pub mod frustum_culling;
 pub mod shadow_mapping;
 pub mod terrain;
+
+/// Source for the draw call count in multi-draw-indirect calls.
+#[derive(Clone, Copy)]
+pub enum DrawCountSource<'a> {
+    /// GPU-side count buffer (requires MULTI_DRAW_INDIRECT_COUNT feature).
+    GpuBuffer {
+        count_buffer: &'a Buffer,
+        count_buffer_offset: u64,
+        max_count: u32,
+    },
+    /// CPU-side count, read back from the GPU.
+    Cpu { count: u32 },
+}
+
+impl DrawCountSource<'_> {
+    pub fn draw(
+        self,
+        render_pass: &mut RenderPass,
+        indirect_buffer: &Buffer,
+        indirect_offset: u64,
+    ) {
+        match self {
+            DrawCountSource::GpuBuffer {
+                count_buffer,
+                count_buffer_offset,
+                max_count,
+            } => {
+                render_pass.multi_draw_indirect_count(
+                    indirect_buffer,
+                    indirect_offset,
+                    count_buffer,
+                    count_buffer_offset,
+                    max_count,
+                );
+            }
+            DrawCountSource::Cpu { count } => {
+                if count > 0 {
+                    render_pass.multi_draw_indirect(indirect_buffer, indirect_offset, count);
+                }
+            }
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
