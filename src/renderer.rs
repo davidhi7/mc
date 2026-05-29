@@ -48,7 +48,7 @@ pub mod indirect_buffer_manager;
 mod pipelines;
 pub mod vertex_buffer;
 
-const CHUNK_RENDER_DISTANCE: u32 = 64;
+const CHUNK_RENDER_DISTANCE: u32 = 8;
 
 pub struct SceneState {
     device: Device,
@@ -93,8 +93,7 @@ impl SceneState {
                 CHUNK_RENDER_DISTANCE as u64 * 2 + 1,
                 VERTICAL_CHUNK_COUNT as u64,
             );
-        let indirect_buffer_manager =
-            IndirectBufferManager::new(&device, "terrain".into(), count_chunks);
+        let indirect_buffer_manager = IndirectBufferManager::new(&device, count_chunks);
 
         let indirect_buffer_array = IndirectBufferArray::new(
             &device,
@@ -532,6 +531,7 @@ impl WorldRenderer {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         self.terrain_pipeline.render_terrain(
@@ -647,6 +647,7 @@ impl WorldRenderer {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         self.terrain_pipeline.render_terrain(

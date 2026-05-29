@@ -90,8 +90,8 @@ impl BlockOutlinePipeline {
             label: Some("block outline render pipeline"),
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("block outline render pipeline layout"),
-                bind_group_layouts: &[&globals_binding.layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&globals_binding.layout)],
+                immediate_size: 0,
             })),
             vertex: VertexState {
                 module: &shader,
@@ -111,8 +111,8 @@ impl BlockOutlinePipeline {
             },
             depth_stencil: Some(DepthStencilState {
                 format: TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Less),
                 stencil: StencilState::default(),
                 bias: DepthBiasState::default(),
             }),
@@ -131,7 +131,7 @@ impl BlockOutlinePipeline {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 

@@ -241,7 +241,6 @@ struct VertexBufferInsertionTask {
 }
 
 pub struct IndirectBufferManager {
-    buffer_label: String,
     descriptor_allocator: DescriptorAllocator,
     vertex_buffer: Buffer,
     vertex_buffer_allocator: PoolAllocator,
@@ -250,25 +249,25 @@ pub struct IndirectBufferManager {
 
 // todo why static?
 impl IndirectBufferManager {
-    pub fn new(device: &Device, buffer_label: String, chunks_count: u64) -> Self {
+    pub fn new(device: &Device, chunks_count: u64) -> Self {
         // Start with 1MiB
         let vertex_buffer_size = 1024u64.pow(2);
 
         let vertex_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some(&format!("vertex buffer {buffer_label}")),
+            label: Some(&format!("vertex buffer")),
             size: vertex_buffer_size,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let vertex_buffer_allocator = PoolAllocator::new(vertex_buffer_size);
         let descriptor_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some(&format!("descriptor buffer {buffer_label}")),
+            label: Some(&format!("descriptor buffer")),
             size: chunks_count * size_of::<ChunkDescriptor>() as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let uniform_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some(&format!("uniform buffer {buffer_label}")),
+            label: Some(&format!("uniform buffer")),
             size: chunks_count * size_of::<ChunkUniform>() as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -277,7 +276,6 @@ impl IndirectBufferManager {
         let uniform_allocator = BlockAllocator::new(chunks_count);
 
         Self {
-            buffer_label,
             vertex_buffer,
             vertex_buffer_allocator,
             descriptor_allocator: DescriptorAllocator {
@@ -579,7 +577,7 @@ impl IndirectBufferManager {
         if let Some(new_size) = vertex_buffer_resize {
             log::info!("Grow vertex buffer to {}", ReadableBytes(new_size));
             let new_vertex_buffer = device.create_buffer(&BufferDescriptor {
-                label: Some(&format!("vertex buffer {}", self.buffer_label)),
+                label: Some("vertex buffer"),
                 size: new_size,
                 usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,

@@ -7,8 +7,8 @@ use wgpu::{
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer,
     BufferBindingType, BufferUsages, CommandEncoder, CompareFunction, DepthBiasState,
     DepthStencilState, Device, Extent3d, Face, FilterMode, FragmentState, FrontFace, LoadOp,
-    MultisampleState, Operations, PolygonMode, PrimitiveState, PrimitiveTopology, Queue,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
+    MipmapFilterMode, MultisampleState, Operations, PolygonMode, PrimitiveState, PrimitiveTopology,
+    Queue, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
     RenderPipelineDescriptor, SamplerBindingType, SamplerDescriptor, ShaderStages, StencilState,
     StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType,
     TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexState,
@@ -138,7 +138,7 @@ impl ShadowMapBinding {
                             // Linear adds PCF so smoother and less obvious flickering
                             mag_filter: FilterMode::Linear,
                             min_filter: FilterMode::Linear,
-                            mipmap_filter: FilterMode::Nearest,
+                            mipmap_filter: MipmapFilterMode::Nearest,
                             // Tests if fragment's depth is less than or equal to depth of occluder
                             compare: Some(CompareFunction::LessEqual),
                             ..Default::default()
@@ -226,12 +226,12 @@ impl ShadowMappingPipeline {
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("shadow mapping pipeline layout"),
                     bind_group_layouts: &[
-                        &globals_binding.layout,
-                        &terrain_binding.buffers.layout,
-                        &terrain_binding.textures.layout,
-                        &cascade_layout,
+                        Some(&globals_binding.layout),
+                        Some(&terrain_binding.buffers.layout),
+                        Some(&terrain_binding.textures.layout),
+                        Some(&cascade_layout),
                     ],
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 }),
             ),
             vertex: VertexState {
@@ -253,8 +253,8 @@ impl ShadowMappingPipeline {
             },
             depth_stencil: Some(DepthStencilState {
                 format: TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Less),
                 stencil: StencilState::default(),
                 bias: DepthBiasState::default(),
             }),
@@ -269,7 +269,7 @@ impl ShadowMappingPipeline {
                 compilation_options: Default::default(),
                 targets: &[],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -326,6 +326,7 @@ impl ShadowMappingPipeline {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));

@@ -21,10 +21,10 @@ use std::sync::Arc;
 use web_time::Instant;
 
 use wgpu::{
-    CommandEncoderDescriptor, CompositeAlphaMode, Device, DeviceDescriptor, ExperimentalFeatures,
-    Features, Instance, InstanceDescriptor, Limits, MemoryHints, PowerPreference, PresentMode,
-    Queue, RequestAdapterOptions, Surface, SurfaceConfiguration, SurfaceError, TextureFormat,
-    TextureUsages, TextureViewDescriptor, Trace,
+    CommandEncoderDescriptor, CompositeAlphaMode, CurrentSurfaceTexture, Device, DeviceDescriptor,
+    ExperimentalFeatures, Features, Instance, InstanceDescriptor, Limits, MemoryHints,
+    PowerPreference, PresentMode, Queue, RequestAdapterOptions, Surface, SurfaceConfiguration,
+    TextureFormat, TextureUsages, TextureViewDescriptor, Trace,
 };
 use winit::{
     application::ApplicationHandler,
@@ -60,8 +60,10 @@ struct Graphics {
 }
 
 impl Graphics {
-    async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
-        let instance = Instance::new(&InstanceDescriptor::default());
+    async fn new(window: Arc<Window>, event_loop: &ActiveEventLoop) -> anyhow::Result<Self> {
+        let instance = Instance::new(InstanceDescriptor::new_with_display_handle(Box::new(
+            event_loop.owned_display_handle(),
+        )));
         let surface = instance.create_surface(Arc::clone(&window)).unwrap();
         let adapter = instance
             .request_adapter(&RequestAdapterOptions {
@@ -179,13 +181,13 @@ impl Graphics {
         self.surface.configure(&self.device, &surface_config);
     }
 
-    fn render(&mut self, event_loop: &ActiveEventLoop) {
+    fn render(&mut self) {
         let frametime_start = Instant::now();
 
         self.scene_state.update(&mut self.input_state);
 
         match self.surface.get_current_texture() {
-            Ok(surface_texture) => {
+            CurrentSurfaceTexture::Success(surface_texture) => {
                 let mut command_buffers = Vec::new();
                 let mut encoder = self
                     .device
@@ -233,24 +235,20 @@ impl Graphics {
 
                 surface_texture.present();
             }
-            // Reconfigure the surface if it's lost or outdated
-            Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+            CurrentSurfaceTexture::Suboptimal(_)
+            | CurrentSurfaceTexture::Lost
+            | CurrentSurfaceTexture::Outdated => {
                 self.configure_surface(self.window.inner_size());
-            }
-            // The system is out of memory, we should probably quit
-            Err(SurfaceError::OutOfMemory) => {
-                log::error!("Out of memory");
-                event_loop.exit();
             }
 
             // This happens when the a frame takes too long to present
-            Err(SurfaceError::Timeout) => {
+            CurrentSurfaceTexture::Timeout => {
                 log::warn!("Surface timeout");
             }
 
-            Err(SurfaceError::Other) => {
-                log::warn!("Unknown surface error");
-                event_loop.exit();
+            CurrentSurfaceTexture::Occluded => {}
+            CurrentSurfaceTexture::Validation => {
+                log::warn!("Surface::get_current_texture validation error")
             }
         }
 
@@ -349,7 +347,7 @@ impl ApplicationHandler<Graphics> for App {
 
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let gfx: Graphics = pollster::block_on(Graphics::new(window)).unwrap();
+                let gfx: Graphics = pollster::block_on(Graphics::new(window, event_loop)).unwrap();
                 self.state = AppState::Ready(gfx);
                 log::info!("App ready");
             }
@@ -412,7 +410,7 @@ impl ApplicationHandler<Graphics> for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                gfx.render(event_loop);
+                gfx.render();
                 // Emits a new redraw requested event.
                 // needed in web?
                 gfx.window.request_redraw();

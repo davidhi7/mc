@@ -157,12 +157,12 @@ impl TerrainPipeline {
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("terrain render pipeline layout"),
                 bind_group_layouts: &[
-                    &globals_binding.layout,
-                    &binding.buffers.layout,
-                    &binding.textures.layout,
-                    &shadow_map_binding.layout,
+                    Some(&globals_binding.layout),
+                    Some(&binding.buffers.layout),
+                    Some(&binding.textures.layout),
+                    Some(&shadow_map_binding.layout),
                 ],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             })),
             vertex: VertexState {
                 module: &terrain_shader,
@@ -181,8 +181,8 @@ impl TerrainPipeline {
             },
             depth_stencil: Some(DepthStencilState {
                 format: TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Less),
                 stencil: StencilState::default(),
                 bias: DepthBiasState::default(),
             }),
@@ -201,7 +201,7 @@ impl TerrainPipeline {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -210,11 +210,11 @@ impl TerrainPipeline {
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("terrain water render pipeline layout"),
                 bind_group_layouts: &[
-                    &globals_binding.layout,
-                    &binding.buffers.layout,
-                    &binding.textures.layout,
+                    Some(&globals_binding.layout),
+                    Some(&binding.buffers.layout),
+                    Some(&binding.textures.layout),
                 ],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             })),
             vertex: VertexState {
                 module: &water_shader,
@@ -233,8 +233,8 @@ impl TerrainPipeline {
             },
             depth_stencil: Some(DepthStencilState {
                 format: TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Less),
                 stencil: StencilState::default(),
                 bias: DepthBiasState::default(),
             }),
@@ -253,7 +253,7 @@ impl TerrainPipeline {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 

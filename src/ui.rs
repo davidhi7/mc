@@ -66,7 +66,7 @@ impl EguiState {
     }
 
     pub fn wants_pointer_input(&self) -> bool {
-        self.context.wants_pointer_input()
+        self.context.egui_wants_pointer_input()
     }
 
     pub fn register_native_texture(&mut self, texture_view: &TextureView) -> TextureId {
@@ -139,6 +139,7 @@ impl EguiState {
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
 
             self.renderer.render(

@@ -21,8 +21,8 @@ impl CrosshairPipeline {
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("crosshair render pipeline layout"),
-            bind_group_layouts: &[&globals_binding.layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&globals_binding.layout)],
+            immediate_size: 0,
         });
 
         let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -45,8 +45,8 @@ impl CrosshairPipeline {
             },
             depth_stencil: Some(DepthStencilState {
                 format: TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(CompareFunction::Always),
                 stencil: StencilState::default(),
                 bias: DepthBiasState::default(),
             }),
@@ -65,7 +65,7 @@ impl CrosshairPipeline {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 

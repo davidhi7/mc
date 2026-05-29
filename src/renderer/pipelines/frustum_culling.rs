@@ -179,23 +179,18 @@ impl CullingComputePass {
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("culling pipeline layout"),
                 bind_group_layouts: &[
-                    &culling_data_binding.layout,
-                    &indirect_buffer_binding.layout,
+                    Some(&culling_data_binding.layout),
+                    Some(&indirect_buffer_binding.layout),
                 ],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             })),
             module: &shader,
             entry_point: Some("run"),
             compilation_options: PipelineCompilationOptions {
-                constants: &[
-                    // todo some are not used
-                    ("PASS_COUNT", indirect_buffer_array.pass_count() as f64),
-                    ("BUCKET_COUNT", indirect_buffer_array.bucket_count() as f64),
-                    (
-                        "INDIRECT_BUFFER_SLOTS",
-                        indirect_buffer_array.indirect_buffer_slots() as f64,
-                    ),
-                ],
+                constants: &[(
+                    "INDIRECT_BUFFER_SLOTS",
+                    indirect_buffer_array.indirect_buffer_slots() as f64,
+                )],
                 ..Default::default()
             },
             cache: None,
