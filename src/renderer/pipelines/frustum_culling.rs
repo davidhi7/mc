@@ -219,7 +219,7 @@ impl CullingComputePass {
     ) {
         queue.write_buffer(
             &self.frustum_buffer,
-            pass.offset().0 * size_of::<CameraPlanes>() as u64,
+            u64::from(pass.offset().0) * size_of::<CameraPlanes>() as u64,
             bytemuck::bytes_of(&projection.planes(view)),
         );
     }
@@ -238,7 +238,6 @@ impl CullingComputePass {
             label: Some("culling compute pass"),
             timestamp_writes: None,
         });
-        println!("{descriptor_count}");
         queue.write_buffer(
             &self.descriptor_count_buffer,
             0,

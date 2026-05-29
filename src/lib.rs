@@ -1,5 +1,3 @@
-#![feature(try_blocks)]
-
 mod camera;
 mod frametime_metrics;
 pub mod input;

@@ -17,18 +17,13 @@ struct CameraFrustum {
 };
 
 struct ChunkDescriptor {
-    /// One entry per chunk bucket
-    // todo correct size
     entries: array<ChunkDescriptorEntry, BUCKET_COUNT>,
-    /// Index into the chunk uniforms buffer
     uniform_index: u32,
     _padding: array<u32, 3>,
 }
 
 struct ChunkDescriptorEntry {
-    /// Byte offset into the vertex buffer where this chunk's instances begin.
     first_instance: u32,
-    /// Number of quad instances in this chunk+bucket.
     instance_count: u32,
 }
 
@@ -99,17 +94,14 @@ fn chunk_in_frustum(chunk: vec3i, frustum: CameraFrustum) -> bool {
 @compute @workgroup_size(64)
 fn run(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = global_id.x;
-    // atomicStore(&draw_counts[0], 123);
-    // return;
 
     if index >= descriptor_count {
         return;
     }
 
-
     for (var pass_index = 0u; pass_index < PASS_COUNT; pass_index++) {
-        // todocheck chunk uniform access
-        if !chunk_in_frustum(chunk_uniforms[index].uvw, frustums[pass_index]) {
+        let descriptor = &chunk_descriptors[index];
+        if !chunk_in_frustum(chunk_uniforms[descriptor.uniform_index].uvw, frustums[pass_index]) {
             continue;
         };
 
@@ -118,13 +110,15 @@ fn run(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 continue;
             }
 
-            let offset = atomicAdd(&draw_counts[pass_index * BUCKET_COUNT + bucket_index], 1);
+            let slot = pass_index * BUCKET_COUNT + bucket_index;
+            let offset = atomicAdd(&draw_counts[slot], 1);
 
-            draw_calls[(pass_index * BUCKET_COUNT + bucket_index) * INDIRECT_BUFFER_SLOTS] = DrawIndirectArgs(
+            draw_calls[slot * INDIRECT_BUFFER_SLOTS + offset] =
+ DrawIndirectArgs(
                 4,
-                chunk_descriptors[index].entries[bucket_index].instance_count,
-                chunk_descriptors[index].uniform_index << 2,
-                chunk_descriptors[index].entries[bucket_index].first_instance,
+                descriptor.entries[bucket_index].instance_count,
+                descriptor.uniform_index << 2,
+                descriptor.entries[bucket_index].first_instance,
             );
         }
     }

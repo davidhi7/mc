@@ -4,6 +4,7 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, Buffer, BufferBindingType, BufferUsages, CommandEncoder,
     Device, PollType, Queue, ShaderStages,
+    util::{BufferInitDescriptor, DeviceExt},
     wgt::{BufferDescriptor, DrawIndirectArgs},
 };
 
@@ -12,14 +13,15 @@ use crate::renderer::{
 };
 
 #[derive(Debug, Clone, Copy)]
-pub struct PassId(pub u64);
+pub struct PassId(pub u32);
+
 #[derive(Debug, Clone, Copy)]
-pub struct BucketId(pub u64);
+pub struct BucketId(pub u32);
 
 impl CullingPass {
     pub fn offset(self) -> PassId {
         match self {
-            CullingPass::ShadowMapping { cascade } => PassId(cascade as u64 + 1),
+            CullingPass::ShadowMapping { cascade } => PassId(cascade as u32 + 1),
             CullingPass::MainPass => PassId(0),
         }
     }
@@ -32,11 +34,6 @@ impl TerrainBuckets {
             TerrainBuckets::Transparent => BucketId(1),
         }
     }
-}
-
-pub enum RenderingStrategy {
-    GpuCount,
-    CpuCount,
 }
 
 pub struct IndirectBufferBinding {
@@ -94,12 +91,11 @@ impl IndirectBufferBinding {
 }
 
 pub struct IndirectBufferArray {
-    bucket_count: u64,
-    pass_count: u64,
-    indirect_buffer_slots: u64,
-    // todo maybe not pub
-    pub indirect_buffer: Buffer,
-    pub counts_buffer: Buffer,
+    bucket_count: u32,
+    pass_count: u32,
+    indirect_buffer_slots: u32,
+    indirect_buffer: Buffer,
+    counts_buffer: Buffer,
     counts_readback_buffer: Buffer,
     counts_state: Box<[u32]>,
 }
@@ -107,28 +103,25 @@ pub struct IndirectBufferArray {
 impl IndirectBufferArray {
     pub fn new(
         device: &Device,
-        bucket_count: u64,
-        pass_count: u64,
-        indirect_buffer_slots: u64,
+        bucket_count: u32,
+        pass_count: u32,
+        indirect_buffer_slots: u32,
     ) -> Self {
-        let counts_buffer = device.create_buffer(&BufferDescriptor {
+        let counts_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("counts array buffer"),
-            size: bucket_count * pass_count * size_of::<u32>() as u64,
+            contents: &vec![0u8; (bucket_count * pass_count) as usize * size_of::<u32>()],
             // Atomics cannot be used in uniform buffers
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
         let counts_readback_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("counts array staging buffer"),
-            size: bucket_count * pass_count * size_of::<u32>() as u64,
+            size: (bucket_count * pass_count) as u64 * size_of::<u32>() as u64,
             usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let indirect_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("indirect array buffer"),
-            size: bucket_count
-                * pass_count
-                * indirect_buffer_slots
+            size: (bucket_count * pass_count * indirect_buffer_slots) as u64
                 * size_of::<DrawIndirectArgs>() as u64,
             usage: BufferUsages::INDIRECT | BufferUsages::STORAGE,
             mapped_at_creation: false,
@@ -144,26 +137,26 @@ impl IndirectBufferArray {
         }
     }
 
-    pub fn bucket_count(&self) -> u64 {
+    pub fn bucket_count(&self) -> u32 {
         self.bucket_count
     }
-    pub fn pass_count(&self) -> u64 {
+
+    pub fn pass_count(&self) -> u32 {
         self.pass_count
     }
-    pub fn indirect_buffer_slots(&self) -> u64 {
+
+    pub fn indirect_buffer_slots(&self) -> u32 {
         self.indirect_buffer_slots
     }
 
-    pub fn indirect_offset(&self, pass: PassId, bucket: BucketId) -> u64 {
+    pub fn indirect_offset(&self, pass: PassId, bucket: BucketId) -> u32 {
         (pass.0 * self.bucket_count + bucket.0)
             * self.indirect_buffer_slots
-            * size_of::<DrawIndirectArgs>() as u64
+            * size_of::<DrawIndirectArgs>() as u32
     }
 
-    pub fn counts_offset(&self, pass: PassId, bucket: BucketId) -> u64 {
-        (pass.0 * self.bucket_count + bucket.0)
-            * self.indirect_buffer_slots
-            * size_of::<u32>() as u64
+    pub fn counts_offset(&self, pass: PassId, bucket: BucketId) -> u32 {
+        (pass.0 * self.bucket_count + bucket.0) * size_of::<u32>() as u32
     }
 
     pub fn count(&self, pass: PassId, bucket: BucketId) -> u32 {
@@ -212,6 +205,14 @@ impl IndirectBufferArray {
             .expect("Failed to poll device");
 
         self.counts_state = rx.recv().expect("Failed to receive buffer contents");
-        println!("counts: {:?}", self.counts_state);
+        println!("{:?}", self.counts_state);
+    }
+
+    pub fn indirect_buffer(&self) -> &Buffer {
+        &self.indirect_buffer
+    }
+
+    pub fn counts_buffer(&self) -> &Buffer {
+        &self.counts_buffer
     }
 }

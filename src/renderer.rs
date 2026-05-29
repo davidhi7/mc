@@ -48,7 +48,7 @@ pub mod indirect_buffer_manager;
 mod pipelines;
 pub mod vertex_buffer;
 
-const CHUNK_RENDER_DISTANCE: u32 = 1;
+const CHUNK_RENDER_DISTANCE: u32 = 64;
 
 pub struct SceneState {
     device: Device,
@@ -98,9 +98,9 @@ impl SceneState {
 
         let indirect_buffer_array = IndirectBufferArray::new(
             &device,
-            TerrainBuckets::all().len() as u64,
-            shadow_mapping::NUM_CASCADES as u64 + 1,
-            count_chunks,
+            TerrainBuckets::all().len() as u32,
+            shadow_mapping::NUM_CASCADES as u32 + 1,
+            count_chunks.try_into().unwrap(),
         );
 
         let (depth_texture, depth_texture_view) =
@@ -440,8 +440,15 @@ impl WorldRenderer {
         indirect_buffer_array: &mut IndirectBufferArray,
     ) {
         if self.supports_mdi_count {
-            // self.render_with_gpu_count(encoder, surface_view, depth_texture_view, indirect_buffer_manager);
-            todo!();
+            self.render_with_gpu_count(
+                device,
+                queue,
+                encoder,
+                surface_view,
+                depth_texture_view,
+                indirect_buffer_manager,
+                indirect_buffer_array,
+            );
         } else {
             self.render_with_cpu_readback(
                 device,
@@ -457,84 +464,6 @@ impl WorldRenderer {
 
     fn render_with_gpu_count(
         &self,
-        encoder: &mut CommandEncoder,
-        surface_view: &TextureView,
-        depth_texture_view: &TextureView,
-        indirect_buffer_manager: &IndirectBufferManager,
-    ) {
-        // let max_count = indirect_buffer_manager.chunks_per_bucket() as u32;
-        // let bucket_info = BucketRenderInfo::compute(indirect_buffer_manager);
-
-        // // Shadow passes: cull and render solid terrain for each cascade
-        // for cascade in (0..NUM_CASCADES).rev() {
-        //     self.queue.write_buffer(
-        //         indirect_buffer_manager.counter_buffer(),
-        //         bucket_info.solid.counter_offset,
-        //         &0u32.to_ne_bytes(),
-        //     );
-        //     self.dispatch_culling(encoder, CullingPass::ShadowMapping { cascade }, &bucket_info.solid, indirect_buffer_manager);
-        //     self.shadow_pipeline.render(
-        //         encoder,
-        //         &self.globals,
-        //         &self.terrain_pipeline.binding,
-        //         indirect_buffer_manager.vertex_buffer(),
-        //         indirect_buffer_manager.indirect_buffer(),
-        //         bucket_info.solid.indirect_offset,
-        //         DrawCountSource::GpuBuffer {
-        //             count_buffer: indirect_buffer_manager.counter_buffer(),
-        //             count_buffer_offset: bucket_info.solid.counter_offset,
-        //             max_count,
-        //         },
-        //         cascade,
-        //     );
-        // }
-
-        // // Main pass: clear both counters, dispatch both buckets
-        // self.queue.write_buffer(
-        //     indirect_buffer_manager.counter_buffer(),
-        //     bucket_info.solid.counter_offset,
-        //     &0u32.to_ne_bytes(),
-        // );
-        // self.queue.write_buffer(
-        //     indirect_buffer_manager.counter_buffer(),
-        //     bucket_info.transparent.counter_offset,
-        //     &0u32.to_ne_bytes(),
-        // );
-        // self.dispatch_culling(encoder, CullingPass::MainPass, &bucket_info.solid, indirect_buffer_manager);
-        // self.dispatch_culling(encoder, CullingPass::MainPass, &bucket_info.transparent, indirect_buffer_manager);
-
-        // let mut render_pass = Self::begin_scene_render_pass(encoder, surface_view, depth_texture_view);
-        // self.terrain_pipeline.render_terrain(
-        //     &mut render_pass,
-        //     &self.globals,
-        //     &self.shadow_pipeline.binding,
-        //     indirect_buffer_manager.vertex_buffer(),
-        //     indirect_buffer_manager.indirect_buffer(),
-        //     bucket_info.solid.indirect_offset,
-        //     DrawCountSource::GpuBuffer {
-        //         count_buffer: indirect_buffer_manager.counter_buffer(),
-        //         count_buffer_offset: bucket_info.solid.counter_offset,
-        //         max_count,
-        //     },
-        // );
-        // self.terrain_pipeline.render_water(
-        //     &mut render_pass,
-        //     &self.globals,
-        //     indirect_buffer_manager.vertex_buffer(),
-        //     indirect_buffer_manager.indirect_buffer(),
-        //     bucket_info.transparent.indirect_offset,
-        //     DrawCountSource::GpuBuffer {
-        //         count_buffer: indirect_buffer_manager.counter_buffer(),
-        //         count_buffer_offset: bucket_info.transparent.counter_offset,
-        //         max_count,
-        //     },
-        // );
-        // self.block_outline_pipeline.render(&mut render_pass, &self.globals);
-        // self.crosshair_pipeline.render(&mut render_pass, &self.globals);
-    }
-
-    fn render_with_cpu_readback(
-        &self,
         device: &Device,
         queue: &Queue,
         encoder: &mut CommandEncoder,
@@ -543,19 +472,15 @@ impl WorldRenderer {
         indirect_buffer_manager: &IndirectBufferManager,
         indirect_buffer_array: &mut IndirectBufferArray,
     ) {
-        let mut culling_encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("count readback encoder"),
-        });
         self.culling_pass.run(
             &queue,
-            &mut culling_encoder,
+            encoder,
             indirect_buffer_array,
             indirect_buffer_manager
                 .descriptor_count()
                 .try_into()
                 .unwrap(),
         );
-        indirect_buffer_array.readback_counts(device, queue, culling_encoder);
 
         // Todo why rev?
         for cascade in (0..NUM_CASCADES).rev() {
@@ -566,8 +491,8 @@ impl WorldRenderer {
                 &self.globals,
                 &self.terrain_pipeline.binding,
                 indirect_buffer_manager.vertex_buffer(),
-                &indirect_buffer_array.indirect_buffer,
-                indirect_buffer_array.indirect_offset(pass, bucket),
+                &indirect_buffer_array.indirect_buffer(),
+                indirect_buffer_array.indirect_offset(pass, bucket).into(),
                 DrawCountSource::Cpu {
                     count: indirect_buffer_array.count(pass, bucket),
                 },
@@ -614,16 +539,135 @@ impl WorldRenderer {
             &self.globals,
             &self.shadow_pipeline.binding,
             indirect_buffer_manager.vertex_buffer(),
-            &indirect_buffer_array.indirect_buffer,
-            indirect_buffer_array.indirect_offset(pass, TerrainBuckets::Solid.offset()),
+            indirect_buffer_array.indirect_buffer(),
+            indirect_buffer_array
+                .indirect_offset(pass, TerrainBuckets::Solid.offset())
+                .into(),
+            DrawCountSource::GpuBuffer {
+                count_buffer: indirect_buffer_array.counts_buffer(),
+                count_buffer_offset: indirect_buffer_array
+                    .counts_offset(pass, TerrainBuckets::Solid.offset())
+                    .into(),
+                max_count: indirect_buffer_array.indirect_buffer_slots(),
+            },
+        );
+        self.terrain_pipeline.render_water(
+            &mut render_pass,
+            &self.globals,
+            indirect_buffer_manager.vertex_buffer(),
+            indirect_buffer_array.indirect_buffer(),
+            indirect_buffer_array
+                .indirect_offset(pass, TerrainBuckets::Transparent.offset())
+                .into(),
+            DrawCountSource::GpuBuffer {
+                count_buffer: indirect_buffer_array.counts_buffer(),
+                count_buffer_offset: indirect_buffer_array
+                    .counts_offset(pass, TerrainBuckets::Transparent.offset())
+                    .into(),
+                max_count: indirect_buffer_array.indirect_buffer_slots(),
+            },
+        );
+        self.block_outline_pipeline
+            .render(&mut render_pass, &self.globals);
+        self.crosshair_pipeline
+            .render(&mut render_pass, &self.globals);
+    }
+
+    fn render_with_cpu_readback(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        surface_view: &TextureView,
+        depth_texture_view: &TextureView,
+        indirect_buffer_manager: &IndirectBufferManager,
+        indirect_buffer_array: &mut IndirectBufferArray,
+    ) {
+        let mut culling_encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("culling encoder"),
+        });
+        self.culling_pass.run(
+            &queue,
+            &mut culling_encoder,
+            indirect_buffer_array,
+            indirect_buffer_manager
+                .descriptor_count()
+                .try_into()
+                .unwrap(),
+        );
+        indirect_buffer_array.readback_counts(device, queue, culling_encoder);
+
+        // Todo why rev?
+        for cascade in (0..NUM_CASCADES).rev() {
+            let pass = CullingPass::shadow(cascade).offset();
+            let bucket = TerrainBuckets::Solid.offset();
+            self.shadow_pipeline.render(
+                encoder,
+                &self.globals,
+                &self.terrain_pipeline.binding,
+                indirect_buffer_manager.vertex_buffer(),
+                &indirect_buffer_array.indirect_buffer(),
+                indirect_buffer_array.indirect_offset(pass, bucket).into(),
+                DrawCountSource::Cpu {
+                    count: indirect_buffer_array.count(pass, bucket),
+                },
+                cascade,
+            );
+        }
+
+        let pass = CullingPass::MainPass.offset();
+        let solid_count = indirect_buffer_array.count(pass, TerrainBuckets::Solid.offset());
+        let transparent_count =
+            indirect_buffer_array.count(pass, TerrainBuckets::Transparent.offset());
+
+        let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("scene render pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: surface_view,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Clear(Color {
+                        // TODO don't use hardcoded clear color
+                        r: 135.0 / 255.0,
+                        g: 206.0 / 255.0,
+                        b: 235.0 / 255.0,
+                        a: 1.0,
+                    }),
+                    store: StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                view: depth_texture_view,
+                depth_ops: Some(Operations {
+                    load: LoadOp::Clear(1.0),
+                    store: StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        self.terrain_pipeline.render_terrain(
+            &mut render_pass,
+            &self.globals,
+            &self.shadow_pipeline.binding,
+            indirect_buffer_manager.vertex_buffer(),
+            indirect_buffer_array.indirect_buffer(),
+            indirect_buffer_array
+                .indirect_offset(pass, TerrainBuckets::Solid.offset())
+                .into(),
             DrawCountSource::Cpu { count: solid_count },
         );
         self.terrain_pipeline.render_water(
             &mut render_pass,
             &self.globals,
             indirect_buffer_manager.vertex_buffer(),
-            &indirect_buffer_array.indirect_buffer,
-            indirect_buffer_array.indirect_offset(pass, TerrainBuckets::Transparent.offset()),
+            indirect_buffer_array.indirect_buffer(),
+            indirect_buffer_array
+                .indirect_offset(pass, TerrainBuckets::Transparent.offset())
+                .into(),
             DrawCountSource::Cpu {
                 count: transparent_count,
             },

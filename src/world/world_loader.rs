@@ -66,7 +66,6 @@ enum ChunkJobType {
         uvw: ChunkUVW,
     },
     Generate {
-        // chunk_stack: Box<ChunkStack>,
         uw: ChunkUW,
     },
 }
@@ -430,7 +429,7 @@ fn pack_meshes_into_buffer(
 
     let mut offset = 0;
     let segments = array::from_fn(|i| {
-        let (terrain_type, mesh) = meshes.iter().nth(i).unwrap();
+        let (_terrain_bucket, mesh) = meshes.iter().nth(i).unwrap();
         let Some(mesh) = mesh else {
             return None;
         };

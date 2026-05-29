@@ -18,17 +18,16 @@ pub mod frustum_culling;
 pub mod shadow_mapping;
 pub mod terrain;
 
-/// Source for the draw call count in multi-draw-indirect calls.
 #[derive(Clone, Copy)]
 pub enum DrawCountSource<'a> {
-    /// GPU-side count buffer (requires MULTI_DRAW_INDIRECT_COUNT feature).
     GpuBuffer {
         count_buffer: &'a Buffer,
         count_buffer_offset: u64,
         max_count: u32,
     },
-    /// CPU-side count, read back from the GPU.
-    Cpu { count: u32 },
+    Cpu {
+        count: u32,
+    },
 }
 
 impl DrawCountSource<'_> {

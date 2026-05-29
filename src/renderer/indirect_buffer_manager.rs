@@ -356,35 +356,58 @@ impl IndirectBufferManager {
             .remove(&handle)
             .expect("Attempted to drop invalid chunk");
 
-        for handle in chunk.vertex_buffer_handles.into_iter().flatten() {
+        for handle_ in chunk.vertex_buffer_handles.into_iter().flatten() {
             self.vertex_buffer_allocator
-                .deallocate(handle)
+                .deallocate(handle_)
                 .expect("Invalid vertex buffer handle associated to dropped chunk");
         }
 
-        self.descriptor_allocator
-            .deallocate(&chunk)
-            .expect("Invalid chunk buffer handles associated to dropped chunk");
-
         // If the draw call doesn't own the last descriptor buffer slot, fill the slot with another active draw call of the same bucket
-        if self.descriptor_allocator.descriptor_count > 0
+        if self.descriptor_allocator.descriptor_count > 1
             && chunk.descriptor_buffer_handle.0 < self.descriptor_allocator.descriptor_count - 1
         {
             // Perform swap-and-remove
-            // Find chunk in the same bucket with highest descriptor buffer slot
-            let (last_chunk_key, last_chunk) = self
+            // Find chunk with highest descriptor buffer slot
+            let (last_chunk_handle, last_chunk) = self
                 .chunks
                 .iter_mut()
                 .max_by_key(|(_, data)| data.descriptor_buffer_handle.0)
                 .expect("There should be at least one active chunk remaining");
 
-            // Move last descriptor to the now empty slot
+            // Swap handles: move the dropped chunk's slot positions to last_chunk,
+            // and save last_chunk's old handles for deallocation
+            let old_last_descriptor = std::mem::replace(
+                &mut last_chunk.descriptor_buffer_handle,
+                chunk.descriptor_buffer_handle,
+            );
+            let old_last_uniform = std::mem::replace(
+                &mut last_chunk.uniform_buffer_handle,
+                chunk.uniform_buffer_handle,
+            );
+
+            // Write last chunk's data (vertex handles, uniform) into the dropped chunk's slot
             self.descriptor_allocator
-                .write_chunk_descriptor(queue, command_encoder, &chunk, &last_chunk_key.uniform)
+                .write_chunk_descriptor(
+                    queue,
+                    command_encoder,
+                    last_chunk,
+                    &last_chunk_handle.uniform,
+                )
                 .expect("Existing descriptor buffer handle should still be valid");
 
-            last_chunk.descriptor_buffer_handle = chunk.descriptor_buffer_handle;
-            last_chunk.uniform_buffer_handle = chunk.uniform_buffer_handle;
+            // Deallocate the last chunk's old handles (the vacated slots at the end)
+            self.descriptor_allocator
+                .deallocate(&Chunk {
+                    descriptor_buffer_handle: old_last_descriptor,
+                    uniform_buffer_handle: old_last_uniform,
+                    vertex_buffer_handles: [None; BUCKET_COUNT],
+                })
+                .expect("Last chunk's old handles should be valid for deallocation");
+        } else {
+            // Chunk is the last slot (or the only one), just deallocate directly
+            self.descriptor_allocator
+                .deallocate(&chunk)
+                .expect("Invalid chunk buffer handles associated to dropped chunk");
         }
     }
 
@@ -441,13 +464,10 @@ impl IndirectBufferManager {
                 .expect("Invalid handle provided");
         }
 
-        drop(chunk);
-
         let insertion_tasks = segments.map(|offset_count| {
             let Some(offset_size) = offset_count else {
                 return None;
             };
-            // todo clone needed here?
             Some(self.reserve_from_vertex_buffer(
                 vertex_buffer.clone(),
                 AllocationRequest::Bytes(offset_size),
@@ -455,25 +475,23 @@ impl IndirectBufferManager {
             ))
         });
 
-        // todo ugly double borrow
+        // TODO don't call get twicw
         let chunk = self
             .chunks
             .get_mut(&handle)
             .expect("Invalid draw call provided for replace");
 
-        // todo ugly
         let segments = insertion_tasks
             .iter()
             .map(|insertion| insertion.as_ref().map(|some| some.vertex_buffer_segment))
             .collect::<Vec<_>>()
             .try_into()
-            .expect("TODO");
+            .expect("Converting to array failed");
 
+        chunk.vertex_buffer_handles = segments;
         self.descriptor_allocator
             .write_chunk_descriptor(queue, command_encoder, &chunk, &handle.uniform)
             .expect("Invalid descriptor buffer handle provided");
-
-        chunk.vertex_buffer_handles = segments;
 
         insertion_tasks
     }
@@ -593,36 +611,16 @@ impl IndirectBufferManager {
         &self.descriptor_allocator.uniform_buffer
     }
 
-    // pub fn indirect_buffer(&self) -> &Buffer {
-    //     &self.indirect_buffer
-    // }
-
     pub fn descriptor_buffer(&self) -> &Buffer {
         &self.descriptor_allocator.descriptor_buffer
     }
-
-    // pub fn counter_buffer(&self) -> &Buffer {
-    //     &self.counter_buffer
-    // }
-
-    // /// Offset of the indirect buffer region for the given bucket, in bytes.
-    // pub fn indirect_buffer_offset(&self, bucket: Bucket) -> u64 {
-    //     self.descriptor_buffer_allocator.chunks_per_bucket
-    //         * bucket.into_usize() as u64
-    //         * std::mem::size_of::<DrawIndirectArgs>() as u64
-    // }
-
-    // /// Counter buffer offset for the given bucket, in bytes.
-    // pub fn counter_buffer_offset(&self, bucket: Bucket) -> u64 {
-    //     bucket.into_usize() as u64 * std::mem::size_of::<u32>() as u64
-    // }
 
     pub fn descriptor_count(&self) -> u64 {
         self.descriptor_allocator.descriptor_count
     }
 
     pub fn max_descriptor_count(&self) -> u64 {
-        self.descriptor_allocator.descriptor_count
+        self.descriptor_allocator.max_chunk_count
     }
 
     fn construct_descriptor(
