@@ -80,14 +80,21 @@ impl PoolAllocator {
         Ok(new_occupied_segment)
     }
 
-    /// Copy from source to target. `segment.size` bytes are copied, beginning from 0 at the source, and `segment.offset` for the target.
+    /// Copy `destination_segment.size` bytes from `source`, beginning at `source_offset`,
+    /// into `destination_segment` of `destination`.
     pub fn insert_into_segment<T>(
         &mut self,
         source: &T,
-        target: &mut impl CopyFromBuffer<T>,
-        segment: SegmentHandle,
+        source_offset: u64,
+        destination: &mut impl CopyFromBuffer<T>,
+        destination_segment: SegmentHandle,
     ) {
-        target.copy_from_buffer(source, 0, segment.offset, segment.size);
+        destination.copy_from_buffer(
+            source,
+            source_offset,
+            destination_segment.offset,
+            destination_segment.size,
+        );
     }
 
     pub fn deallocate(&mut self, handle: SegmentHandle) -> Result<(), AllocationError> {
@@ -179,15 +186,46 @@ mod tests {
         let (mut mem, mut pool) = init();
 
         let handle = pool.reserve_segment(16, 1)?;
-        pool.insert_into_segment(&[0xFF; 16], &mut mem, handle);
+        pool.insert_into_segment(&[0xFF; 16], 0, &mut mem, handle);
         assert_eq!(mem.memory, [0xFF; 16]);
         pool.deallocate(handle)?;
 
         let handle = pool.reserve_segment(1, 1)?;
-        pool.insert_into_segment(&[0x00; 16], &mut mem, handle);
+        pool.insert_into_segment(&[0x00; 16], 0, &mut mem, handle);
         assert_eq!(mem.memory[0], 0x00);
         // Data previously deallocated isn't cleared, just marked as empty
         assert_eq!(mem.memory[1..16], [0xFF; 15]);
+
+        Ok(())
+    }
+
+    /// Segments may be filled from anywhere within the source buffer, as chunk meshes for
+    /// several buckets are packed into a single staging buffer.
+    #[test]
+    fn test_source_offset() -> Result<(), anyhow::Error> {
+        let (mut mem, mut pool) = init();
+
+        let source: [u8; 16] = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
+            0x0E, 0x0F,
+        ];
+
+        let (h1, h2) = (pool.reserve_segment(4, 1)?, pool.reserve_segment(8, 4)?);
+        pool.insert_into_segment(&source, 12, &mut mem, h1);
+        pool.insert_into_segment(&source, 4, &mut mem, h2);
+
+        assert_eq!(
+            mem.memory,
+            [
+                // h1: source bytes 12..16 at destination offset 0
+                [0x0C, 0x0D, 0x0E, 0x0F].as_slice(),
+                // h2: source bytes 4..12 at destination offset 4
+                [0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B].as_slice(),
+                [0x00; 4].as_slice(),
+            ]
+            .concat()
+            .as_slice()
+        );
 
         Ok(())
     }
@@ -203,16 +241,16 @@ mod tests {
             pool.reserve_segment(4, 1)?,
         );
 
-        pool.insert_into_segment(&[0x01; 16], &mut mem, h1);
-        pool.insert_into_segment(&[0x02; 16], &mut mem, h2);
-        pool.insert_into_segment(&[0x03; 16], &mut mem, h3);
-        pool.insert_into_segment(&[0x04; 16], &mut mem, h4);
+        pool.insert_into_segment(&[0x01; 16], 0, &mut mem, h1);
+        pool.insert_into_segment(&[0x02; 16], 0, &mut mem, h2);
+        pool.insert_into_segment(&[0x03; 16], 0, &mut mem, h3);
+        pool.insert_into_segment(&[0x04; 16], 0, &mut mem, h4);
 
         pool.deallocate(h2)?;
         pool.deallocate(h3)?;
 
         let handle = pool.reserve_segment(8, 1)?;
-        pool.insert_into_segment(&[0xFF; 16], &mut mem, handle);
+        pool.insert_into_segment(&[0xFF; 16], 0, &mut mem, handle);
         assert_eq!(
             mem.memory,
             [
@@ -232,8 +270,8 @@ mod tests {
         let (mut mem, mut pool) = init();
 
         let (h1, h2) = (pool.reserve_segment(1, 1)?, pool.reserve_segment(8, 4)?);
-        pool.insert_into_segment(&[0xEE; 16], &mut mem, h1);
-        pool.insert_into_segment(&[0xFF; 16], &mut mem, h2);
+        pool.insert_into_segment(&[0xEE; 16], 0, &mut mem, h1);
+        pool.insert_into_segment(&[0xFF; 16], 0, &mut mem, h2);
 
         assert_eq!(
             mem.memory,
@@ -255,8 +293,8 @@ mod tests {
         let (mut mem, mut pool) = init();
 
         let (h1, h2) = (pool.reserve_segment(1, 1)?, pool.reserve_segment(8, 4)?);
-        pool.insert_into_segment(&[0xEE; 16], &mut mem, h1);
-        pool.insert_into_segment(&[0xFF; 16], &mut mem, h2);
+        pool.insert_into_segment(&[0xEE; 16], 0, &mut mem, h1);
+        pool.insert_into_segment(&[0xFF; 16], 0, &mut mem, h2);
 
         cmp_vec_unordered(
             &pool.occupied_segments,
@@ -287,8 +325,8 @@ mod tests {
         let (mut mem, mut pool) = init();
 
         let (h1, h2) = (pool.reserve_segment(1, 1)?, pool.reserve_segment(8, 4)?);
-        pool.insert_into_segment(&[0xEE; 16], &mut mem, h1);
-        pool.insert_into_segment(&[0xFF; 16], &mut mem, h2);
+        pool.insert_into_segment(&[0xEE; 16], 0, &mut mem, h1);
+        pool.insert_into_segment(&[0xFF; 16], 0, &mut mem, h2);
 
         pool.deallocate(h1)?;
 

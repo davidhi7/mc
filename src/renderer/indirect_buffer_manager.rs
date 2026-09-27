@@ -15,7 +15,7 @@ use wgpu::{Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Queue
 use crate::logging::ReadableBytes;
 use crate::renderer::buffers::block_allocator::{BlockAllocator, BlockHandle};
 use crate::renderer::buffers::pool_allocator::{PoolAllocator, SegmentHandle};
-use crate::renderer::buffers::{AllocationError, BufferMemoryTarget};
+use crate::renderer::buffers::{AllocationError, BufferMemoryTarget, align_up};
 use crate::renderer::vertex_buffer::{INSTANCE_ALIGNMENT, QuadInstance, TransparentQuadInstance};
 use crate::world::chunk::ChunkUVW;
 
@@ -233,11 +233,12 @@ impl DescriptorAllocator {
     }
 }
 
-/// Associated data to one insertion into the vertex buffer.
-struct VertexBufferInsertionTask {
+/// A vertex buffer segment that has been reserved, but whose data has not been copied in yet.
+struct PendingVertexWrite {
     vertex_buffer_resize: Option<u64>,
     vertex_buffer_segment: SegmentHandle,
     source_buffer: Buffer,
+    source_offset: u64,
 }
 
 pub struct IndirectBufferManager {
@@ -247,7 +248,6 @@ pub struct IndirectBufferManager {
     chunks: HashMap<ChunkHandle, Chunk>,
 }
 
-// todo why static?
 impl IndirectBufferManager {
     pub fn new(device: &Device, chunks_count: u64) -> Self {
         // Start with 1MiB
@@ -295,14 +295,14 @@ impl IndirectBufferManager {
         &mut self,
         queue: &Queue,
         command_encoder: &mut CommandEncoder,
-        overwrite_chunk: Option<ChunkHandle>,
+        overwrite_chunk: Option<Chunk>,
         ChunkCreationArgs {
             uniform,
             vertex_buffer,
             segments,
         }: ChunkCreationArgs,
-    ) -> [Option<VertexBufferInsertionTask>; BUCKET_COUNT] {
-        let insertion_tasks = segments.map(|offset_size| {
+    ) -> [Option<PendingVertexWrite>; BUCKET_COUNT] {
+        let pending_writes = segments.map(|offset_size| {
             let Some(offset_size) = offset_size else {
                 return None;
             };
@@ -312,9 +312,13 @@ impl IndirectBufferManager {
                 INSTANCE_ALIGNMENT,
             ))
         });
-        let vertex_buffer_handles = insertion_tasks
+        let vertex_buffer_handles = pending_writes
             .iter()
-            .map(|insertion| insertion.as_ref().map(|some| some.vertex_buffer_segment))
+            .map(|pending| {
+                pending
+                    .as_ref()
+                    .map(|pending| pending.vertex_buffer_segment)
+            })
             .collect::<Vec<_>>()
             .try_into()
             .expect("Converting into array failed");
@@ -324,11 +328,7 @@ impl IndirectBufferManager {
                 .descriptor_allocator
                 .new_chunk(queue, command_encoder, vertex_buffer_handles, &uniform)
                 .expect("Descriptor/uniform allocation failed"),
-            Some(chunk_handle) => {
-                let mut chunk = self
-                    .chunks
-                    .remove(&chunk_handle)
-                    .expect("Invalid chunk handle provided for overwriting");
+            Some(mut chunk) => {
                 chunk.vertex_buffer_handles = vertex_buffer_handles;
                 self.descriptor_allocator
                     .write_chunk_descriptor(queue, command_encoder, &chunk, &uniform)
@@ -339,7 +339,7 @@ impl IndirectBufferManager {
 
         self.chunks.insert(ChunkHandle { uniform }, chunk);
 
-        insertion_tasks
+        pending_writes
     }
 
     /// Drop chunk, ensuring that the remaining set of chunk descriptors remain contiguous in the descriptor buffer.
@@ -414,28 +414,33 @@ impl IndirectBufferManager {
         source_buffer: Buffer,
         allocation: AllocationRequest,
         alignment: u64,
-    ) -> VertexBufferInsertionTask {
+    ) -> PendingVertexWrite {
         match self
             .vertex_buffer_allocator
             .reserve_segment(allocation.size(), alignment)
         {
-            Ok(vertex_buffer_segment) => VertexBufferInsertionTask {
+            Ok(vertex_buffer_segment) => PendingVertexWrite {
                 vertex_buffer_resize: None,
                 vertex_buffer_segment,
                 source_buffer,
+                source_offset: allocation.offset(),
             },
             Err(_) => {
                 let old_size = self.vertex_buffer_allocator.size();
-                let new_size = u64::max(old_size * 3 / 2, old_size + allocation.size());
+                let new_size = u64::max(
+                    old_size * 3 / 2,
+                    align_up(old_size, alignment) + allocation.size(),
+                );
                 self.vertex_buffer_allocator.grow(new_size);
                 let vertex_buffer_segment = self
                     .vertex_buffer_allocator
                     .reserve_segment(allocation.size(), alignment)
                     .expect("Segment reservation failed even after growing the buffer");
-                VertexBufferInsertionTask {
+                PendingVertexWrite {
                     vertex_buffer_resize: Some(new_size),
                     vertex_buffer_segment,
                     source_buffer,
+                    source_offset: allocation.offset(),
                 }
             }
         }
@@ -450,7 +455,7 @@ impl IndirectBufferManager {
             vertex_buffer,
             segments,
         }: ChunkUpdateArgs,
-    ) -> [Option<VertexBufferInsertionTask>; BUCKET_COUNT] {
+    ) -> [Option<PendingVertexWrite>; BUCKET_COUNT] {
         let chunk = self
             .chunks
             .get_mut(&handle)
@@ -462,10 +467,8 @@ impl IndirectBufferManager {
                 .expect("Invalid handle provided");
         }
 
-        let insertion_tasks = segments.map(|offset_count| {
-            let Some(offset_size) = offset_count else {
-                return None;
-            };
+        let pending_writes = segments.map(|offset_count| {
+            let offset_size = offset_count?;
             Some(self.reserve_from_vertex_buffer(
                 vertex_buffer.clone(),
                 AllocationRequest::Bytes(offset_size),
@@ -479,9 +482,13 @@ impl IndirectBufferManager {
             .get_mut(&handle)
             .expect("Invalid draw call provided for replace");
 
-        let segments = insertion_tasks
+        let segments = pending_writes
             .iter()
-            .map(|insertion| insertion.as_ref().map(|some| some.vertex_buffer_segment))
+            .map(|pending| {
+                pending
+                    .as_ref()
+                    .map(|pending| pending.vertex_buffer_segment)
+            })
             .collect::<Vec<_>>()
             .try_into()
             .expect("Converting to array failed");
@@ -491,7 +498,7 @@ impl IndirectBufferManager {
             .write_chunk_descriptor(queue, command_encoder, &chunk, &handle.uniform)
             .expect("Invalid descriptor buffer handle provided");
 
-        insertion_tasks
+        pending_writes
     }
 
     pub fn create_update_pass(&mut self) -> IndirectBufferUpdatePass<'_> {
@@ -519,23 +526,22 @@ impl IndirectBufferManager {
         updated_draws: Vec<ChunkUpdateArgs>,
     ) {
         let mut vertex_buffer_resize = None;
-        let mut vertex_buffer_insertions = Vec::new();
+        let mut pending_writes = Vec::new();
 
-        let mut handle_insertion_result = |insertion: VertexBufferInsertionTask| {
-            if insertion.vertex_buffer_resize.is_some() {
-                vertex_buffer_resize = insertion.vertex_buffer_resize;
+        let mut record_pending_write = |pending: PendingVertexWrite| {
+            if pending.vertex_buffer_resize.is_some() {
+                vertex_buffer_resize = pending.vertex_buffer_resize;
             }
-            vertex_buffer_insertions
-                .push((insertion.source_buffer, insertion.vertex_buffer_segment));
+            pending_writes.push(pending);
         };
 
         for updated_draw in updated_draws {
-            for new_insertion in self
+            for pending_write in self
                 .replace_region_vertex_data(queue, command_encoder, updated_draw)
                 .into_iter()
                 .flatten()
             {
-                handle_insertion_result(new_insertion);
+                record_pending_write(pending_write);
             }
         }
 
@@ -553,21 +559,21 @@ impl IndirectBufferManager {
                             .expect("Invalid vertex buffer handle associated to dropped draw call");
                     }
 
-                    for new_insertion in self
-                        .insert_chunk(queue, command_encoder, Some(old_handle), new_chunk)
+                    for pending_write in self
+                        .insert_chunk(queue, command_encoder, Some(chunk), new_chunk)
                         .into_iter()
                         .flatten()
                     {
-                        handle_insertion_result(new_insertion);
+                        record_pending_write(pending_write);
                     }
                 }
                 itertools::EitherOrBoth::Left(new_args) => {
-                    for new_insertion in self
+                    for pending_write in self
                         .insert_chunk(queue, command_encoder, None, new_args)
                         .into_iter()
                         .flatten()
                     {
-                        handle_insertion_result(new_insertion);
+                        record_pending_write(pending_write);
                     }
                 }
                 itertools::EitherOrBoth::Right(old) => self.drop_chunk(queue, command_encoder, old),
@@ -592,11 +598,12 @@ impl IndirectBufferManager {
             self.vertex_buffer = new_vertex_buffer;
         }
 
-        for (source_buffer, vertex_buffer_segment) in vertex_buffer_insertions {
+        for pending in pending_writes {
             self.vertex_buffer_allocator.insert_into_segment(
-                &source_buffer,
+                &pending.source_buffer,
+                pending.source_offset,
                 &mut BufferMemoryTarget::new(&self.vertex_buffer, queue, command_encoder),
-                vertex_buffer_segment,
+                pending.vertex_buffer_segment,
             );
         }
     }
